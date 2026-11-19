@@ -1,0 +1,21 @@
+openapi: 3.1.0
+info:
+  title: Agent Muster Hub
+  version: 0.1.0
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: 检查 Hub 进程是否可以响应 HTTP 请求
+      responses:
+        '200':
+          description: Hub 已响应
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok

@@ -1,0 +1,22 @@
+# 本机检出的上游、验证输出和 Git worktree
+/.upstream/
+/.tmp/
+/.worktree/
+
+# 本地依赖和构建产物
+node_modules/
+.pnpm-store/
+dist/
+*.tsbuildinfo
+/bin/
+/muster
+/muster.exe
+/muster-hub
+/muster-hub.exe
+/muster-daemon
+/muster-daemon.exe
+
+# 个人环境配置
+.env
+.env.*
+!.env.example
