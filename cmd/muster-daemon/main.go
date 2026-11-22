@@ -13,6 +13,7 @@ import (
 	"github.com/baiyucraft/agent-muster/internal/daemon/update"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
+	"golang.org/x/sys/windows"
 )
 
 //go:embed all:frontend/dist
@@ -30,8 +31,10 @@ func main() {
 		return
 	}
 	profile := flag.String("profile", "default", "本机设备配置")
+	background := flag.Bool("background", false, "启动到系统托盘")
 	health := flag.String("update-health", "", "")
 	flag.Parse()
+	// 先取得安装锁，避免更新替换期间的普通启动占用试运行的唤起事件。
 	unlock, err := update.LockInstallation(*health)
 	if err != nil {
 		log.Fatal(err)
@@ -41,6 +44,18 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	openOnStart := !*background && *health == "" && os.Getenv(update.BackgroundLaunchEnv) != "1"
+	instance, err := claimDesktopInstance(*profile, openOnStart)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if instance == 0 {
+		if *health != "" {
+			log.Fatal("设备更新试运行无法启动：已有设备实例")
+		}
+		return
+	}
+	defer windows.CloseHandle(instance)
 
 	var quitting atomic.Bool
 	options := application.Options{
@@ -55,45 +70,63 @@ func main() {
 		},
 	}
 	app := application.New(options)
-	quit := func() {
-		quitting.Store(true)
-		app.Quit()
-	}
-	service.updateHealth = *health
-	service.quitForUpdate = quit
 
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "Agent Muster",
 		Frameless:        true,
+		Hidden:           true,
 		Width:            760,
 		Height:           680,
-		MinWidth:         620,
-		MinHeight:        580,
+		MinWidth:         minDeviceWindowWidth,
+		MinHeight:        minDeviceWindowHeight,
 		BackgroundColour: application.NewRGB(247, 248, 250),
 		URL:              "/",
 	})
+	placement := newWindowPlacement(*profile, app, window)
+	quit := func() {
+		if quitting.CompareAndSwap(false, true) {
+			app.Quit()
+		}
+	}
+	service.updateHealth = *health
+	service.quitForUpdate = quit
 	service.setWindow(window)
 	window.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		if !quitting.Load() {
 			event.Cancel()
+			placement.Save()
 			window.Hide()
 		}
 	})
-	window.Show()
+	app.Event.OnApplicationEvent(events.Windows.ApplicationStarted, func(_ *application.ApplicationEvent) {
+		if openOnStart {
+			placement.Open()
+		}
+	})
+	stopWatching, err := watchDesktopOpen(instance, func() {
+		if !quitting.Load() {
+			placement.Open()
+		}
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer stopWatching()
 
 	tray := app.SystemTray.New()
 	tray.SetIcon(trayIcon)
 	tray.SetLabel("Agent Muster")
+	tray.OnClick(placement.Open)
 	menu := app.NewMenu()
 	menu.Add("打开设备状态").OnClick(func(_ *application.Context) {
-		window.Show()
+		placement.Open()
 	})
+	addStartupMenu(app, menu, *profile)
 	menu.AddSeparator()
 	menu.Add("退出").OnClick(func(_ *application.Context) {
 		quit()
 	})
 	tray.SetMenu(menu)
-	tray.AttachWindow(window)
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)

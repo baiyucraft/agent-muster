@@ -463,6 +463,7 @@ func rollback(install, stage string, cause error) (string, error) {
 func runTrial(install, stage string, record applicationRecord) error {
 	cmd := quietCommand(filepath.Join(install, AppName), "-profile="+record.Profile, "-update-health="+filepath.Join(stage, healthName))
 	cmd.Dir = install
+	cmd.Env = append(cmd.Environ(), BackgroundLaunchEnv+"=1")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return err
@@ -498,6 +499,7 @@ func healthy(stage, expectedVersion string) bool {
 func restartApplication(install, profile string) error {
 	cmd := quietCommand(filepath.Join(install, AppName), "-profile="+profile)
 	cmd.Dir = install
+	cmd.Env = append(cmd.Environ(), BackgroundLaunchEnv+"=1")
 	if err := cmd.Start(); err != nil {
 		return err
 	}

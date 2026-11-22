@@ -25,6 +25,9 @@ const (
 	backupDir  = "previous"
 )
 
+// BackgroundLaunchEnv 让更新器后台重启桌面应用，旧版本可忽略此环境变量。
+const BackgroundLaunchEnv = "MUSTER_DEVICE_BACKGROUND"
+
 var (
 	profilePattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	assignmentPattern = regexp.MustCompile(`^upd-[a-f0-9]{32}$`)

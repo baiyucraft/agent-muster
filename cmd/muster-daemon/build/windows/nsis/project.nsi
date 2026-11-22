@@ -118,8 +118,48 @@ Section
     !insertmacro wails.writeUninstaller
 SectionEnd
 
+Function un.removeLoginStartup
+    Push $0
+    Push $1
+    Push $2
+    Push $3
+    StrCpy $0 0
+
+    # Match the command written for each profile and this executable.
+    read_value:
+        ClearErrors
+        EnumRegValue $1 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" $0
+        IfErrors done
+        StrCpy $2 $1 12
+        StrCmp $2 "AgentMuster-" 0 next_value
+        StrCpy $2 $1 "" 12
+        StrCmp $2 "" next_value
+        ReadRegStr $3 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" $1
+        StrCmp $3 "$\"$INSTDIR\${PRODUCT_EXECUTABLE}$\" --background --profile=$2" remove_value
+        StrCmp $3 "$INSTDIR\${PRODUCT_EXECUTABLE} --background --profile=$2" 0 next_value
+
+    remove_value:
+        ClearErrors
+        DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" $1
+        # On success the next entry takes the same index.
+        IfErrors next_value
+        Goto read_value
+
+    next_value:
+        IntOp $0 $0 + 1
+        Goto read_value
+
+    done:
+        Pop $3
+        Pop $2
+        Pop $1
+        Pop $0
+FunctionEnd
+
 Section "uninstall"
     !insertmacro wails.setShellContext
+
+    Call un.removeLoginStartup
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 
