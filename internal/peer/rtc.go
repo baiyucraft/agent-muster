@@ -45,6 +45,10 @@ type ICEServer struct {
 // RTCConfig 是 Hub 在设备登记成功后下发的 ICE 配置。
 type RTCConfig struct {
 	ICEServers []ICEServer `json:"ice_servers"`
+	// DiagnosticTransferID 仅在当前设备属于指定验收投递时下发。
+	DiagnosticTransferID string `json:"diagnostic_transfer_id,omitempty"`
+	// DiagnosticPortMap 仅对该笔验收投递启用临时 IPv4 UDP 映射试验。
+	DiagnosticPortMap bool `json:"diagnostic_port_mapping,omitempty"`
 }
 
 // RTCSignal 将 SDP 绑定到单次连接尝试。重连使用新的 AttemptID。

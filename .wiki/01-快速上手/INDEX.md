@@ -1,7 +1,7 @@
 ---
 title: 快速上手
 description: 在本机启动单设备工作台，了解首版任务流程
-updated: 2026-11-21
+updated: 2026-11-22
 owner: project
 ---
 
@@ -43,13 +43,15 @@ Web 和中心插件由同一个 pnpm 工作区构建。设备端是独立的 Wai
 ### 在 Windows 上配置双设备协作
 
 1. 在两台 Windows 上安装 Agent Muster，并登录各自的 dsh 或 Codex。两台设备使用同一 Hub 的 HTTP 或 HTTPS 地址，例如 `http://<服务器IP>:13011`。
-2. 分别配对并选择本机工作目录。设备互联默认由 Hub 交换 WebRTC 连接信息，设备自动尝试直连。已有可达的局域网或 VPN 地址也可以填入「设备互联」，保存后从托盘退出并重开应用。
+2. 分别配对并选择本机工作目录。Hub 交换 WebRTC 信令，设备优先尝试直连，直连失败时自动使用部署者配置的 TURN。两台设备只需能访问 Hub 和可选的中继服务。已有可达的局域网或 VPN 地址也可以填入「设备互联」，保存后从托盘退出并重开应用。
 3. 在 Web「项目」为同一项目添加两条绑定，分别选定设备、工作目录和 Agent，再设一条默认绑定。不同项目也可以分别绑定。任务派发后沿用当时的绑定。
 4. 在主对话交办一项需要接力的任务，再交办另一项独立任务。在看板展开父任务查看子任务和交接状态。父任务等待期间可继续受理本机工作，收到所需结果后在原生会话中继续。
 
 运行中的 Agent 可以通过 `muster status` 查询可用目标，通过 `muster send` 交接文件，通过 `muster delegate` 建立子任务，通过 `muster wait` 声明等候条件，并在恢复时用 `muster receive` 查看已接收的材料。详细参数可用各子命令的 `-h` 查询。文件使用绑定目录内的相对路径，单次上限为 32 MiB。Hub 记录投递身份、连接描述、摘要和确认，设备间正文通过加密的数据通道传输。
 
-Hub 可通过 `MUSTER_RTC_STUN_URLS` 设置 STUN 服务列表。缺省使用 `stun:stun.l.google.com:19302`，显式空值仅使用本地候选地址。异地网络无法直连时，可配置 `MUSTER_RTC_TURN_URLS`、`MUSTER_RTC_TURN_USERNAME` 和 `MUSTER_RTC_TURN_CREDENTIAL`，由 TURN 转发加密数据。对端离线或无法建立连接时，设备保留发件箱并重试，可在任务详情查看进度。
+在 Hub 服务进程的运行环境中设置 `MUSTER_RTC_STUN_URLS` 来配置 STUN 列表，默认使用 `stun:stun.l.google.com:19302`。显式空值关闭 STUN 探测。公网中继可使用独立的 Coturn 服务，与 Hub 同机或单独部署。配置 `MUSTER_RTC_TURN_URLS`、`MUSTER_RTC_TURN_REST_SECRET` 和 `MUSTER_RTC_TURN_DEVICE_IDS` 后，Hub 为获准设备发放十分钟短期凭据。已有私有 TURN 可用 `MUSTER_RTC_TURN_USERNAME` 和 `MUSTER_RTC_TURN_CREDENTIAL` 配置。对端离线或所有路径均不可用时，设备保留发件箱并重试，可在任务详情查看进度。[部署示例](../../deploy/.env.example)
+
+TURN 转发 DTLS 加密流量。普通设备构建信任 Hub 控制链路返回的信令，使用 HTTP 时，设备令牌、信令和 TURN 凭据都依赖该网络的可信性。固定公钥的验收包只对指定投递互验签名并使用 TURN。排查 Coturn 返回 `486` 时，同时检查用户分配数、总分配数和带宽配额。ICE 可能为每台设备同时申请 UDP 与 TCP 两条分配，单条配额乘以预期并发分配数应在总预算内。[设备间交接设计](../../.docs/agent-muster-v0.1.md#52-控制与数据传输)
 
 ### 设备端自动更新
 

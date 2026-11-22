@@ -140,8 +140,25 @@ func TestCollaborationEndToEnd(t *testing.T) {
 	prompt := makeTransfer(a, b, parent, 30, "prompt")
 	file := makeTransfer(a, b, parent, 31, "file")
 	c := enroll("unrelated", 19003)
+	key := map[string]string{"public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE="}
+	otherKey := map[string]string{"public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAI="}
+	keyPath := "/rtc/public-key"
+	t.Setenv("MUSTER_RTC_KEY_TRANSFER_ID", "")
+	do("PUT", "devices/"+a.ID+keyPath, a.Token, key, 404, nil)
+	t.Setenv("MUSTER_RTC_KEY_TRANSFER_ID", file.ID)
+	do("PUT", "devices/"+a.ID+keyPath, a.Token, map[string]string{"public_key": "not-an-ed25519-key"}, 400, nil)
+	do("PUT", "devices/"+a.ID+keyPath, testAdmin, key, 401, nil)
+	do("PUT", "devices/"+a.ID+keyPath, testPlugin, key, 401, nil)
+	do("PUT", "devices/"+a.ID+keyPath, b.Token, key, 401, nil)
+	do("PUT", "devices/"+c.ID+keyPath, c.Token, key, 404, nil)
+	do("PUT", "devices/"+a.ID+keyPath, a.Token, key, 204, nil)
+	do("PUT", "devices/"+a.ID+keyPath, a.Token, key, 204, nil)
+	do("PUT", "devices/"+a.ID+keyPath, a.Token, otherKey, 409, nil)
+	do("PUT", "devices/"+b.ID+keyPath, b.Token, otherKey, 204, nil)
 	t.Setenv("MUSTER_RTC_STUN_URLS", "")
 	t.Setenv("MUSTER_RTC_TURN_URLS", "")
+	t.Setenv("MUSTER_RTC_TURN_REST_SECRET", "")
+	t.Setenv("MUSTER_RTC_TURN_DEVICE_IDS", "")
 	bRTC := "devices/" + b.ID + "/rtc"
 	aRTC := "devices/" + a.ID + "/rtc"
 	cRTC := "devices/" + c.ID + "/rtc"
@@ -154,6 +171,11 @@ func TestCollaborationEndToEnd(t *testing.T) {
 	do("PUT", offer, a.Token, signal, 409, nil)
 	do("PUT", bRTC, testPlugin, nil, 401, nil)
 	do("PUT", bRTC, c.Token, nil, 401, nil)
+	// ICE 配置无效时，登记失败的设备不能成为新的交接目标。
+	t.Setenv("MUSTER_RTC_STUN_URLS", "invalid")
+	do("PUT", bRTC, b.Token, nil, 503, nil)
+	t.Setenv("MUSTER_RTC_STUN_URLS", "")
+	do("PUT", offer, a.Token, signal, 409, nil)
 	var config peer.RTCConfig
 	do("PUT", bRTC, b.Token, nil, 200, &config)
 	if config.ICEServers == nil || len(config.ICEServers) != 0 {
@@ -173,6 +195,32 @@ func TestCollaborationEndToEnd(t *testing.T) {
 	do("PUT", cRTC+answer, c.Token, signal, 409, nil)
 	do("PUT", bRTC+answer, b.Token, signal, 204, nil)
 	do("PUT", bRTC+answer, b.Token, signal, 204, nil)
+	diagnosticPath := "/" + file.ID + "/diagnostic"
+	diagnostic := peer.RTCDiagnostic{AttemptID: signal.AttemptID, Stage: "wait_stream", ICEState: "failed", RequestsSent: 8}
+	t.Setenv("MUSTER_RTC_DIAGNOSTIC_TRANSFER_ID", "")
+	t.Setenv("MUSTER_RTC_DIAGNOSTIC_PORT_MAPPING", "1")
+	do("PUT", aRTC+diagnosticPath, a.Token, diagnostic, 404, nil)
+	t.Setenv("MUSTER_RTC_DIAGNOSTIC_TRANSFER_ID", file.ID)
+	for _, device := range []identity{a, b, c} {
+		do("PUT", "devices/"+device.ID+"/rtc", device.Token, nil, 200, &config)
+		want := file.ID
+		if device == c {
+			want = ""
+		}
+		if config.DiagnosticTransferID != want || config.DiagnosticPortMap != (want != "") {
+			t.Fatalf("unexpected RTC diagnostic scope for %s: %q, port map %v", device.ID, config.DiagnosticTransferID, config.DiagnosticPortMap)
+		}
+		config = peer.RTCConfig{} // JSON omits the field when disabled.
+	}
+	diagnostic.GatewayMapping = "private"
+	do("PUT", aRTC+diagnosticPath, a.Token, diagnostic, 204, nil)
+	do("PUT", bRTC+diagnosticPath, b.Token, diagnostic, 204, nil)
+	do("PUT", cRTC+diagnosticPath, c.Token, diagnostic, 404, nil)
+	do("PUT", aRTC+diagnosticPath, b.Token, diagnostic, 401, nil)
+	diagnostic.AttemptID = strings.Repeat("b", 32)
+	do("PUT", aRTC+diagnosticPath, a.Token, diagnostic, 404, nil)
+	diagnostic.Stage = "arbitrary text"
+	do("PUT", aRTC+diagnosticPath, a.Token, diagnostic, 400, nil)
 	var answered peer.RTCAnswer
 	query := "?attempt_id=" + signal.AttemptID
 	do("GET", cRTC+answer+query, c.Token, nil, 404, nil)

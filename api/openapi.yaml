@@ -474,8 +474,34 @@ paths:
                         urls: { type: array, items: { type: string } }
                         username: { type: string }
                         credential: { type: string }
+                  diagnostic_transfer_id: { $ref: '#/components/schemas/TransferID' }
+                  diagnostic_port_mapping: { type: boolean, description: 仅对指定诊断投递尝试临时 IPv4 UDP 映射 }
         '401': { $ref: '#/components/responses/DeviceUnauthorized' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/rtc/public-key:
+    parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+    put:
+      operationId: reportDeviceRTCPublicKey
+      summary: 声明指定验收设备的信令签名公钥
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [public_key]
+              properties:
+                public_key: { type: string, pattern: '^[A-Za-z0-9+/]{43}=$', description: Base64 编码的 Ed25519 公钥 }
+      responses:
+        '204': { description: 已记录首次公钥或已存在相同公钥 }
+        '400': { description: 无效的 Ed25519 公钥 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 登记入口关闭或设备不属于指定验收投递 }
+        '409': { description: 设备已登记不同的公钥 }
+        '413': { description: 请求体超过 128 字节 }
+        '415': { description: 请求的媒体类型须为 application/json }
   /api/v1/devices/{device_id}/rtc/offers:
     parameters: [{ $ref: '#/components/parameters/DeviceID' }]
     get:
@@ -554,6 +580,47 @@ paths:
         '401': { $ref: '#/components/responses/DeviceUnauthorized' }
         '404': { description: 尝试不可用 }
         '409': { description: 同一尝试的应答与保存值冲突 }
+  /api/v1/devices/{device_id}/rtc/{transfer_id}/diagnostic:
+    parameters:
+      - $ref: '#/components/parameters/DeviceID'
+      - $ref: '#/components/parameters/TransferID'
+    put:
+      operationId: reportDeviceRTCDiagnostic
+      summary: 上报已启用验收投递的当前连接尝试
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [attempt_id, stage]
+              properties:
+                attempt_id: { $ref: '#/components/schemas/RTCAttemptID' }
+                stage: { enum: [wait_answer, apply_answer, answer, wait_stream, stream, complete] }
+                ice_state: { enum: [new, checking, connected, completed, disconnected, failed, closed] }
+                dtls_state: { enum: [new, connecting, connected, failed, closed] }
+                ipv6_global: { type: boolean }
+                ipv6_default_route: { type: boolean }
+                ipv4_mapping: { enum: [endpoint_dependent, consistent, inconclusive] }
+                gateway_mapping: { enum: [global, private, unsupported, timeout, unavailable] }
+                local_ipv4_host: { type: integer, minimum: 0, maximum: 32 }
+                local_ipv4_reflexive: { type: integer, minimum: 0, maximum: 32 }
+                local_ipv6_host: { type: integer, minimum: 0, maximum: 32 }
+                local_ipv6_reflexive: { type: integer, minimum: 0, maximum: 32 }
+                requests_sent: { type: integer, minimum: 0, maximum: 1000000 }
+                requests_received: { type: integer, minimum: 0, maximum: 1000000 }
+                responses_sent: { type: integer, minimum: 0, maximum: 1000000 }
+                responses_received: { type: integer, minimum: 0, maximum: 1000000 }
+                selected_pair: { enum: [ipv4_direct, ipv6_direct, relay] }
+      responses:
+        '204': { description: 诊断已记录 }
+        '400': { description: 诊断字段或连接尝试无效 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 诊断未启用或该设备无适用的连接尝试 }
+        '413': { description: 请求体超过 2048 字节 }
+        '415': { description: 请求的媒体类型须为 application/json }
   /api/v1/devices/{device_id}/runs/{id}/lease:
     parameters:
       - { $ref: '#/components/parameters/DeviceID' }

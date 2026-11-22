@@ -250,6 +250,10 @@ func transferHash(data []byte) string {
 
 func (peer *collaboration) receive(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if peer.rtc != nil && (peer.rtc.authErr != nil || peer.rtc.pinned.transfer == id) {
+		http.Error(w, "transfer requires authenticated WebRTC", http.StatusForbidden)
+		return
+	}
 	ticket, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !transferID.MatchString(id) || !ok || len(ticket) == 0 || len(ticket) > 4096 {
 		http.Error(w, "invalid transfer", http.StatusBadRequest)
@@ -383,6 +387,9 @@ func (peer *collaboration) sendOne(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if current.ID != id {
+		return errors.New("Hub 发回的投递标识与本地发件箱不一致")
+	}
 	// 先查 Hub 的收件记录，完成过的投递可直接清理本地发件箱。
 	if current.ReceivedAt == "" {
 		if err := peer.push(ctx, current, body); err != nil {
@@ -399,6 +406,9 @@ func (peer *collaboration) sendOne(ctx context.Context, id string) error {
 }
 
 func (peer *collaboration) push(ctx context.Context, manifest control.Transfer, body []byte) error {
+	if peer.rtc != nil && (peer.rtc.authErr != nil || peer.rtc.pinned.transfer == manifest.ID) {
+		return peer.rtc.push(ctx, manifest, body)
+	}
 	if manifest.Peer != nil {
 		err := pushTransfer(ctx, manifest, body)
 		if err == nil && peer.rtc != nil {

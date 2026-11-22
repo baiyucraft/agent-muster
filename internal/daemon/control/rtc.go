@@ -50,3 +50,16 @@ func (client *Client) RTCAnswer(ctx context.Context, id Identity, transfer, atte
 func (client *Client) PutRTCAnswer(ctx context.Context, id Identity, transfer string, signal peer.RTCSignal) error {
 	return client.collaboration(ctx, id, http.MethodPut, signal, nil, "rtc", transfer, "answer")
 }
+
+// ReportRTCDiagnostic 提交一次指定交接的连接阶段和检查计数。
+// 诊断关闭或当前尝试已被取代时，Hub 返回未找到。
+func (client *Client) ReportRTCDiagnostic(ctx context.Context, id Identity, transfer string, report peer.RTCDiagnostic) error {
+	return client.collaboration(ctx, id, http.MethodPut, report, nil, "rtc", transfer, "diagnostic")
+}
+
+// ReportRTCPublicKey 登记验收设备本地生成的 Ed25519 公钥，提交同一公钥可重试。
+func (client *Client) ReportRTCPublicKey(ctx context.Context, id Identity, publicKey string) error {
+	return client.collaboration(ctx, id, http.MethodPut, struct {
+		PublicKey string `json:"public_key"`
+	}{PublicKey: publicKey}, nil, "rtc", "public-key")
+}

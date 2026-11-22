@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 
@@ -12,9 +13,44 @@ import (
 //go:embed migrations/005_m1_rtc.sql
 var createRTCTables string
 
+//go:embed migrations/007_rtc_public_keys.sql
+var createRTCPublicKeys string
+
 func migrateDeviceRTC(ctx context.Context, tx pgx.Tx) error {
-	_, err := tx.Exec(ctx, createRTCTables, pgx.QueryExecModeSimpleProtocol)
+	if _, err := tx.Exec(ctx, createRTCTables, pgx.QueryExecModeSimpleProtocol); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, createRTCPublicKeys, pgx.QueryExecModeSimpleProtocol)
 	return err
+}
+
+// SaveRTCPublicKey 保存指定验收投递参与设备的第一份公钥。重复声明相同公钥可重试。
+func (store *InventoryStore) SaveRTCPublicKey(ctx context.Context, device string, token [32]byte, transfer string, key []byte) error {
+	return pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
+		if err := authenticateDevice(ctx, tx, device, token); err != nil {
+			return err
+		}
+		var allowed bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM muster_transfers
+			WHERE id=$1 AND $2 IN (source_device_id,target_device_id))`, transfer, device).Scan(&allowed); err != nil {
+			return err
+		}
+		if !allowed {
+			return notFound(pgx.ErrNoRows)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO muster_rtc_public_keys(device_id,public_key) VALUES($1,$2)
+			ON CONFLICT(device_id) DO NOTHING`, device, key); err != nil {
+			return err
+		}
+		var saved []byte
+		if err := tx.QueryRow(ctx, `SELECT public_key FROM muster_rtc_public_keys WHERE device_id=$1`, device).Scan(&saved); err != nil {
+			return err
+		}
+		if !bytes.Equal(key, saved) {
+			return workspace.ErrConflict
+		}
+		return nil
+	})
 }
 
 // RegisterRTC 将已认证设备的信令可用期续到 90 秒，并清理已过期的信令。
@@ -115,6 +151,25 @@ func (store *InventoryStore) PutRTCAnswer(ctx context.Context, device string, to
 		}
 		return err
 	})
+}
+
+// RTCDiagnosticRole 验证设备属于指定投递。指定 attempt 时还要求当前信令未过期。
+// 返回 sender 或 receiver。用空 attempt 查询登记期间的诊断资格。
+func (store *InventoryStore) RTCDiagnosticRole(ctx context.Context, device string, token [32]byte, transfer, attempt string) (role string, err error) {
+	err = pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
+		if err := authenticateDevice(ctx, tx, device, token); err != nil {
+			return err
+		}
+		return notFound(tx.QueryRow(ctx, `
+			SELECT CASE WHEN tr.source_device_id=$2 THEN 'sender' ELSE 'receiver' END
+			FROM muster_transfers tr
+			WHERE tr.id=$1 AND $2 IN (tr.source_device_id, tr.target_device_id)
+			AND (($3='' AND tr.received_at IS NULL) OR EXISTS (
+				SELECT 1 FROM muster_rtc_signals s WHERE s.transfer_id=tr.id
+				AND s.attempt_id=$3 AND s.expires_at>statement_timestamp()
+			))`, transfer, device, attempt).Scan(&role))
+	})
+	return
 }
 
 func hasRTCPeer(ctx context.Context, tx pgx.Tx, device string) (bool, error) {
