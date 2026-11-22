@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import musterIcon from '../../ui/muster-icon.svg'
 import { AdminTokenError } from './api/devices'
 import { messageBytes, newID, sendMessage, withinTextLimit, type Task } from './api/workspace'
 import { DeviceInventory } from './features/devices/DeviceInventory'
@@ -24,7 +25,7 @@ function readRoute(): { view: View; taskID?: string } {
 }
 
 function Brand() {
-  return <a href="#conversation" className="workspace-brand"><span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>Agent Muster</a>
+  return <a href="#conversation" className="workspace-brand"><img className="brand-mark" src={musterIcon} alt="" />Agent Muster</a>
 }
 
 export function App() {
@@ -54,8 +55,8 @@ export function App() {
         <h1>进入工作台</h1>
         <form className="token-form" onSubmit={unlock}>
           <label htmlFor="admin-token">管理员令牌</label>
-          <input id="admin-token" type="password" value={draft} onChange={(event) => setDraft(event.target.value)} spellCheck={false} autoComplete="off" required />
-          {authError && <p className="auth-error" role="alert">{authError}</p>}
+          <input id="admin-token" type="password" value={draft} onChange={(event) => setDraft(event.target.value)} spellCheck={false} autoComplete="off" aria-invalid={authError ? true : undefined} aria-describedby={authError ? 'auth-error' : undefined} required />
+          {authError && <p id="auth-error" className="auth-error" role="alert">{authError}</p>}
           <button type="submit" className="primary-button">解锁工作台</button>
         </form>
       </main>
@@ -121,14 +122,14 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
   const streamLabel = { loading: '连接中', live: '实时更新', retry: '正在重连', unavailable: '服务暂不可用' }[streamState]
 
   return (
-    <div className="workspace-shell">
+    <div className="workspace-shell" data-view={route.view}>
       <header className="workspace-bar">
         <Brand />
         <nav className="workspace-navigation" aria-label="主导航">
           {views.map(({ id, label }) => <a key={id} href={`#${id}`} aria-current={route.view === id ? 'page' : undefined}>{label}</a>)}
         </nav>
         <div className="workspace-actions">
-          <span className="stream-indicator" data-state={streamState} role="status">{streamLabel}</span>
+          <span className="stream-indicator" data-state={streamState} role="status" title={streamLabel}><span>{streamLabel}</span></span>
           <button type="button" className="quiet-button" onClick={() => onLock()}>锁定工作台</button>
         </div>
       </header>

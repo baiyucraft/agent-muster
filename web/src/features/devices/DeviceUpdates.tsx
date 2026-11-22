@@ -91,11 +91,11 @@ export function DeviceUpdates({ token, deviceID, onLock }: { token: string; devi
   }
 
   return (
-    <section className="device-update" aria-labelledby="device-update-heading">
-      <header className="device-agents-heading">
-        <h3 id="device-update-heading">设备端更新</h3>
-        {item && <span role="status">{labels[item.status] ?? item.status}</span>}
-      </header>
+    <details className="device-update">
+      <summary className="device-update-heading">
+        设备端更新
+        {item && <span role="status" data-update-status={item.status}>{labels[item.status] ?? item.status}</span>}
+      </summary>
       {loadError && <p className="device-update-note" role="status">{loadError}</p>}
       {item && <div className="device-update-summary">
         <span>当前版本 <code>{item.current_version || '待上报'}</code></span>
@@ -116,6 +116,6 @@ export function DeviceUpdates({ token, deviceID, onLock }: { token: string; devi
           {actionError && <p className="read-error" role="alert">{actionError}</p>}
         </form>
       </details>}
-    </section>
+    </details>
   )
 }

@@ -1,6 +1,10 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import musterIcon from '../../ui/muster-icon.svg'
+import '../../ui/token.css'
 import { App } from './App'
+
+document.querySelector('link[rel="icon"]')?.setAttribute('href', musterIcon)
 
 const container = document.getElementById('root')
 if (!container) {

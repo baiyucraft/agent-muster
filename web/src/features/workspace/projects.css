@@ -1,0 +1,86 @@
+.projects-list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+}
+
+.project-entry {
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+}
+
+.project-entry + .project-entry {
+  border-top: 1px solid var(--separator);
+}
+
+.project-entry-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.project-entry-heading h2 {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.project-entry-heading button {
+  flex: none;
+}
+
+.project-primary-binding {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px var(--space-3);
+  margin: 4px 0 5px;
+}
+
+.project-primary-binding > span {
+  color: var(--accent);
+  font-size: var(--text-small);
+  font-weight: 650;
+}
+
+.project-binding {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px var(--space-3);
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.project-binding > :last-child {
+  color: var(--muted);
+}
+
+.project-alternatives,
+.project-unbound {
+  color: var(--muted);
+  font-size: var(--text-small);
+}
+
+.project-alternatives summary {
+  width: fit-content;
+  cursor: pointer;
+  padding: 5px 0;
+}
+
+.project-alternatives ul {
+  display: grid;
+  gap: var(--space-2);
+  margin: 4px 0 6px;
+  padding-inline-start: var(--space-4);
+}
+
+.project-entry .project-form {
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  border: 0;
+}

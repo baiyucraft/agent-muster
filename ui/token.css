@@ -1,0 +1,50 @@
+:root {
+  color-scheme: light dark;
+  --font-sans: "Segoe UI Variable Text", "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, monospace;
+  --text-body: 14px;
+  --text-small: 12px;
+  --text-title: 25px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --control-height: 36px;
+  --toolbar-height: 52px;
+  --brand-size: 28px;
+  --radius-control: 6px;
+  --radius-panel: 8px;
+
+  --canvas: light-dark(#f5f7fa, #10151e);
+  --toolbar: light-dark(#fff, #151e2c);
+  --surface: light-dark(#fff, #17202e);
+  --inset: light-dark(#f1f4f8, #121a26);
+  --hover: light-dark(#edf2f7, #202c3d);
+  --border: light-dark(#dce3ec, #2c394a);
+  --border-strong: light-dark(#8192a5, #67798e);
+  --separator: light-dark(#e6ebf2, #273344);
+  --ink: light-dark(#151e2c, #f0f5fb);
+  --muted: light-dark(#566579, #a9b8cb);
+  --neutral: light-dark(#eaf0f6, #263346);
+  --accent: light-dark(#006479, #49d5f2);
+  --accent-bg: light-dark(#e3f7fc, #173443);
+  --accent-border: light-dark(#76c2d2, #357688);
+  --action: light-dark(#006479, #49d5f2);
+  --action-hover: light-dark(#005366, #78e1f6);
+  --action-text: light-dark(#fff, #151e2c);
+  --focus: light-dark(#08718b, #78e1f6);
+  --blue: light-dark(#365f86, #aacbf2);
+  --blue-bg: light-dark(#e8f0fa, #28374a);
+  --green: light-dark(#256447, #94d8af);
+  --green-bg: light-dark(#e7f2eb, #253a30);
+  --amber: light-dark(#875118, #f5c28d);
+  --amber-bg: light-dark(#f8eedc, #453427);
+  --red: light-dark(#9d3938, #ffb8ba);
+  --red-bg: light-dark(#faebea, #482e32);
+  --red-border: light-dark(#e7bbb9, #80545a);
+  --backdrop: rgb(16 21 30 / 48%);
+  --shadow-dialog: 0 16px 44px light-dark(rgb(21 30 44 / 16%), rgb(0 0 0 / 45%));
+}
+
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }

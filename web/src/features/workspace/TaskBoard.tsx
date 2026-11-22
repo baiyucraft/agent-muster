@@ -8,11 +8,11 @@ const statusText: Record<Task['status'] | Run['status'], string> = {
   queued: '排队', running: '运行中', waiting: '等待', waiting_dependencies: '等待子任务', waiting_delivery: '等待交付',
   completed: '已完成', failed: '执行失败', paused: '已暂停', cancelled: '已取消', interrupted: '待核对',
 }
-const groups: { name: string; states: Task['status'][] }[] = [
-  { name: '排队', states: ['queued'] },
-  { name: '运行中', states: ['running'] },
-  { name: '等待', states: ['waiting_dependencies', 'waiting_delivery', 'paused', 'interrupted'] },
-  { name: '已结束', states: ['completed', 'failed', 'cancelled'] },
+const groups: { stage: string; name: string; states: Task['status'][] }[] = [
+  { stage: 'queued', name: '排队', states: ['queued'] },
+  { stage: 'running', name: '运行中', states: ['running'] },
+  { stage: 'waiting', name: '等待', states: ['waiting_dependencies', 'waiting_delivery', 'paused', 'interrupted'] },
+  { stage: 'finished', name: '已结束', states: ['completed', 'failed', 'cancelled'] },
 ]
 
 function TaskStatus({ status }: { status: Task['status'] | Run['status'] }) {
@@ -79,7 +79,7 @@ export function TaskBoard({ token, tasks, cursor, taskID, onFollow, onLock }: Ta
         {groups.map((group) => {
           const entries = roots.filter((task) => group.states.includes(task.status))
           return (
-            <section key={group.name} className="board-column" aria-label={group.name}>
+            <section key={group.stage} className="board-column" data-stage={group.stage} aria-label={group.name}>
               <h2>{group.name}<span>{entries.length}</span></h2>
               {entries.length === 0 && <p className="column-empty">暂无任务</p>}
               {entries.map((task) => <TaskCard key={task.id} task={task} children={childrenByParent.get(task.id) ?? []} deviceName={deviceNames.get(task.device_id)} />)}
@@ -95,8 +95,9 @@ function TaskCard({ task, children, deviceName }: { task: Task; children: Task[]
   return (
     <article className="task-tree-card">
       <a href={`#board/${task.id}`} className="task-card">
+        <h3>{task.title}</h3>
         <div className="task-card-meta"><span>{task.project_name}</span><TaskStatus status={task.status} /></div>
-        <strong>{task.title}</strong>
+        {task.waiting_reason && <p className="task-waiting-reason">{waitingReasonText[task.waiting_reason] ?? task.waiting_reason}</p>}
         <div className="task-card-facts"><span>{deviceName ?? task.device_id}</span><span>{agentName(task.agent_kind)}</span></div>
         <div className="task-card-footer"><Time value={task.updated_at} />{task.report_pending && <span>待汇报</span>}</div>
       </a>
@@ -153,19 +154,24 @@ function TaskDetails({ token, cursor, tasks, taskID, deviceNames, onFollow, onLo
             {detail.task.root_task_id && detail.task.root_task_id !== detail.task.parent_task_id && <a className="text-link" href={`#board/${detail.task.root_task_id}`}>根任务 {taskName(detail.task.root_task_id)}</a>}
           </div>}
           <dl className="task-facts">
-            <div><dt>任务编号</dt><dd><code>{detail.task.id}</code></dd></div>
+            <div><dt>状态</dt><dd><TaskStatus status={detail.task.status} />{detail.task.report_pending && ' · 待汇报'}</dd></div>
+            {detail.task.waiting_reason && <div><dt>等待原因</dt><dd>{waitingReasonText[detail.task.waiting_reason] ?? detail.task.waiting_reason}</dd></div>}
             <div><dt>项目</dt><dd>{detail.task.project_name}</dd></div>
             <div><dt>设备</dt><dd>{deviceNames.get(detail.task.device_id) ?? detail.task.device_id}</dd></div>
             <div><dt>Agent</dt><dd>{agentName(detail.task.agent_kind)}</dd></div>
-            {detail.task.binding_id && <div><dt>执行绑定</dt><dd><code>{detail.task.binding_id}</code></dd></div>}
-            <div><dt>状态</dt><dd><TaskStatus status={detail.task.status} />{detail.task.report_pending && ' · 待汇报'}</dd></div>
-            {detail.task.waiting_reason && <div><dt>等待原因</dt><dd>{waitingReasonText[detail.task.waiting_reason] ?? detail.task.waiting_reason}</dd></div>}
             <div><dt>更新时间</dt><dd><Time value={detail.task.updated_at} /></dd></div>
           </dl>
           {detail.task.result && <div className="detail-result"><h2>结果</h2><p className="message-text">{detail.task.result}</p></div>}
+          <details className="task-technical">
+            <summary>标识</summary>
+            <dl className="task-facts">
+              <div><dt>任务编号</dt><dd><code>{detail.task.id}</code></dd></div>
+              {detail.task.binding_id && <div><dt>执行绑定</dt><dd><code>{detail.task.binding_id}</code></dd></div>}
+            </dl>
+          </details>
         </div>
-        <section className="task-detail-panel" aria-labelledby="runs-heading">
-          <h2 id="runs-heading">运行记录</h2>
+        <details className="task-detail-panel">
+          <summary className="task-section-title">运行记录<span>{detail.runs.length}</span></summary>
           {detail.runs.length === 0 && <p className="standalone-note">等待首次运行。</p>}
           {detail.runs.map((run) => <article className="run-row" key={run.id}>
             <header><Time value={run.created_at} /><TaskStatus status={run.status} /></header>
@@ -173,7 +179,7 @@ function TaskDetails({ token, cursor, tasks, taskID, deviceNames, onFollow, onLo
             {run.session_id && <p><span>会话</span> <code>{run.session_id}</code></p>}
             {run.text && <p className="message-text">{run.text}</p>}
           </article>)}
-        </section>
+        </details>
         {detail.children.length > 0 && <section className="task-detail-panel" aria-labelledby="children-heading"><h2 id="children-heading">子任务</h2><ChildTasks tasks={detail.children} /></section>}
         {detail.dependencies.length > 0 && <section className="task-detail-panel" aria-labelledby="dependencies-heading">
           <h2 id="dependencies-heading">依赖任务</h2>
@@ -192,8 +198,8 @@ function TaskDetails({ token, cursor, tasks, taskID, deviceNames, onFollow, onLo
             <p>第 {wait.generation} 次等待{wait.received_at && <> · <Time value={wait.received_at} /></>}</p>
           </article>)}
         </section>}
-        {detail.transfers.length > 0 && <section className="task-detail-panel related-messages" aria-labelledby="transfers-heading">
-          <h2 id="transfers-heading">产物交接</h2>
+        {detail.transfers.length > 0 && <details className="task-detail-panel related-messages">
+          <summary className="task-section-title">产物交接<span>{detail.transfers.length}</span></summary>
           <div className="transfer-list">{detail.transfers.map((transfer) => <article className="transfer-row" key={transfer.id}>
             <div className="transfer-file"><strong>{transfer.name}</strong><span>{transferKind(transfer.kind)} · {formatBytes(transfer.size)}</span></div>
             <div className="transfer-route"><span>{deviceNames.get(transfer.source_device_id) ?? transfer.source_device_id}</span><span aria-label="发送至">→</span><span>{deviceNames.get(transfer.target_device_id) ?? transfer.target_device_id}</span></div>
@@ -202,7 +208,7 @@ function TaskDetails({ token, cursor, tasks, taskID, deviceNames, onFollow, onLo
             <Time value={transfer.received_at ?? transfer.created_at} />
             {transfer.last_error && <p className="transfer-error">{transfer.last_error}</p>}
           </article>)}</div>
-        </section>}
+        </details>}
         {detail.messages.length > 0 && <section className="task-detail-panel related-messages" aria-labelledby="related-heading"><h2 id="related-heading">关联对话</h2>{detail.messages.map((message) => <MessageItem key={message.id} message={message} task={detail.task} />)}</section>}
       </div>}
     </section>

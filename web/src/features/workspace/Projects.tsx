@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { AdminTokenError, readDevices, type Device } from '../../api/devices'
 import { newID, projectNameBytes, saveProject, withinTextLimit, type Directory, type Project, type ProjectBinding, type ProjectInput, type Workspace } from '../../api/workspace'
 import { messageFor } from '../../useWorkspace'
+import './projects.css'
 
 type ProjectsProps = {
   token: string
@@ -44,6 +45,9 @@ export function Projects({ token, workspace, onSaved, onLock }: ProjectsProps) {
   const [saveError, setSaveError] = useState('')
   const [saving, setSaving] = useState(false)
   const request = useRef<AbortController | null>(null)
+  const nameInput = useRef<HTMLInputElement>(null)
+  const editorTrigger = useRef<HTMLButtonElement>(null)
+  const draftID = draft?.id
 
   useEffect(() => {
     const controller = new AbortController()
@@ -56,8 +60,14 @@ export function Projects({ token, workspace, onSaved, onLock }: ProjectsProps) {
     }
   }, [token, onLock])
 
-  function edit(project: ProjectDraft) {
+  useEffect(() => {
+    if (draftID) nameInput.current?.focus()
+    else editorTrigger.current?.focus()
+  }, [draftID])
+
+  function edit(project: ProjectDraft, trigger: HTMLButtonElement) {
     if (request.current) return
+    editorTrigger.current = trigger
     setSaveError('')
     setDraft(project)
   }
@@ -103,8 +113,8 @@ export function Projects({ token, workspace, onSaved, onLock }: ProjectsProps) {
     return { id: newID(), device_id, directory_id, directory_label: localDirectories.find((directory) => directory.id === directory_id)?.label ?? '', agent_kind: candidate?.id ?? '', is_default: isDefault }
   }
 
-  function create() {
-    edit({ id: newID(), name: '', bindings: [newBinding(true)] })
+  function create(trigger: HTMLButtonElement) {
+    edit({ id: newID(), name: '', bindings: [newBinding(true)] }, trigger)
   }
 
   function updateBinding(index: number, patch: Partial<ProjectBinding>) {
@@ -128,15 +138,11 @@ export function Projects({ token, workspace, onSaved, onLock }: ProjectsProps) {
     setDraft({ ...draft, bindings })
   }
 
-  return (
-    <section aria-labelledby="projects-heading">
-      <div className="view-heading"><h1 id="projects-heading">项目</h1><button type="button" className="primary-button" onClick={create} disabled={saving || eligibleDeviceIDs.length === 0}>新建项目</button></div>
-      {!workspace && <p className="panel-placeholder">正在读取项目…</p>}
-      {workspace && eligibleDeviceIDs.length === 0 && <p className="panel-placeholder">先打开目标设备上的 Agent Muster，在设备端授权一个工作目录。</p>}
-      {workspace && eligibleDeviceIDs.length > 0 && workspace.projects.length === 0 && !draft && <p className="panel-placeholder">暂无项目。新建项目并选用已授权的设备目录后，即可从主对话交办。</p>}
-      {draft && <form className="project-form" onSubmit={submit}>
-        <h2>{workspace?.projects.some((project) => project.id === draft.id) ? '编辑项目' : '新建项目'}</h2>
-        <label className="project-name-field">项目名称<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} maxLength={projectNameBytes} disabled={saving} aria-invalid={!validName} aria-describedby={!validName ? 'project-name-error' : undefined} required /></label>
+  const existingProject = workspace?.projects.some(({ id }) => id === draftID)
+  const editor = draft && (
+    <form className="project-form" onSubmit={submit}>
+        {!existingProject && <h2>新建项目</h2>}
+        <label className="project-name-field">项目名称<input ref={nameInput} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} maxLength={projectNameBytes} disabled={saving} aria-invalid={!validName} aria-describedby={!validName ? 'project-name-error' : undefined} required /></label>
         {!validName && <p id="project-name-error" className="read-error" role="status">项目名称最多 {projectNameBytes} 个 UTF-8 字节，且不能包含空字符。</p>}
         <div className="binding-heading"><h3>可用执行绑定</h3><button className="outline-button" type="button" disabled={saving || eligibleDeviceIDs.length === 0 || draft.bindings.length >= maxProjectBindings} onClick={addBinding}>添加绑定</button></div>
         <div className="binding-list">{draft.bindings.map((binding, index) => {
@@ -173,12 +179,49 @@ export function Projects({ token, workspace, onSaved, onLock }: ProjectsProps) {
         })}</div>
         {saveError && <p className="read-error" role="alert">{saveError}</p>}
         <div className="form-actions"><button className="quiet-button" type="button" onClick={() => setDraft(undefined)} disabled={saving}>取消</button><button className="primary-button" type="submit" disabled={saving || !draft.name.trim() || !validName || !canSave}>{saving ? '正在保存…' : '保存项目'}</button></div>
-      </form>}
-      {workspace && workspace.projects.length > 0 && <div className="project-list">
-        {workspace.projects.map((project) => <article className="project-row project-bindings-row" key={project.id}>
-          <div><h2>{project.name}</h2><div className="project-binding-summary">{bindingsFor(project).map((binding) => <p key={binding.id}><span>{binding.is_default ? '默认' : '可选'}</span> {deviceName(binding.device_id)} <span aria-hidden="true">·</span> {binding.directory_label} <span aria-hidden="true">·</span> {binding.agent_kind}</p>)}</div></div>
-          <button className="outline-button" type="button" disabled={saving} onClick={() => edit({ id: project.id, name: project.name, bindings: bindingsFor(project) })}>编辑<span className="screen-reader"> {project.name}</span></button>
-        </article>)}
+      </form>
+  )
+
+  function bindingSummary(binding: ProjectBinding) {
+    return <div className="project-binding">
+      <span>{deviceName(binding.device_id)} · {binding.agent_kind === 'codex' ? 'Codex' : binding.agent_kind}</span>
+      <span>{binding.directory_label}</span>
+    </div>
+  }
+
+  return (
+    <section aria-labelledby="projects-heading">
+      <div className="view-heading">
+        <h1 id="projects-heading">项目</h1>
+        <button type="button" className="primary-button" onClick={(event) => create(event.currentTarget)} disabled={saving || eligibleDeviceIDs.length === 0}>新建项目</button>
+      </div>
+      {!workspace && <p className="panel-placeholder">正在读取项目…</p>}
+      {workspace && eligibleDeviceIDs.length === 0 && <p className="panel-placeholder">请先在设备端授权工作目录。</p>}
+      {workspace && eligibleDeviceIDs.length > 0 && workspace.projects.length === 0 && !draft && <p className="panel-placeholder">暂无项目。</p>}
+      {!existingProject && editor}
+      {workspace && workspace.projects.length > 0 && <div className="projects-list">
+        {workspace.projects.map((project) => {
+          const bindings = bindingsFor(project)
+          const primary = bindings.find(({ is_default }) => is_default)
+          const alternatives = bindings.filter((binding) => binding !== primary)
+          return <article className="project-entry" key={project.id}>
+            <header className="project-entry-heading">
+              <h2>{project.name}</h2>
+              <button className="quiet-button" type="button" disabled={saving || draftID === project.id} onClick={(event) => edit({ id: project.id, name: project.name, bindings }, event.currentTarget)}>编辑<span className="screen-reader"> {project.name}</span></button>
+            </header>
+            {draftID === project.id ? editor : <>
+              {primary && <div className="project-primary-binding">
+                <span>默认绑定</span>
+                {bindingSummary(primary)}
+              </div>}
+              {alternatives.length > 0 && <details className="project-alternatives">
+                <summary>其他绑定（{alternatives.length}）</summary>
+                <ul>{alternatives.map((binding) => <li key={binding.id}>{bindingSummary(binding)}</li>)}</ul>
+              </details>}
+              {!bindings.length && <p className="project-unbound">暂无绑定</p>}
+            </>}
+          </article>
+        })}
       </div>}
     </section>
   )

@@ -81,6 +81,8 @@ tasks:
     dir: frontend
     sources:
       - "**/*"
+      - "../../../ui/token.css"
+      - "../../../ui/muster-icon.svg"
       - exclude: node_modules/**/*
     generates:
       - dist/**/*

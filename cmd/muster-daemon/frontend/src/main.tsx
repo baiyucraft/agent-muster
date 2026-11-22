@@ -1,9 +1,13 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import musterIcon from '../../../../ui/muster-icon.svg'
 import * as DesktopService from './bindings/github.com/baiyucraft/agent-muster/cmd/muster-daemon/desktopservice'
 import { App } from './App'
 import type { DeviceApi } from './types'
+import '../../../../ui/token.css'
 import './styles.css'
+
+document.querySelector('link[rel="icon"]')?.setAttribute('href', musterIcon)
 
 const api: DeviceApi = {
   getStatus: async () => {
