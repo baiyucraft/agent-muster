@@ -1,0 +1,246 @@
+import { request } from './devices'
+
+/** 主对话中的消息，可能关联任务及中心 Agent 的处理状态。 */
+export type Message = {
+  id: string
+  kind: 'user' | 'reply' | 'report'
+  text: string
+  task_id?: string
+  status?: 'accepted' | 'handled' | 'interrupted'
+  created_at: string
+}
+
+type RunStatus = 'queued' | 'running' | 'waiting' | 'waiting_delivery' | 'completed' | 'failed' | 'paused' | 'cancelled' | 'interrupted'
+
+/** 看板的任务摘要，包含关联设备、Agent、依赖等待及待汇报状态。 */
+export type Task = {
+  id: string
+  project_id: string
+  project_name: string
+  device_id: string
+  status: Exclude<RunStatus, 'waiting'> | 'waiting_dependencies'
+  title: string
+  updated_at: string
+  result?: string
+  report_pending: boolean
+  parent_task_id?: string
+  root_task_id?: string
+  binding_id?: string
+  agent_kind?: string
+  waiting_reason?: 'children' | 'delivery' | 'transfers'
+  current_run_generation?: number
+  wait_generation?: number
+}
+
+/** 设备登记后对 Hub 可见的工作目录 ID 与展示名称。 */
+export type Directory = { id: string; label: string; device_id: string }
+/** 项目到单台设备工作目录及 Agent 的绑定，含是否为默认绑定。 */
+export type ProjectBinding = { id: string; device_id: string; directory_id: string; directory_label: string; agent_kind: string; is_default: boolean }
+/** 工作区快照内的项目及绑定信息，旧记录可能只提供设备和目录字段。 */
+export type Project = { id: string; name: string; device_id: string; directory_id: string; directory_label: string; agent_kind?: string; bindings?: ProjectBinding[] }
+/** 保存项目时发送的名称、默认执行目标和全部绑定。 */
+export type ProjectInput = { name: string; agent_kind: string; bindings: ProjectBinding[]; device_id: string; directory_id: string }
+
+/** 一次任务执行记录，取得原生会话后可带会话 ID。 */
+export type Run = {
+  id: string
+  task_id: string
+  directory_id: string
+  status: RunStatus
+  session_id?: string
+  text?: string
+  created_at: string
+  updated_at: string
+}
+
+/** 设备交接的 Hub 元数据，size 为内容字节数，sha256 为内容摘要。 */
+export type Transfer = {
+  id: string
+  run_id: string
+  task_id: string
+  source_device_id: string
+  target_device_id: string
+  name: string
+  kind: string
+  size: number
+  sha256: string
+  status: string
+  attempts: number
+  last_error?: string
+  created_at: string
+  received_at?: string
+}
+
+/** 任务依赖的代次与完成状态，代次用于区分不同等待轮次。 */
+export type Dependency = { task_id: string; depends_on_task_id: string; generation: number; status: string; active?: boolean }
+/** 关联到任务的输入记录，可来自消息、子任务依赖或执行操作。 */
+export type TaskInput = {
+  id: string
+  kind: 'message' | 'delegation' | 'dependency' | 'execution'
+  status: string
+  created_at: string
+  message_id?: string
+  run_id?: string
+  generation?: number
+  claimed_at?: string
+  transfer_ids?: string[]
+}
+/** 某次等待代次所需的交接记录，接收后可带确认时间。 */
+export type WaitedTransfer = { transfer_id: string; generation: number; active: boolean; status: 'waiting' | 'received'; received_at?: string }
+/** 主对话和看板的同一版本快照，cursor 用于后续 SSE 订阅。 */
+export type Workspace = { cursor: number; messages: Message[]; tasks: Task[]; projects: Project[]; directories: Directory[] }
+/** 任务详情快照，包含执行、输入、子任务、依赖和交接记录。 */
+export type TaskDetail = {
+  task: Task
+  runs: Run[]
+  messages: Message[]
+  children: Task[]
+  dependencies: Dependency[]
+  transfers: Transfer[]
+  inputs: TaskInput[]
+  waited_transfers: WaitedTransfer[]
+}
+
+/** 一条用户消息的 UTF-8 字节上限。 */
+export const messageBytes = 6_000
+/** 项目名称的 UTF-8 字节上限。 */
+export const projectNameBytes = 120
+
+const textEncoder = new TextEncoder()
+
+/**
+ * 用去除首尾空白后的 UTF-8 长度预检 Hub 文本限制。
+ * @param value 待校验文本。
+ * @param maxBytes 允许的最大字节数。
+ * @returns 文本没有 NUL 且编码长度未超过上限时为 true。
+ */
+export function withinTextLimit(value: string, maxBytes: number): boolean {
+  return !value.includes('\0') && textEncoder.encode(value.trim()).length <= maxBytes
+}
+
+/**
+ * 读取带更新游标的工作区快照，补齐缺省列表。
+ * @param token 当前管理员会话的令牌。
+ * @param signal 终止快照请求。
+ * @returns 游标校验成功的工作区快照。
+ */
+export async function readWorkspace(token: string, signal: AbortSignal): Promise<Workspace> {
+  const response = await request(token, '/api/v1/workspace', { signal })
+  const snapshot = (await response.json()) as Workspace
+  if (!Number.isSafeInteger(snapshot.cursor)) throw new Error('Hub 返回了无效的更新游标。')
+  return { ...snapshot, messages: snapshot.messages ?? [], tasks: snapshot.tasks ?? [], projects: snapshot.projects ?? [], directories: snapshot.directories ?? [] }
+}
+
+/**
+ * 读取任务详情并将未提供的相关列表统一为空数组。
+ * @param token 当前管理员会话的令牌。
+ * @param id Hub 分配的任务 ID。
+ * @param signal 终止详情请求。
+ * @returns 任务、运行及关联记录。
+ */
+export async function readTask(token: string, id: string, signal: AbortSignal): Promise<TaskDetail> {
+  const response = await request(token, `/api/v1/tasks/${encodeURIComponent(id)}`, { signal })
+  const detail = (await response.json()) as TaskDetail
+  return {
+    ...detail, runs: detail.runs ?? [], messages: detail.messages ?? [], children: detail.children ?? [],
+    dependencies: detail.dependencies ?? [], transfers: detail.transfers ?? [],
+    inputs: detail.inputs ?? [], waited_transfers: detail.waited_transfers ?? [],
+  }
+}
+
+/**
+ * 提交一条带客户端 ID 的主对话消息，按需关联既有任务。
+ * @param token 当前管理员会话的令牌。
+ * @param input 待提交的消息 ID、文本和可选任务 ID。
+ * @param signal 终止发送请求。
+ * @returns Hub 受理后返回的消息记录。
+ */
+export async function sendMessage(token: string, input: Pick<Message, 'id' | 'text' | 'task_id'>, signal: AbortSignal): Promise<Message> {
+  const response = await request(token, '/api/v1/conversation/messages', {
+    signal,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  return (await response.json()) as Message
+}
+
+/**
+ * 写入指定项目及其执行绑定。
+ * @param token 当前管理员会话的令牌。
+ * @param id 要创建或更新的项目 ID。
+ * @param input 项目信息及各执行目标。
+ * @param signal 终止保存请求。
+ * @returns Hub 保存后返回的项目。
+ */
+export async function saveProject(token: string, id: string, input: ProjectInput, signal: AbortSignal): Promise<Project> {
+  const response = await request(token, `/api/v1/projects/${encodeURIComponent(id)}`, {
+    signal,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  return (await response.json()) as Project
+}
+
+/**
+ * 从已有游标订阅 SSE，遇到新工作区事件后释放读取流。
+ * @param token 当前管理员会话的令牌。
+ * @param cursor 最近一次工作区快照的游标。
+ * @param signal 停止等待更新的信号。
+ * @returns 观察到更新游标时为 true，连接结束或等待取消而无更新时可为 false。
+ */
+export async function waitForWorkspaceEvent(token: string, cursor: number, signal: AbortSignal): Promise<boolean> {
+  const response = await request(token, `/api/v1/events?after=${cursor}`, {
+    signal,
+    headers: { Accept: 'text/event-stream' },
+  }, 18_000)
+  const reader = response.body?.getReader()
+  if (!reader || !response.headers.get('Content-Type')?.startsWith('text/event-stream')) {
+    throw new Error('Hub 返回了无法读取的实时更新。')
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let event = ''
+  let eventID = 0
+  try {
+    while (!signal.aborted) {
+      const { done, value } = await reader.read()
+      if (done) return false
+      buffer += decoder.decode(value, { stream: true })
+      let lineBreak = buffer.indexOf('\n')
+      while (lineBreak !== -1) {
+        const line = buffer.slice(0, lineBreak).replace(/\r$/, '')
+        buffer = buffer.slice(lineBreak + 1)
+        if (line === '') {
+          if (event === 'workspace' && eventID > cursor) return true
+          event = ''
+          eventID = 0
+        } else if (line.startsWith('event:')) {
+          event = line.slice(6).trimStart()
+        } else if (line.startsWith('id:')) {
+          eventID = Number(line.slice(3).trim())
+        }
+        lineBreak = buffer.indexOf('\n')
+      }
+      if (buffer.length > 65_536) throw new Error('Hub 返回了过长的实时更新。')
+    }
+    return false
+  } finally {
+    await reader.cancel().catch(() => {})
+  }
+}
+
+/**
+ * 生成浏览器可用的客户端消息或项目 ID。
+ * @returns 基于浏览器随机字节的 UUID v4 字符串。
+ */
+export function newID(): string {
+  // randomUUID is unavailable in browsers on plain HTTP origins.
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6] & 15) | 64
+  bytes[8] = (bytes[8] & 63) | 128
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}

@@ -16,6 +16,13 @@ dist/
 /muster-daemon
 /muster-daemon.exe
 
+# Device desktop build output
+/cmd/muster-daemon/.task/
+/cmd/muster-daemon/.tmp/
+/cmd/muster-daemon/bin/
+/cmd/muster-daemon/build/windows/icon.ico
+/cmd/muster-daemon/build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
+
 # 个人环境配置
 .env
 .env.*

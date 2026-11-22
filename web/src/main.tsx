@@ -1,5 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { App } from './App'
 
 const container = document.getElementById('root')
 if (!container) {
@@ -8,9 +9,6 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <main>
-      <h1>Agent Muster 工作台</h1>
-      <p>Web 工作区已初始化。</p>
-    </main>
+    <App />
   </StrictMode>,
 )

@@ -1,0 +1,143 @@
+/** Hub 分给中心会话的消息或汇报，携带当前领取租约和尝试次数。 */
+export interface Delivery {
+  id: string
+  lease: string
+  kind: 'message' | 'report'
+  attempt: number
+  text: string
+  message_id?: string
+  task_id?: string
+  project_id?: string
+}
+
+/** 派发新工作或续接原任务的输入，续接时以 task_id 指定目标。 */
+export interface Dispatch {
+  project_id?: string
+  binding_id?: string
+  task_id?: string
+  title?: string
+  prompt: string
+}
+
+/** 中心会话完成投递时提交的文本和结束状态。 */
+export interface Outcome {
+  text: string
+  status: 'handled' | 'interrupted'
+}
+
+/** 保留 Hub API 返回的 HTTP 状态以判断租约或认证是否有效。 */
+export class HubError extends Error {
+  /**
+   * 生成 Hub 请求失败的错误。
+   * @param status Hub 返回的 HTTP 状态码。
+   */
+  constructor(readonly status: number) {
+    super(`Hub HTTP ${status}`)
+  }
+}
+
+/** 中心 dsh 插件的 Hub 客户端，统一鉴权和请求取消。 */
+export class Hub {
+  private readonly base: URL
+
+  /**
+   * 校验插件连接地址并初始化 Hub 客户端。
+   * @param address Hub 的 HTTP 或 HTTPS origin，不能带路径、查询或凭据。
+   * @param token Hub 签发给中心插件的访问令牌。
+   */
+  constructor(address: string, private readonly token: string) {
+    this.base = new URL(address)
+    if (!['http:', 'https:'].includes(this.base.protocol) ||
+      this.base.username || this.base.password || this.base.search || this.base.hash ||
+      this.base.pathname !== '/') {
+      throw new Error('MUSTER_DSH_HUB_URL must be an HTTP or HTTPS origin')
+    }
+  }
+
+  /**
+   * 尝试从 Hub 领取一件待处理投递并校验最基本的租约字段。
+   * @param signal 取消领取请求。
+   * @returns 当前领到的投递，Hub 无待处理投递时为 undefined。
+   */
+  async claim(signal: AbortSignal): Promise<Delivery | undefined> {
+    const response = await this.request('POST', 'deliveries/claim', signal)
+    if (response.status === 204) return undefined
+    const delivery = await response.json() as Delivery
+    if (typeof delivery.id !== 'string' || !delivery.id || typeof delivery.lease !== 'string' || !delivery.lease ||
+      typeof delivery.text !== 'string' || !Number.isSafeInteger(delivery.attempt) || delivery.attempt < 1 ||
+      !['message', 'report'].includes(delivery.kind)) {
+      throw new Error('Hub returned an invalid delivery')
+    }
+    return delivery
+  }
+
+  /**
+   * 延长中心正在处理的投递租约。
+   * @param delivery 已领取并带当前租约的投递。
+   * @param signal 取消续租请求。
+   * @returns Hub 确认续租后完成，租约无效或请求失败时拒绝。
+   */
+  async renew(delivery: Delivery, signal: AbortSignal): Promise<void> {
+    await this.request('PUT', this.route(delivery, 'lease'), signal, { lease: delivery.lease })
+  }
+
+  /**
+   * 把中心会话结果交回 Hub 并结束本轮投递。
+   * @param delivery 已领取并带当前租约的投递。
+   * @param outcome 可向用户回报的文本和处理状态。
+   * @param signal 取消确认请求。
+   * @returns Hub 确认结果后完成，请求失败时拒绝。
+   */
+  async complete(delivery: Delivery, outcome: Outcome, signal: AbortSignal): Promise<void> {
+    await this.request('PUT', this.route(delivery, 'complete'), signal, { lease: delivery.lease, ...outcome })
+  }
+
+  /**
+   * 读取中心可用的项目和执行绑定。
+   * @param signal 取消列表请求。
+   * @returns Hub 返回的项目列表 JSON。
+   */
+  async projects(signal: AbortSignal): Promise<unknown> {
+    return (await this.request('GET', 'projects', signal)).json()
+  }
+
+  /**
+   * 在当前投递租约下向 Hub 创建或续接任务。
+   * @param delivery 允许发起操作的投递及租约。
+   * @param input 目标绑定或待续接任务及送给 Agent 的提示。
+   * @param signal 取消任务提交请求。
+   * @returns Hub 受理后返回的任务 JSON。
+   */
+  async dispatch(delivery: Delivery, input: Dispatch, signal: AbortSignal): Promise<unknown> {
+    const response = await this.request('POST', this.route(delivery, 'dispatch'), signal, { lease: delivery.lease, ...input })
+    return response.json()
+  }
+
+  /**
+   * 查询指定 Hub 任务及相关执行状态。
+   * @param id Hub 分配的任务 ID。
+   * @param signal 取消详情请求。
+   * @returns Hub 返回的任务详情 JSON。
+   */
+  async task(id: string, signal: AbortSignal): Promise<unknown> {
+    return (await this.request('GET', `tasks/${encodeURIComponent(id)}`, signal)).json()
+  }
+
+  private route(delivery: Delivery, action: string): string {
+    return `deliveries/${encodeURIComponent(delivery.id)}/${action}`
+  }
+
+  private async request(method: string, route: string, signal: AbortSignal, body?: object): Promise<Response> {
+    const headers = new Headers({ Authorization: `Bearer ${this.token}`, Accept: 'application/json' })
+    if (body) headers.set('Content-Type', 'application/json')
+    const response = await fetch(new URL(`/api/v1/plugin/${route}`, this.base), {
+      method, headers, body: body && JSON.stringify(body),
+      redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]),
+    })
+    if (!response.ok) {
+      await response.body?.cancel()
+      throw new HubError(response.status)
+    }
+    return response
+  }
+}

@@ -1,3 +1,10 @@
 - insert:
+    - id: muster-dsh-center-preset
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: muster-center
+        name: Agent Muster 主会话
+        description: Agent Muster 中心插件使用的主会话。
+        plugins: []
     - id: muster-dsh
       name: muster-dsh

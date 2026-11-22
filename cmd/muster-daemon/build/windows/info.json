@@ -1,0 +1,17 @@
+{
+	"fixed": {
+		"file_version": "0.2.0",
+		"product_version": "0.2.0"
+	},
+	"info": {
+		"0409": {
+			"FileVersion": "0.2.0",
+			"ProductVersion": "0.2.0",
+			"CompanyName": "Agent Muster",
+			"FileDescription": "Agent Muster device companion",
+			"LegalCopyright": "Copyright 2026 Agent Muster contributors",
+			"ProductName": "Agent Muster Device",
+			"Comments": "Local Agent discovery and Hub connection"
+		}
+	}
+}

@@ -1,7 +1,7 @@
 ---
 title: 快速上手
-description: 本地构建工程骨架，沿着一次自动修复理解项目角色和数据归属
-updated: 2026-11-20
+description: 在本机启动单设备工作台，了解首版任务流程
+updated: 2026-11-21
 owner: project
 ---
 
@@ -9,7 +9,7 @@ owner: project
 
 ## 本地构建与运行
 
-从仓库根目录运行。开发环境使用 Go 1.26、Node.js 22.23.2 和 pnpm 12.3.4。构建骨架及探测 Hub 仅需本机工具链，无需数据库或模型密钥。
+从仓库根目录运行。开发环境使用 Go 1.26、Node.js 22.23.2 和 pnpm 12.3.4。编译和检查健康接口只需要本机工具链。
 
 ```sh
 go build ./...
@@ -19,7 +19,52 @@ pnpm run build
 
 运行 `go run ./cmd/muster-hub` 后，用浏览器打开 [Hub 健康检查](http://127.0.0.1:8080/healthz)，预期收到 `{"status":"ok"}`。另开终端运行 `pnpm dev:web`，按 Vite 输出的本地地址打开工作台入口。两者都可以用 Ctrl+C 退出。
 
-用 `go run ./cmd/muster-daemon --help` 和 `go run ./cmd/muster --help` 检查设备侧两个入口。Web 和中心插件由同一个 pnpm 工作区构建，插件宿主声明见[中心插件](../../plugins/muster-dsh/package.json)。当前可用的 Hub HTTP 接口以 [OpenAPI 契约](../../api/openapi.yaml) 为准。
+Web 和中心插件由同一个 pnpm 工作区构建。设备端是独立的 Wails Go 模块。当前 HTTP 接口见 [OpenAPI 契约](../../api/openapi.yaml)。
+
+### 在 Windows 上跑通 M0
+
+1. 准备 PostgreSQL 数据库。在启动 Hub 的终端设置 `MUSTER_DATABASE_URL`、`MUSTER_ADMIN_TOKEN` 和 `MUSTER_DSH_PLUGIN_TOKEN`。两种令牌分别生成，至少 32 个字符。启动时 Hub 自动初始化和迁移数据库。
+
+   ```powershell
+   go run ./cmd/muster-hub -listen 127.0.0.1:13011 -web-dir web/dist
+   ```
+
+2. 在另一个终端为中心 dsh 0.2.1-rc.5 准备专用 profile，并配置可用的模型。将 `MUSTER_DSH_HUB_URL` 设为 `http://127.0.0.1:13011`，`MUSTER_DSH_PLUGIN_TOKEN` 设为 Hub 上的插件令牌，`MUSTER_DSH_WORKSPACE` 设为长期使用的中心工作目录绝对路径。中心原生会话保存在该 dsh 环境的数据目录中。
+
+   ```powershell
+   dsh muster-center --from-default-profile web --dump-config | Out-Null
+   dsh plugin --profile muster-center add "link:$((Resolve-Path 'plugins/muster-dsh').Path)"
+   dsh --profile muster-center --host 127.0.0.1 --port 0 --no-open
+   ```
+
+3. 在 `cmd/muster-daemon` 运行 `wails3 task build`，启动生成的 Windows 应用。用管理员令牌打开 [本机工作台](http://127.0.0.1:13011/)，在「设备」创建配对码，然后在 Windows 应用中配对并选择一个工作目录。设备上的 dsh 使用其 headless profile 和本机模型配置。
+4. 在 Web「项目」把名称绑定到已登记的设备目录。回到「对话」，交办该目录里的工作。到「看板」查看结果、运行轮次和会话 ID。通过「追加要求」续用原生会话。
+
+### 在 Windows 上配置双设备协作
+
+1. 在两台 Windows 上安装 Agent Muster，并登录各自的 dsh 或 Codex。两台设备使用同一 Hub 的 HTTP 或 HTTPS 地址，例如 `http://<服务器IP>:13011`。
+2. 分别配对并选择本机工作目录。设备互联默认由 Hub 交换 WebRTC 连接信息，设备自动尝试直连。已有可达的局域网或 VPN 地址也可以填入「设备互联」，保存后从托盘退出并重开应用。
+3. 在 Web「项目」为同一项目添加两条绑定，分别选定设备、工作目录和 Agent，再设一条默认绑定。不同项目也可以分别绑定。任务派发后沿用当时的绑定。
+4. 在主对话交办一项需要接力的任务，再交办另一项独立任务。在看板展开父任务查看子任务和交接状态。父任务等待期间可继续受理本机工作，收到所需结果后在原生会话中继续。
+
+运行中的 Agent 可以通过 `muster status` 查询可用目标，通过 `muster send` 交接文件，通过 `muster delegate` 建立子任务，通过 `muster wait` 声明等候条件，并在恢复时用 `muster receive` 查看已接收的材料。详细参数可用各子命令的 `-h` 查询。文件使用绑定目录内的相对路径，单次上限为 32 MiB。Hub 记录投递身份、连接描述、摘要和确认，设备间正文通过加密的数据通道传输。
+
+Hub 可通过 `MUSTER_RTC_STUN_URLS` 设置 STUN 服务列表。缺省使用 `stun:stun.l.google.com:19302`，显式空值仅使用本地候选地址。异地网络无法直连时，可配置 `MUSTER_RTC_TURN_URLS`、`MUSTER_RTC_TURN_USERNAME` 和 `MUSTER_RTC_TURN_CREDENTIAL`，由 TURN 转发加密数据。对端离线或无法建立连接时，设备保留发件箱并重试，可在任务详情查看进度。
+
+### 设备端自动更新
+
+1. 每台电脑一次性安装当前用户版 Device 安装包。安装包预置发行公钥，后续发布使用与其匹配的私钥签名。设备和 `muster.exe` 一起切换版本。
+2. 将新版本 ZIP 和签名清单发布到设备能访问的 HTTP 或 HTTPS 制品地址。在 Hub「设备」选中目标设备，展开「设备端更新」，填写版本和签名清单 URL。
+3. 设备按 30 秒后台周期领取更新。先下载并验证，随后暂停领新任务，等待当前 CLI 完成并保存回执。更新器启动新版本，探测本机 SQLite 工作区后确认上线。验证失败时恢复上一版，Hub 报告失败或回滚。
+
+自部署时可以用仓库根目录的发行工具维护签名。如果已存在发行密钥，后续版本直接复用，私钥留在发行机器。
+
+```powershell
+go run ./cmd/muster-release keygen -private <私钥文件> -public <muster-update.pub>
+go run ./cmd/muster-release sign -version 0.2.1 -platform windows/amd64 -url https://releases.example.com/device-0.2.1.zip -dir <新版本程序目录> -private-key <私钥文件> -public-key <muster-update.pub> -key-output <发布用公钥副本> -archive <输出ZIP> -output <输出清单JSON>
+```
+
+在 `cmd/muster-daemon` 使用 `wails3 task package INSTALL_SCOPE=user UPDATE_VERSION=0.2.1 UPDATE_PUBLIC_KEY_FILE=<公钥绝对路径>` 可生成对应安装包。待签名的程序版本要与清单一致。Codex 和 dsh 仍使用各自的安装渠道。
 
 ## 一次交办如何完成
 

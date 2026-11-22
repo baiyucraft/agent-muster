@@ -2,9 +2,9 @@
 
 Agent Muster 是自部署的多设备 Agent 调度项目。你在一个 Web 对话里交办任务，中心 dsh 将工作派给设备上已有的 Codex、dsh 等 CLI。设计目标是让日常进度留在看板，需要决定时请示，完成后回到原对话汇报。
 
-**当前处于工程骨架阶段。** Hub 提供 HTTP 健康检查，设备 daemon 和本机命令提供命令行入口，Web 和中心 dsh 插件可单独构建。完整的单设备派发与结果回传是首个开发里程碑。
+**当前实现 M1 双设备协作。** 从同一条对话交办多项任务，中心 dsh 将它们派给已配对的 Windows 设备，用 dsh 或 Codex 在绑定目录执行。设备可沿私网直连交接文件和消息，父任务等待期间释放执行名额，收到子任务结果后续接原生会话。
 
-[本地构建与运行](.wiki/01-快速上手/INDEX.md#本地构建与运行) · [项目 Wiki](.wiki/INDEX.md) · [v0.1 设计](.docs/agent-muster-v0.1.md) · [四个参考项目的源码调研](.docs/参考项目调研/README.md)
+[本地构建与运行](.wiki/01-快速上手/INDEX.md#本地构建与运行) · [双设备协作](.wiki/01-快速上手/INDEX.md#在-windows-上配置双设备协作) · [项目 Wiki](.wiki/INDEX.md) · [v0.1 设计](.docs/agent-muster-v0.1.md) · [四个参考项目的源码调研](.docs/参考项目调研/README.md)
 
 ## 工程目录
 

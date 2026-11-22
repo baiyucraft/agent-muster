@@ -19,3 +19,1246 @@ paths:
                   status:
                     type: string
                     const: ok
+  /api/v1/pairing-codes:
+    post:
+      operationId: createPairingCode
+      summary: 为待配对的设备生成一个有效期为 10 分钟的一次性码
+      security: [{ adminBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: { $ref: '#/components/schemas/DeviceName' }
+      responses:
+        '201':
+          description: 已生成配对码
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, expires_at]
+                properties:
+                  code: { $ref: '#/components/schemas/PairingCode' }
+                  expires_at: { type: string, format: date-time }
+        '400': { description: 无效的设备名称或请求体 }
+        '401': { description: 管理员凭据缺失或无效 }
+        '413': { description: 请求体超过 16 KiB }
+        '415': { description: 请求的媒体类型须为 application/json }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices:
+    get:
+      operationId: listDevices
+      summary: 列出已配对设备及其最近一次 Agent 探测结果
+      security: [{ adminBearer: [] }]
+      responses:
+        '200':
+          description: 设备清单，包括离线和已撤销设备
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items: { $ref: '#/components/schemas/Device' }
+        '401': { description: 管理员凭据缺失或无效 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/enroll:
+    post:
+      operationId: enrollDevice
+      summary: 消费配对码并签发单台设备的凭据
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code, hostname, os, arch]
+              properties:
+                code: { $ref: '#/components/schemas/PairingCode' }
+                hostname: { $ref: '#/components/schemas/DeviceName' }
+                os: { $ref: '#/components/schemas/PlatformPart' }
+                arch: { $ref: '#/components/schemas/PlatformPart' }
+      responses:
+        '201':
+          description: 设备已登记，响应包含本次签发的令牌
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [device_id, token]
+                properties:
+                  device_id: { $ref: '#/components/schemas/DeviceID' }
+                  token: { type: string, pattern: '^[A-Za-z0-9_-]{43}$' }
+        '400': { description: 配对码无效、过期或已使用，或者请求体无效 }
+        '413': { description: 请求体超过 16 KiB }
+        '415': { description: 请求的媒体类型须为 application/json }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}:
+    parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+    delete:
+      operationId: revokeDevice
+      summary: 撤销设备凭据并保留已登记的设备和清单
+      security: [{ adminBearer: [] }]
+      responses:
+        '204': { description: 设备已撤销，重复撤销同一设备也返回成功 }
+        '401': { description: 管理员凭据缺失或无效 }
+        '404': { description: 设备 ID 无效或设备不存在 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/heartbeat:
+    parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+    post:
+      operationId: reportHeartbeat
+      summary: 刷新该设备的最近在线时间
+      security: [{ deviceBearer: [] }]
+      responses:
+        '204': { description: 心跳已保存 }
+        '400': { description: 心跳请求体必须为空 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/inventory:
+    parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+    put:
+      operationId: reportInventory
+      summary: 替换该设备的最近一次 CLI 清单
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [agents]
+              properties:
+                agents: { $ref: '#/components/schemas/Agents' }
+      responses:
+        '204': { description: 清单已保存 }
+        '400': { description: 无效的清单或请求体 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '413': { description: 请求体超过 16 KiB }
+        '415': { description: 请求的媒体类型须为 application/json }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/device-updates:
+    get:
+      operationId: listDeviceUpdates
+      summary: 查看设备端当前版本、指派版本和更新结果
+      security: [{ adminBearer: [] }]
+      responses:
+        '200':
+          description: 设备更新清单
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items: { $ref: '#/components/schemas/DeviceUpdateState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/device-updates/{device_id}:
+    parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+    put:
+      operationId: assignDeviceUpdate
+      summary: 为设备指派签名发布清单，离线设备上线后领取
+      security: [{ adminBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version, manifest_url]
+              properties:
+                version: { $ref: '#/components/schemas/DeviceVersion' }
+                manifest_url: { type: string, format: uri, maxLength: 2048 }
+                retry: { type: boolean, description: 为失败或回滚的同版本重新创建指派 }
+      responses:
+        '200':
+          description: 保存后的更新指派与状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceUpdateState' }
+        '400': { description: 无效的设备 ID、目标版本或清单地址 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 设备不可用 }
+        '409': { description: 设备正在切换版本，或请求与当前版本冲突 }
+  /api/v1/devices/{device_id}/update/check:
+    parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+    post:
+      operationId: checkDeviceUpdate
+      summary: 设备上报当前版本和更新进度并查询可执行的指派
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version]
+              properties:
+                version: { $ref: '#/components/schemas/DeviceVersion' }
+                report:
+                  type: object
+                  additionalProperties: false
+                  required: [assignment_id, status]
+                  properties:
+                    assignment_id: { $ref: '#/components/schemas/DeviceUpdateID' }
+                    status: { type: string, enum: [downloading, waiting, applying, succeeded, failed, rolled_back] }
+                    error: { type: string, maxLength: 512 }
+      responses:
+        '200':
+          description: 当前指派，空值表示没有可执行的更新
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [target]
+                properties:
+                  target:
+                    oneOf:
+                      - $ref: '#/components/schemas/DeviceUpdateTarget'
+                      - type: 'null'
+        '400': { description: 无效的版本或状态 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+  /api/v1/workspace:
+    get:
+      operationId: getWorkspace
+      security: [{ adminBearer: [] }]
+      responses:
+        '200':
+          description: 主对话、任务、项目、目录和同一事务视图的事件游标
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workspace' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/events:
+    get:
+      operationId: streamWorkspace
+      security: [{ adminBearer: [] }]
+      parameters:
+        - { name: after, in: query, required: true, schema: { type: integer, format: int64, minimum: 0 } }
+      responses:
+        '200':
+          description: 按提交顺序发送 SSE，event 为 workspace，id 为游标，data 为 JSON 空对象。流到期后客户端用新游标重连。
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '400': { description: 无效游标 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { description: 游标超出可补读范围。重新请求工作台快照。 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/tasks/{id}:
+    parameters: [{ $ref: '#/components/parameters/TaskID' }]
+    get:
+      operationId: getTask
+      security: [{ adminBearer: [] }]
+      responses:
+        '200': { $ref: '#/components/responses/TaskDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 任务不存在 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/projects/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    put:
+      operationId: saveProject
+      security: [{ adminBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectBinding' }
+      responses:
+        '200':
+          description: 已保存项目与目录绑定
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Project' }
+        '400': { description: 无效的绑定 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 目录不存在或设备已撤销 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/conversation/messages:
+    post:
+      operationId: submitMessage
+      security: [{ adminBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [id, text]
+              properties:
+                id: { type: string, format: uuid }
+                text: { type: string, minLength: 1, description: 不超过 6000 UTF-8 字节 }
+                task_id: { $ref: '#/components/schemas/TaskID' }
+      responses:
+        '202':
+          description: 消息已入库。相同 ID 和内容的重试返回原消息。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '400': { description: 无效消息 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 追加要求关联的任务不存在 }
+        '409': { description: 消息 ID 已存在且内容不同 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/directories:
+    parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+    put:
+      operationId: reportDirectories
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [directories]
+              properties:
+                directories:
+                  type: array
+                  maxItems: 32
+                  items: { $ref: '#/components/schemas/Directory' }
+      responses:
+        '204': { description: 已替换设备目录清单 }
+        '400': { description: 无效目录清单 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/runs/claim:
+    parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+    post:
+      operationId: claimRun
+      security: [{ deviceBearer: [] }]
+      responses:
+        '200':
+          description: 已领取运行。重复领取未结束的运行会返回原指令。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, task_id, directory_id, prompt, session_id]
+                properties:
+                  id: { $ref: '#/components/schemas/RunID' }
+                  task_id: { $ref: '#/components/schemas/TaskID' }
+                  directory_id: { $ref: '#/components/schemas/DirectoryID' }
+                  prompt: { type: string }
+                  session_id: { type: string, description: 首轮为空 }
+                  agent_kind: { $ref: '#/components/schemas/AgentKind' }
+                  generation: { type: integer, format: int64, minimum: 1 }
+                  lease: { $ref: '#/components/schemas/Lease' }
+                  lease_until: { type: string, format: date-time }
+                  project_id: { type: string, format: uuid }
+                  binding_id: { type: string, format: uuid }
+                  parent_task_id: { $ref: '#/components/schemas/TaskID' }
+                  parent_device_id: { $ref: '#/components/schemas/DeviceID' }
+                  root_task_id: { $ref: '#/components/schemas/TaskID' }
+                  prompt_transfer_id: { $ref: '#/components/schemas/TransferID' }
+                  attachments: { type: array, items: { $ref: '#/components/schemas/Transfer' } }
+                  delegation_targets:
+                    type: array
+                    maxItems: 64
+                    items:
+                      type: object
+                      required: [project_id, project_name, binding_id, device_id, device_name, agent_kind, directory_label]
+                      properties:
+                        project_id: { type: string, format: uuid }
+                        project_name: { type: string }
+                        binding_id: { type: string, format: uuid }
+                        device_id: { $ref: '#/components/schemas/DeviceID' }
+                        device_name: { type: string }
+                        agent_kind: { $ref: '#/components/schemas/AgentKind' }
+                        directory_label: { type: string }
+                  dependency_results:
+                    type: array
+                    items:
+                      type: object
+                      required: [task_id, status]
+                      properties:
+                        task_id: { $ref: '#/components/schemas/TaskID' }
+                        status: { type: string }
+        '204': { description: 轮询期间没有待执行的运行 }
+        '400': { description: 请求体必须为空 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/runs/{id}/events/{sequence}:
+    parameters:
+      - { $ref: '#/components/parameters/DeviceID' }
+      - { name: id, in: path, required: true, schema: { $ref: '#/components/schemas/RunID' } }
+      - { name: sequence, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+    put:
+      operationId: recordRunEvent
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [kind]
+              properties:
+                kind: { type: string, enum: [started, session, waiting, completed, failed, interrupted] }
+                generation: { type: integer, format: int64, minimum: 1 }
+                lease: { $ref: '#/components/schemas/Lease' }
+                session_id: { type: string, description: session 事件必填 }
+                text: { type: string, description: 根任务汇报摘要。不超过 12000 UTF-8 字节。 }
+                wait_for_task_ids: { type: array, maxItems: 32, items: { $ref: '#/components/schemas/TaskID' } }
+                transfer_ids: { $ref: '#/components/schemas/TransferIDs' }
+      responses:
+        '204': { description: 事件已保存或已确认过相同内容 }
+        '400': { description: 无效的事件或序号 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 设备未领取该运行 }
+        '409': { description: 事件序号、内容或原生会话发生冲突 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/peer:
+    parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+    put:
+      operationId: registerDevicePeer
+      summary: 登记设备的私网 HTTPS 地址和证书公钥指纹
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [address, fingerprint]
+              properties:
+                address: { type: string, format: uri, description: 包含 IP 和端口的私网 HTTPS origin }
+                fingerprint: { $ref: '#/components/schemas/SHA256' }
+      responses:
+        '204': { description: 已登记 }
+        '400': { description: 无效的私网地址或指纹 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/rtc:
+    parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+    put:
+      operationId: registerDeviceRTC
+      summary: 登记自动连接能力并获取 ICE 配置
+      security: [{ deviceBearer: [] }]
+      responses:
+        '200':
+          description: 已登记
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ice_servers]
+                properties:
+                  ice_servers:
+                    type: array
+                    items:
+                      type: object
+                      required: [urls]
+                      properties:
+                        urls: { type: array, items: { type: string } }
+                        username: { type: string }
+                        credential: { type: string }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/rtc/offers:
+    parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+    get:
+      operationId: listDeviceRTCOffers
+      summary: 查看发往该设备的待接收连接描述
+      security: [{ deviceBearer: [] }]
+      responses:
+        '200':
+          description: 该设备有权接收的短时连接描述
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [offers]
+                properties:
+                  offers:
+                    type: array
+                    maxItems: 4
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/RTCSignal'
+                        - type: object
+                          required: [transfer_id]
+                          properties:
+                            transfer_id: { $ref: '#/components/schemas/TransferID' }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+  /api/v1/devices/{device_id}/rtc/{transfer_id}/offer:
+    parameters:
+      - $ref: '#/components/parameters/DeviceID'
+      - $ref: '#/components/parameters/TransferID'
+    put:
+      operationId: putDeviceRTCOffer
+      summary: 发送方为已授权交接发布 WebRTC 连接描述
+      security: [{ deviceBearer: [] }]
+      requestBody: { $ref: '#/components/requestBodies/RTCSignal' }
+      responses:
+        '204': { description: 描述已保存 }
+        '400': { description: 无效的交接 ID、尝试 ID 或 SDP }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 交接不可用 }
+        '409': { description: 同一尝试的描述与保存值冲突 }
+  /api/v1/devices/{device_id}/rtc/{transfer_id}/answer:
+    parameters:
+      - $ref: '#/components/parameters/DeviceID'
+      - $ref: '#/components/parameters/TransferID'
+    get:
+      operationId: getDeviceRTCAnswer
+      summary: 发送方查看本次连接尝试的应答
+      security: [{ deviceBearer: [] }]
+      parameters:
+        - name: attempt_id
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/RTCAttemptID' }
+      responses:
+        '200':
+          description: 应答为空字符串时仍在等待接收方
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sdp]
+                properties:
+                  sdp: { type: string, maxLength: 12288 }
+        '400': { description: 无效的交接 ID 或尝试 ID }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 尝试不可用 }
+    put:
+      operationId: putDeviceRTCAnswer
+      summary: 接收方发布连接应答
+      security: [{ deviceBearer: [] }]
+      requestBody: { $ref: '#/components/requestBodies/RTCSignal' }
+      responses:
+        '204': { description: 应答已保存 }
+        '400': { description: 无效的交接 ID、尝试 ID 或 SDP }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 尝试不可用 }
+        '409': { description: 同一尝试的应答与保存值冲突 }
+  /api/v1/devices/{device_id}/runs/{id}/lease:
+    parameters:
+      - { $ref: '#/components/parameters/DeviceID' }
+      - { $ref: '#/components/parameters/RunID' }
+    put:
+      operationId: renewRunLease
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RunLease' }
+      responses:
+        '200':
+          description: 已延长当前轮次租约
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [lease_until]
+                properties:
+                  lease_until: { type: string, format: date-time }
+        '400': { description: 无效的运行或租约 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '409': { description: 运行租约已变化 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/runs/{id}/wait/validate:
+    parameters:
+      - { $ref: '#/components/parameters/DeviceID' }
+      - { $ref: '#/components/parameters/RunID' }
+    post:
+      operationId: validateRunWait
+      summary: 在设备登记等待意图前检查轮次租约和依赖范围
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [generation, lease]
+              anyOf:
+                - required: [wait_for_task_ids]
+                - required: [transfer_ids]
+              properties:
+                kind: { type: string, const: waiting }
+                generation: { type: integer, format: int64, minimum: 1 }
+                lease: { $ref: '#/components/schemas/Lease' }
+                wait_for_task_ids: { type: array, maxItems: 32, items: { $ref: '#/components/schemas/TaskID' } }
+                transfer_ids: { $ref: '#/components/schemas/TransferIDs' }
+      responses:
+        '204': { description: 等待条件属于当前轮次，轮次结束后方可提交 }
+        '400': { description: 无效的等待请求 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 未找到当前设备的轮次 }
+        '409': { description: 租约过期，或依赖超出当前轮次的范围 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/runs/{id}/children:
+    parameters:
+      - { $ref: '#/components/parameters/DeviceID' }
+      - { $ref: '#/components/parameters/RunID' }
+    post:
+      operationId: delegateChildTask
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [generation, lease, request_key, project_id, binding_id, title, prompt_transfer_id]
+              properties:
+                generation: { type: integer, format: int64, minimum: 1 }
+                lease: { $ref: '#/components/schemas/Lease' }
+                request_key: { type: string, pattern: '^[A-Za-z0-9_.:-]{1,128}$' }
+                task_id: { $ref: '#/components/schemas/TaskID' }
+                project_id: { type: string, format: uuid }
+                binding_id: { type: string, format: uuid }
+                title: { type: string, description: 不超过 240 UTF-8 字节 }
+                prompt_transfer_id: { $ref: '#/components/schemas/TransferID' }
+                transfer_ids: { $ref: '#/components/schemas/TransferIDs' }
+      responses:
+        '202':
+          description: 已登记子任务，或返回同请求已有的子任务
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+        '400': { description: 无效的子任务请求 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 绑定、轮次或投递不存在 }
+        '409': { description: 当前轮次、绑定、投递或幂等键冲突 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/runs/{id}/transfers:
+    parameters:
+      - { $ref: '#/components/parameters/DeviceID' }
+      - { $ref: '#/components/parameters/RunID' }
+    post:
+      operationId: createDeviceTransfer
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [generation, lease, id, target_device_id, name, kind, sha256, size]
+              properties:
+                generation: { type: integer, format: int64, minimum: 1 }
+                lease: { $ref: '#/components/schemas/Lease' }
+                id: { $ref: '#/components/schemas/TransferID' }
+                target_device_id: { $ref: '#/components/schemas/DeviceID' }
+                name: { type: string, minLength: 1, maxLength: 255 }
+                kind: { $ref: '#/components/schemas/TransferKind' }
+                sha256: { $ref: '#/components/schemas/SHA256' }
+                size: { type: integer, format: int64, minimum: 0, maximum: 33554432, description: message 类型最多 65536 字节 }
+      responses:
+        '201': { $ref: '#/components/responses/Transfer' }
+        '400': { description: 无效的投递元数据 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 轮次或目标设备不存在 }
+        '409': { description: 轮次或投递内容冲突 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/transfers/outgoing:
+    parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+    get:
+      operationId: listOutgoingDeviceTransfers
+      security: [{ deviceBearer: [] }]
+      responses:
+        '200':
+          description: 本设备待交付的投递清单
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transfers]
+                properties:
+                  transfers: { type: array, items: { $ref: '#/components/schemas/Transfer' } }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/transfers/{transfer_id}/authorize:
+    parameters:
+      - { $ref: '#/components/parameters/DeviceID' }
+      - { $ref: '#/components/parameters/TransferID' }
+    post:
+      operationId: authorizeDeviceTransfer
+      summary: 为当前发送方签发 10 分钟投递授权
+      security: [{ deviceBearer: [] }]
+      responses:
+        '200': { $ref: '#/components/responses/Transfer' }
+        '400': { description: 无效的投递 ID 或请求体 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 投递不存在 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/transfers/{transfer_id}/error:
+    parameters:
+      - { $ref: '#/components/parameters/DeviceID' }
+      - { $ref: '#/components/parameters/TransferID' }
+    put:
+      operationId: reportDeviceTransferError
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, enum: [peer_unavailable, verification_failed, delivery_failed] }
+      responses:
+        '204': { description: 已记录发送方的交接失败类别 }
+        '400': { description: 无效的投递 ID 或错误类别 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 投递不存在 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/transfers/{transfer_id}/verify:
+    parameters:
+      - { $ref: '#/components/parameters/DeviceID' }
+      - { $ref: '#/components/parameters/TransferID' }
+    post:
+      operationId: verifyDeviceTransfer
+      security: [{ deviceBearer: [] }]
+      requestBody: { $ref: '#/components/requestBodies/TransferTicket' }
+      responses:
+        '200': { $ref: '#/components/responses/Transfer' }
+        '400': { description: 无效的投递 ID 或授权格式 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 投递不存在 }
+        '409': { description: 授权失效或内容冲突 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/transfers/{transfer_id}/ack:
+    parameters:
+      - { $ref: '#/components/parameters/DeviceID' }
+      - { $ref: '#/components/parameters/TransferID' }
+    put:
+      operationId: acknowledgeDeviceTransfer
+      security: [{ deviceBearer: [] }]
+      requestBody: { $ref: '#/components/requestBodies/TransferTicket' }
+      responses:
+        '204': { description: 已确认落盘或已收到相同确认 }
+        '400': { description: 无效的投递 ID 或授权格式 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 投递不存在 }
+        '409': { description: 授权失效或内容冲突 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/plugin/projects:
+    get:
+      operationId: listPluginProjects
+      security: [{ pluginBearer: [] }]
+      responses:
+        '200':
+          description: 具有有效设备目录绑定的项目
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [projects]
+                properties:
+                  projects: { type: array, items: { $ref: '#/components/schemas/Project' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/plugin/tasks/{id}:
+    parameters: [{ $ref: '#/components/parameters/TaskID' }]
+    get:
+      operationId: getPluginTask
+      security: [{ pluginBearer: [] }]
+      responses:
+        '200': { $ref: '#/components/responses/TaskDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 任务不存在 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/plugin/deliveries/claim:
+    post:
+      operationId: claimDelivery
+      security: [{ pluginBearer: [] }]
+      responses:
+        '200':
+          description: 已领取消息或汇报。领取有效期为 60 秒。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Delivery' }
+        '204': { description: 暂无投递或当前主会话已有在途投递 }
+        '400': { description: 请求体必须为空 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/plugin/deliveries/{id}/lease:
+    parameters: [{ $ref: '#/components/parameters/DeliveryID' }]
+    put:
+      operationId: renewDelivery
+      security: [{ pluginBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [lease]
+              properties:
+                lease: { $ref: '#/components/schemas/Lease' }
+      responses:
+        '204': { description: 有效期已延长 }
+        '400': { description: 无效的投递 ID 或领取标识 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { description: 领取已过期或交付已处理 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/plugin/deliveries/{id}/complete:
+    parameters: [{ $ref: '#/components/parameters/DeliveryID' }]
+    put:
+      operationId: completeDelivery
+      security: [{ pluginBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [lease, text, status]
+              properties:
+                lease: { $ref: '#/components/schemas/Lease' }
+                text: { type: string, description: 不超过 12000 UTF-8 字节 }
+                status: { type: string, enum: [handled, interrupted] }
+      responses:
+        '204': { description: 已保存结果。未完成的汇报稍后重试。 }
+        '400': { description: 无效的结果 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 投递不存在 }
+        '409': { description: 领取已过期或结果冲突 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/plugin/deliveries/{id}/dispatch:
+    parameters: [{ $ref: '#/components/parameters/DeliveryID' }]
+    post:
+      operationId: dispatchTask
+      security: [{ pluginBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [lease, prompt]
+              description: 建任务时提供 project_id 和 title，追加时提供 task_id。
+              properties:
+                lease: { $ref: '#/components/schemas/Lease' }
+                project_id: { type: string, format: uuid }
+                binding_id: { type: string, format: uuid, description: 新建任务时选用的绑定，缺省取项目默认值 }
+                task_id: { $ref: '#/components/schemas/TaskID' }
+                title: { type: string, description: 不超过 240 UTF-8 字节 }
+                prompt: { type: string, description: 不超过 6000 UTF-8 字节 }
+      responses:
+        '200':
+          description: 已派发任务或返回该来源消息的已有任务 ID
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task_id]
+                properties:
+                  task_id: { $ref: '#/components/schemas/TaskID' }
+        '400': { description: 无效的派发请求 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 投递或续接任务不存在 }
+        '409': { description: 领取、项目绑定或任务续接状态冲突 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    adminBearer:
+      type: http
+      scheme: bearer
+      description: Hub 配置的管理员令牌
+    deviceBearer:
+      type: http
+      scheme: bearer
+      description: 配对时签发且只适用于此设备的令牌
+    pluginBearer:
+      type: http
+      scheme: bearer
+      description: Go Hub 和中心 dsh 共用的独立插件令牌
+  parameters:
+    DeviceID:
+      name: device_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/DeviceID' }
+    TaskID:
+      name: id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/TaskID' }
+    RunID:
+      name: id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/RunID' }
+    TransferID:
+      name: transfer_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/TransferID' }
+    DeliveryID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  requestBodies:
+    RTCSignal:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RTCSignal' }
+    TransferTicket:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [ticket]
+            properties:
+              ticket: { $ref: '#/components/schemas/SHA256' }
+  responses:
+    Unauthorized:
+      description: 请求凭据缺失或无效
+    TaskDetail:
+      description: 任务、运行轮次和关联消息
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/TaskDetail' }
+    DeviceUnauthorized:
+      description: 未识别设备，或凭据缺失、不匹配、已撤销
+    Unavailable:
+      description: 接口尚未启用或 Hub 无法访问数据库
+    Transfer:
+      description: 投递元数据。发送方获得目标端点和短期授权。
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Transfer' }
+  schemas:
+    DeviceVersion:
+      type: string
+      pattern: '^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$'
+    DeviceUpdateID:
+      type: string
+      pattern: '^upd-[a-f0-9]{32}$'
+    DeviceUpdateTarget:
+      type: object
+      required: [id, version, manifest_url, assigned_at]
+      properties:
+        id: { $ref: '#/components/schemas/DeviceUpdateID' }
+        version: { $ref: '#/components/schemas/DeviceVersion' }
+        manifest_url: { type: string, format: uri, maxLength: 2048 }
+        assigned_at: { type: string, format: date-time }
+    DeviceUpdateState:
+      type: object
+      required: [device_id, current_version, target, status]
+      properties:
+        device_id: { $ref: '#/components/schemas/DeviceID' }
+        current_version:
+          oneOf:
+            - $ref: '#/components/schemas/DeviceVersion'
+            - const: ''
+        target:
+          oneOf:
+            - $ref: '#/components/schemas/DeviceUpdateTarget'
+            - type: 'null'
+        status: { type: string, enum: [idle, pending, downloading, waiting, applying, succeeded, failed, rolled_back] }
+        error: { type: string }
+        reported_at: { type: string, format: date-time }
+    RTCAttemptID:
+      type: string
+      pattern: '^[a-f0-9]{32}$'
+    RTCSignal:
+      type: object
+      required: [attempt_id, sdp]
+      properties:
+        attempt_id: { $ref: '#/components/schemas/RTCAttemptID' }
+        sdp: { type: string, maxLength: 12288, description: WebRTC DataChannel 的连接元数据 }
+    DirectoryID: { type: string, pattern: '^dir-[0-9a-f]{32}$' }
+    TaskID: { type: string, pattern: '^task-[0-9a-f-]{36}$' }
+    RunID: { type: string, pattern: '^run-[0-9a-f-]{36}$' }
+    Lease: { type: string, pattern: '^[A-Z2-7]{26}$' }
+    AgentKind: { type: string, enum: [dsh, codex] }
+    SHA256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    TransferID: { type: string, pattern: '^transfer-[0-9a-f-]{36}$' }
+    TransferIDs:
+      type: array
+      maxItems: 32
+      uniqueItems: true
+      items: { $ref: '#/components/schemas/TransferID' }
+    TransferKind: { type: string, enum: [prompt, file, message, result] }
+    RunLease:
+      type: object
+      additionalProperties: false
+      required: [generation, lease]
+      properties:
+        generation: { type: integer, format: int64, minimum: 1 }
+        lease: { $ref: '#/components/schemas/Lease' }
+    Peer:
+      type: object
+      required: [device_id, address, fingerprint]
+      properties:
+        device_id: { $ref: '#/components/schemas/DeviceID' }
+        address: { type: string, format: uri }
+        fingerprint: { $ref: '#/components/schemas/SHA256' }
+    Transfer:
+      type: object
+      required: [id, run_id, task_id, source_device_id, target_device_id, name, kind, sha256, size]
+      properties:
+        id: { $ref: '#/components/schemas/TransferID' }
+        run_id: { $ref: '#/components/schemas/RunID' }
+        task_id: { $ref: '#/components/schemas/TaskID' }
+        source_device_id: { $ref: '#/components/schemas/DeviceID' }
+        target_device_id: { $ref: '#/components/schemas/DeviceID' }
+        name: { type: string }
+        kind: { $ref: '#/components/schemas/TransferKind' }
+        sha256: { $ref: '#/components/schemas/SHA256' }
+        size: { type: integer, format: int64, minimum: 0, maximum: 33554432 }
+        status: { type: string }
+        attempts: { type: integer, minimum: 0 }
+        last_error: { type: string }
+        created_at: { type: string, format: date-time }
+        received_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        ticket: { $ref: '#/components/schemas/SHA256' }
+        peer: { $ref: '#/components/schemas/Peer' }
+    Dependency:
+      type: object
+      required: [task_id, depends_on_task_id, generation, status, active]
+      properties:
+        task_id: { $ref: '#/components/schemas/TaskID' }
+        depends_on_task_id: { $ref: '#/components/schemas/TaskID' }
+        generation: { type: integer, format: int64, minimum: 1 }
+        status: { type: string }
+        active: { type: boolean }
+    TaskInput:
+      type: object
+      required: [id, kind, status, created_at]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [message, delegation, dependency, execution] }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+        message_id: { type: string }
+        run_id: { $ref: '#/components/schemas/RunID' }
+        generation: { type: integer, format: int64, minimum: 1 }
+        claimed_at: { type: string, format: date-time }
+        transfer_ids: { type: array, items: { $ref: '#/components/schemas/TransferID' } }
+    WaitedTransfer:
+      type: object
+      required: [transfer_id, generation, active, status]
+      properties:
+        transfer_id: { $ref: '#/components/schemas/TransferID' }
+        generation: { type: integer, format: int64, minimum: 1 }
+        active: { type: boolean }
+        status: { type: string, enum: [waiting, received] }
+        received_at: { type: string, format: date-time }
+    Directory:
+      type: object
+      required: [id, label]
+      properties:
+        id: { $ref: '#/components/schemas/DirectoryID' }
+        label: { type: string, description: 设备选定的显示名称。不超过 120 UTF-8 字节。 }
+        device_id: { $ref: '#/components/schemas/DeviceID' }
+    Binding:
+      type: object
+      required: [id, device_id, directory_id, agent_kind, is_default]
+      properties:
+        id: { type: string, format: uuid }
+        device_id: { $ref: '#/components/schemas/DeviceID' }
+        directory_id: { $ref: '#/components/schemas/DirectoryID' }
+        directory_label: { type: string }
+        agent_kind: { $ref: '#/components/schemas/AgentKind' }
+        is_default: { type: boolean }
+    ProjectBinding:
+      type: object
+      required: [name]
+      anyOf:
+        - required: [device_id, directory_id]
+        - required: [bindings]
+      properties:
+        name: { type: string, description: 不超过 120 UTF-8 字节 }
+        device_id: { $ref: '#/components/schemas/DeviceID' }
+        directory_id: { $ref: '#/components/schemas/DirectoryID' }
+        agent_kind: { $ref: '#/components/schemas/AgentKind' }
+        bindings:
+          type: array
+          minItems: 1
+          maxItems: 32
+          description: 恰有一条默认绑定
+          items: { $ref: '#/components/schemas/Binding' }
+    Project:
+      allOf:
+        - { $ref: '#/components/schemas/ProjectBinding' }
+        - type: object
+          required: [id, directory_label]
+          properties:
+            id: { type: string, format: uuid }
+            directory_label: { type: string }
+    Message:
+      type: object
+      required: [id, kind, text, created_at]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [user, reply, report] }
+        text: { type: string }
+        task_id: { $ref: '#/components/schemas/TaskID' }
+        status: { type: string, enum: [accepted, handled, interrupted] }
+        created_at: { type: string, format: date-time }
+    TaskState: { type: string, enum: [queued, running, waiting_dependencies, waiting_delivery, completed, failed, interrupted, paused, cancelled] }
+    Task:
+      type: object
+      required: [id, project_id, project_name, device_id, directory_id, status, title, report_pending, updated_at]
+      properties:
+        id: { $ref: '#/components/schemas/TaskID' }
+        project_id: { type: string, format: uuid }
+        project_name: { type: string }
+        device_id: { $ref: '#/components/schemas/DeviceID' }
+        directory_id: { $ref: '#/components/schemas/DirectoryID' }
+        parent_task_id: { $ref: '#/components/schemas/TaskID' }
+        root_task_id: { $ref: '#/components/schemas/TaskID' }
+        binding_id: { type: string, format: uuid }
+        agent_kind: { $ref: '#/components/schemas/AgentKind' }
+        waiting_reason: { type: string, enum: [children, delivery, transfers] }
+        current_run_generation: { type: integer, format: int64, minimum: 1 }
+        wait_generation: { type: integer, format: int64, minimum: 1 }
+        status: { $ref: '#/components/schemas/TaskState' }
+        title: { type: string }
+        result: { type: string }
+        report_pending: { type: boolean }
+        updated_at: { type: string, format: date-time }
+    Run:
+      type: object
+      required: [id, task_id, directory_id, status, created_at, updated_at]
+      properties:
+        id: { $ref: '#/components/schemas/RunID' }
+        task_id: { $ref: '#/components/schemas/TaskID' }
+        directory_id: { $ref: '#/components/schemas/DirectoryID' }
+        status: { type: string, enum: [queued, running, waiting, waiting_delivery, completed, failed, interrupted, paused, cancelled] }
+        session_id: { type: string }
+        generation: { type: integer, format: int64, minimum: 1 }
+        lease_until: { type: string, format: date-time }
+        text: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    TaskDetail:
+      type: object
+      required: [task, runs, messages]
+      properties:
+        task: { $ref: '#/components/schemas/Task' }
+        runs: { type: array, items: { $ref: '#/components/schemas/Run' } }
+        messages: { type: array, items: { $ref: '#/components/schemas/Message' } }
+        children: { type: array, items: { $ref: '#/components/schemas/Task' } }
+        dependencies: { type: array, items: { $ref: '#/components/schemas/Dependency' } }
+        transfers: { type: array, items: { $ref: '#/components/schemas/Transfer' } }
+        inputs: { type: array, items: { $ref: '#/components/schemas/TaskInput' } }
+        waited_transfers: { type: array, items: { $ref: '#/components/schemas/WaitedTransfer' } }
+    Workspace:
+      type: object
+      required: [cursor, messages, tasks, projects, directories]
+      properties:
+        cursor: { type: integer, format: int64 }
+        messages: { type: array, items: { $ref: '#/components/schemas/Message' } }
+        tasks: { type: array, items: { $ref: '#/components/schemas/Task' } }
+        projects: { type: array, items: { $ref: '#/components/schemas/Project' } }
+        directories: { type: array, items: { $ref: '#/components/schemas/Directory' } }
+    Delivery:
+      type: object
+      required: [id, lease, kind, text, attempt]
+      properties:
+        id: { type: string }
+        lease: { $ref: '#/components/schemas/Lease' }
+        kind: { type: string, enum: [message, report] }
+        text: { type: string }
+        message_id: { type: string, format: uuid }
+        task_id: { $ref: '#/components/schemas/TaskID' }
+        project_id: { type: string, format: uuid }
+        attempt: { type: integer, minimum: 1 }
+    DeviceID:
+      type: string
+      pattern: '^d-[0-9a-f]{32}$'
+    DeviceName:
+      type: string
+      minLength: 1
+      maxLength: 128
+      description: 非空白，且不含控制字符
+    PlatformPart:
+      type: string
+      pattern: '^[a-z0-9]{1,32}$'
+    PairingCode:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{24}$'
+    Agents:
+      type: array
+      maxItems: 2
+      description: 每个 Agent ID 最多出现一次
+      items:
+        $ref: '#/components/schemas/Agent'
+    Agent:
+      type: object
+      additionalProperties: false
+      required: [id, version, status, capabilities]
+      properties:
+        id: { type: string, enum: [codex, dsh] }
+        version:
+          type: string
+          maxLength: 64
+          description: 规范化版本。未识别时为空字符串。
+        status:
+          type: string
+          enum: [supported, missing, unsupported, probe_failed]
+          description: supported 表示识别到输入、最终回复和会话续接能力
+        capabilities:
+          type: object
+          additionalProperties: false
+          required: [prompt, final_reply, resume]
+          properties:
+            prompt: { type: boolean }
+            final_reply: { type: boolean }
+            resume: { type: boolean }
+    Device:
+      type: object
+      required: [id, name, hostname, os, arch, registered_at, last_seen_at, probed_at, revoked_at, online, agents]
+      properties:
+        id: { $ref: '#/components/schemas/DeviceID' }
+        name: { $ref: '#/components/schemas/DeviceName' }
+        hostname: { $ref: '#/components/schemas/DeviceName' }
+        os: { $ref: '#/components/schemas/PlatformPart' }
+        arch: { $ref: '#/components/schemas/PlatformPart' }
+        registered_at: { type: string, format: date-time }
+        last_seen_at:
+          type: [string, 'null']
+          format: date-time
+          description: 最近一次心跳的 Hub 记录时间
+        probed_at:
+          type: [string, 'null']
+          format: date-time
+          description: 最近一次清单上报的 Hub 记录时间
+        revoked_at: { type: [string, 'null'], format: date-time }
+        online:
+          type: boolean
+          description: 设备尚未撤销且最近一次心跳距当前少于 90 秒
+        agents: { $ref: '#/components/schemas/Agents' }
