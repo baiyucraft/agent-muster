@@ -6,6 +6,12 @@
 
 所有分析必须先给出方案，然后再让我确认是否按方案实现，不要擅自修改。
 
+## 开发与交付
+
+开发、Review、提交和推送前使用 [agent-muster-develop](.agents/skills/agent-muster-develop/SKILL.md)。提交前审查最终暂存区，推送前审查每个目标引用的待推提交。在当前授权范围内修复问题并复验。
+
+在仓库根目录运行 `pnpm check`，统一执行 Go、ESLint、TypeScript、插件与工具测试和 Wiki／Skill 检查。自动修复按明确文件运行，完成后审查差异。工具前置条件、候选 Go 注释检查和集成验证见[验证与测试](.wiki/02-开发指南/01-验证与测试.md#工程检查入口)。
+
 # 目录规范
 
 - 项目总索引：`.wiki/INDEX.md`。

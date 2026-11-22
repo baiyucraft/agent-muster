@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Muster 开发规范"
+  short_description: "落实 Agent Muster 开发规范、代码审查与提交推送前检查"
+  default_prompt: "用 $agent-muster-develop 检查当前变更，修复授权范围内的问题并验证最终候选。"

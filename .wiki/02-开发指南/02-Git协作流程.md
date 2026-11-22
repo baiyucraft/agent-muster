@@ -1,7 +1,7 @@
 ---
 title: Git 协作流程
 description: 工作区管理、提交与推送授权，以及变更交付记录
-updated: 2026-11-19
+updated: 2026-11-22
 owner: project
 ---
 
@@ -20,6 +20,14 @@ owner: project
 - 提交、推送及创建或合并 Pull Request 分别按当前任务授权执行。提交前检查暂存范围，提交说明写明变更意图。
 - 推送前核对目标远端和分支。出现冲突、分叉或远端拒绝时，先确认原因、最新引用与授权范围，再决定如何继续。
 - 交付记录包含变更范围与验证结果。若已提交，记录提交 SHA。若已推送，核对远端实际引用。若创建了 Pull Request，附上链接。
+
+## 本地检查
+
+在仓库根目录用 `pnpm install --frozen-lockfile` 安装开发依赖，再运行 `pnpm check` 检查 Go、ESLint、TypeScript、插件、工程工具和文档。按候选另跑 Go 注释检查。命令的工具前置条件和集成测试入口见[验证与测试](01-验证与测试.md#工程检查入口)。
+
+- 提交时 Review 最终暂存内容，修复前保护部分暂存和无关改动，提交后核对提交树。[提交前流程](../../.agents/skills/agent-muster-develop/references/commit.md)
+- 推送时 Review 每个目标引用的累计差异及待推历史，推送已审查的 SHA 并回读远端。发现已提交代码需要修复时，按授权建立新候选并复验。[推送前流程](../../.agents/skills/agent-muster-develop/references/push.md)
+- 由开发规范 Skill 调用检查工具，核实行为和注释语义。[Review 与交付流程](../../.agents/skills/agent-muster-develop/references/git-delivery.md)
 
 ## Muster 管理的项目交付
 

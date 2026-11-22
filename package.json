@@ -4,6 +4,25 @@
   "packageManager": "pnpm@12.3.4",
   "scripts": {
     "build": "pnpm -r run build",
-    "dev:web": "pnpm --filter @agent-muster/web run dev"
+    "check": "pnpm run lint && pnpm -r typecheck && pnpm run test:tooling:js && pnpm --filter muster-dsh run build && pnpm --filter muster-dsh run test && pnpm run check:go && pnpm run docs:check",
+    "check:go": "go run -mod=readonly ./scripts/check-go",
+    "dev:web": "pnpm --filter @agent-muster/web run dev",
+    "docs:check": "node scripts/check-docs.mjs",
+    "lint": "eslint eslint.config.mjs scripts tests/tooling web/src web/vite.config.ts cmd/muster-daemon/frontend/src cmd/muster-daemon/frontend/vite.config.ts plugins/muster-dsh/src plugins/muster-dsh/test",
+    "lint:fix": "pnpm run lint --fix",
+    "lint:go-docs": "go run ./scripts/go-docs",
+    "test:tooling": "pnpm run test:tooling:js && go test ./scripts/go-docs",
+    "test:tooling:js": "node --test tests/tooling/*.test.mjs"
+  },
+  "devDependencies": {
+    "@typescript-eslint/parser": "^8.73.0",
+    "comment-parser": "1.4.9",
+    "eslint": "^10.15.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "github-slugger": "^2.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "unified": "^11.0.5",
+    "yaml": "^2.9.1"
   }
 }
