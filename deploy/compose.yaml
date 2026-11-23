@@ -1,0 +1,56 @@
+name: agent-muster
+
+services:
+  hub:
+    build:
+      context: ..
+      dockerfile: deploy/Hub.Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${MUSTER_BIND_ADDRESS:-0.0.0.0}:${MUSTER_HTTP_PORT:-13011}:13011"
+    environment:
+      MUSTER_DATABASE_URL: ${MUSTER_DATABASE_URL:-}
+      MUSTER_ADMIN_TOKEN: ${MUSTER_ADMIN_TOKEN:?请设置 MUSTER_ADMIN_TOKEN}
+      MUSTER_DSH_PLUGIN_TOKEN: ${MUSTER_DSH_PLUGIN_TOKEN:?请设置 MUSTER_DSH_PLUGIN_TOKEN}
+      MUSTER_FEISHU_APP_ID: ${MUSTER_FEISHU_APP_ID:-}
+      MUSTER_FEISHU_APP_SECRET: ${MUSTER_FEISHU_APP_SECRET:-}
+      MUSTER_FEISHU_OPEN_ID: ${MUSTER_FEISHU_OPEN_ID:-}
+      MUSTER_RTC_STUN_URLS: ${MUSTER_RTC_STUN_URLS-stun:stun.l.google.com:19302}
+      MUSTER_RTC_TURN_URLS: ${MUSTER_RTC_TURN_URLS:-}
+      MUSTER_RTC_TURN_REST_SECRET: ${MUSTER_RTC_TURN_REST_SECRET:-}
+      MUSTER_RTC_TURN_DEVICE_IDS: ${MUSTER_RTC_TURN_DEVICE_IDS:-}
+      MUSTER_RTC_TURN_USERNAME: ${MUSTER_RTC_TURN_USERNAME:-}
+      MUSTER_RTC_TURN_CREDENTIAL: ${MUSTER_RTC_TURN_CREDENTIAL:-}
+      MUSTER_RTC_KEY_TRANSFER_ID: ${MUSTER_RTC_KEY_TRANSFER_ID:-}
+      MUSTER_RTC_DIAGNOSTIC_TRANSFER_ID: ${MUSTER_RTC_DIAGNOSTIC_TRANSFER_ID:-}
+      MUSTER_RTC_DIAGNOSTIC_PORT_MAPPING: ${MUSTER_RTC_DIAGNOSTIC_PORT_MAPPING:-0}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:13011/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  dsh:
+    build:
+      context: ..
+      dockerfile: deploy/DSH.Dockerfile
+    init: true
+    restart: unless-stopped
+    depends_on:
+      hub:
+        condition: service_healthy
+    environment:
+      MUSTER_DSH_HUB_URL: http://hub:13011
+      MUSTER_DSH_PLUGIN_TOKEN: ${MUSTER_DSH_PLUGIN_TOKEN:?请设置 MUSTER_DSH_PLUGIN_TOKEN}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    volumes:
+      - dsh_data:/var/lib/muster/dsh
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('node:net').connect(3080, '127.0.0.1').on('connect', function () { this.end() }).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  dsh_data:

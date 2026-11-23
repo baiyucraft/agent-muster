@@ -1,0 +1,11 @@
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!web/package.json
+!cmd/muster-daemon/frontend/package.json
+!plugins/muster-dsh/
+!deploy/start-dsh.sh
+**/node_modules/
+**/dist/
+**/.env*

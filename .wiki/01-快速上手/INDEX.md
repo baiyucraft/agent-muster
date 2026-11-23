@@ -7,6 +7,8 @@ owner: project
 
 # 快速上手
 
+在 Linux 服务器安装和维护中心服务，见 [Docker Compose 自部署](01-Docker-Compose部署.md)。
+
 ## 本地构建与运行
 
 从仓库根目录运行。开发环境使用 Go 1.26、Node.js 22.23.2 和 pnpm 12.3.4。编译和检查健康接口只需要本机工具链。

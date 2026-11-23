@@ -1,0 +1,15 @@
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!web/
+!ui/
+!plugins/muster-dsh/package.json
+!cmd/muster-daemon/frontend/package.json
+!go.mod
+!go.sum
+!cmd/muster-hub/
+!internal/
+**/node_modules/
+**/dist/
+**/.env*

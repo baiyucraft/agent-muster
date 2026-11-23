@@ -1,0 +1,25 @@
+services:
+  hub:
+    environment:
+      MUSTER_DATABASE_URL: postgresql://muster:${MUSTER_POSTGRES_PASSWORD:?请设置 MUSTER_POSTGRES_PASSWORD}@postgres:5432/muster
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: muster
+      POSTGRES_DB: muster
+      POSTGRES_PASSWORD: ${MUSTER_POSTGRES_PASSWORD:?请设置 MUSTER_POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "muster", "-d", "muster"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres_data:
