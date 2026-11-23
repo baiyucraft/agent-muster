@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/baiyucraft/agent-muster/internal/artifact"
 	"github.com/baiyucraft/agent-muster/internal/hub/registry"
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
 	"github.com/baiyucraft/agent-muster/internal/inputreceipt"
@@ -133,6 +134,7 @@ func (store *InventoryStore) ClaimRunWithInputReceipts(ctx context.Context, devi
 		claim.ApprovalSupported = true
 		claim.DiagnosticsSupported = true
 		claim.ReviewDiagnosticsSupported = true
+		claim.ArtifactsSupported = claim.GitPolicy == nil
 		if firstClaim {
 			if err := freezeRunInputs(ctx, tx, claim.TaskID, claim.ID); err != nil {
 				return err
@@ -271,10 +273,23 @@ func readRunState(ctx context.Context, tx pgx.Tx, device, id string) (value runS
 	return value, notFound(err)
 }
 
+// runStarted 只认可首个终态之前收到的启动事件。迟到启动留在审计记录中。
+func runStarted(ctx context.Context, tx pgx.Tx, runID string) (started bool, err error) {
+	err = tx.QueryRow(ctx, `SELECT COALESCE(
+		MIN(sequence) FILTER (WHERE payload->>'kind'='started') <
+		MIN(sequence) FILTER (WHERE payload->>'kind' NOT IN ('started','session')),
+		BOOL_OR(payload->>'kind'='started'),false)
+		FROM muster_run_events WHERE run_id=$1`, runID).Scan(&started)
+	return
+}
+
 // RecordRunEvent 按运行 ID 和递增序号记账，并对规范化后的相同事件去重。
 // 诊断摘要随首个有效终态一同保存。已结束运行收到的有效事件只保留审计记录。
 func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, token [32]byte, id string, sequence int64, event workspace.RunEvent) error {
 	terminal := event.Kind != "started" && event.Kind != "session"
+	if len(event.Artifacts) > 0 && (!acceptsArtifacts(event.Kind) || !artifact.ValidFor(id, event.Artifacts)) {
+		return workspace.ErrInvalidArtifacts
+	}
 	if event.InputReceipt != nil && (!terminal || event.Kind == "stopped") {
 		return workspace.ErrInvalidInputReceipt
 	}
@@ -307,6 +322,9 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 		legacy := run.LegacyEvents && event.Generation == 0 && event.Lease == ""
 		if !legacy && (event.Lease == "" || event.Lease != run.Lease || event.Generation != run.Generation) {
 			return workspace.ErrConflict
+		}
+		if len(event.Artifacts) > 0 && (legacy || run.ManagedGit) {
+			return workspace.ErrInvalidArtifacts
 		}
 		if event.InputReceipt != nil && !run.InputReceiptSupported {
 			return workspace.ErrInvalidInputReceipt
@@ -342,6 +360,9 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 		}
 		if len(event.TransferIDs) == 0 {
 			event.TransferIDs = nil
+		}
+		if len(event.Artifacts) == 0 {
+			event.Artifacts = nil
 		}
 		var previous workspace.RunEvent
 		err = tx.QueryRow(ctx, "SELECT payload FROM muster_run_events WHERE run_id=$1 AND sequence=$2", id, sequence).Scan(&previous)
@@ -388,6 +409,9 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 			sessionID = event.SessionID
 		}
 		if _, err := tx.Exec(ctx, "INSERT INTO muster_run_events(run_id,sequence,payload) VALUES($1,$2,$3)", id, sequence, event); err != nil {
+			return err
+		}
+		if err := recordRunArtifacts(ctx, tx, run, id, device, sequence, event.Artifacts); err != nil {
 			return err
 		}
 		if run.Status != "queued" && run.Status != "running" {
@@ -539,10 +563,7 @@ func updateTaskFromRun(ctx context.Context, tx pgx.Tx, run runState, runID, stat
 		}
 		return reconcileParent(ctx, tx, run.TaskID)
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO muster_deliveries(id,kind,body,task_id)
-		SELECT $1,'report',title || E'\n运行状态: ' || $2 || E'\n' || $3,id FROM muster_tasks
-		WHERE id=$4 ON CONFLICT (id) DO NOTHING`, "report-"+runID, status, outcome, run.TaskID)
-	return err
+	return enqueueTaskReport(ctx, tx, "report-"+runID, run.TaskID, "运行状态", status, outcome)
 }
 
 const (

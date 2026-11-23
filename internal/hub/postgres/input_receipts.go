@@ -97,9 +97,8 @@ func requireStartedForInputReceipt(ctx context.Context, tx pgx.Tx, runID string,
 	if receipt == nil || len(receipt.HandledIDs) == 0 {
 		return nil
 	}
-	var started bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM muster_run_events
-		WHERE run_id=$1 AND payload->>'kind'='started')`, runID).Scan(&started); err != nil {
+	started, err := runStarted(ctx, tx, runID)
+	if err != nil {
 		return err
 	}
 	if !started {

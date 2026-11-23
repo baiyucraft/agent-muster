@@ -308,6 +308,33 @@ paths:
         '429': { description: Hub 已达到全局 32 条或单设备 4 条待处理读取请求 }
         '503': { $ref: '#/components/responses/Unavailable' }
         '504': { description: 执行设备离线或未在时限内响应，包括尚未支持日志读取的设备 }
+  /api/v1/runs/{id}/artifacts/{artifact_id}:
+    parameters:
+      - $ref: '#/components/parameters/RunID'
+      - name: artifact_id
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/ArtifactID' }
+    get:
+      operationId: downloadArtifact
+      security: [{ adminBearer: [] }]
+      description: 从在线设备读取已登记的产物副本并在校验后转发。产物正文保留在设备，Hub 等待本次读取最多 45 秒，每次最多 32 MiB。
+      responses:
+        '200':
+          description: 校验大小与 SHA-256 后的文件附件。
+          headers:
+            Cache-Control: { schema: { type: string, enum: [no-store] } }
+            Content-Disposition: { description: 使用处理过的文件名作为附件保存。, schema: { type: string } }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 该运行没有指定产物，或本地副本已丢失。 }
+        '409': { description: 执行设备离线、已撤销，或当前无法读取产物。 }
+        '429': { description: Hub 已有一项正在处理的产物读取。 }
+        '502': { description: 设备无法读取副本，或副本未通过校验。 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+        '504': { description: 等待设备回应超时。 }
   /api/v1/tasks/{id}/control:
     parameters: [{ $ref: '#/components/parameters/TaskID' }]
     post:
@@ -534,6 +561,9 @@ paths:
                   diagnostics_supported:
                     type: boolean
                     description: 为 true 时设备可随本轮终态上报诊断摘要。字段缺省视为未启用。
+                  artifacts_supported:
+                    type: boolean
+                    description: 为 true 时，无托管 Git 策略的轮次可上报设备产物。字段缺省视为未启用。
                   review_diagnostics_supported:
                     type: boolean
                     description: 为 true 时设备可随终态为独立 Review 上报候选、用量与设备日志引用。字段缺省视为未启用。
@@ -578,6 +608,48 @@ paths:
         '204': { description: 轮询期间没有待执行的运行 }
         '400': { description: 请求体必须为空 }
         '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/artifact-reads:
+    parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+    get:
+      operationId: listDeviceArtifactReads
+      security: [{ deviceBearer: [] }]
+      description: 查询此设备需要响应的一项管理员产物读取请求。
+      responses:
+        '200':
+          description: 待响应的产物读取请求。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, run_id, artifact_id]
+                properties:
+                  id: { $ref: '#/components/schemas/ArtifactReadID' }
+                  run_id: { $ref: '#/components/schemas/RunID' }
+                  artifact_id: { $ref: '#/components/schemas/ArtifactID' }
+        '204': { description: 此设备当前没有待读取请求。 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/artifact-reads/{request_id}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceID'
+      - { name: request_id, in: path, required: true, schema: { $ref: '#/components/schemas/ArtifactReadID' } }
+      - { name: status, in: query, required: true, schema: { type: string, enum: [available, missing, failed] } }
+    put:
+      operationId: submitDeviceArtifactRead
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        description: available 时提交最多 32 MiB 的产物正文。missing 或 failed 时请求体为空。
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '204': { description: Hub 已转交读取结果。内容大小或摘要不符时，管理员请求返回 502。 }
+        '400': { description: 读取状态或正文无效。 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 读取请求未知、已结束或归属其他设备。 }
+        '413': { description: 产物正文超过大小上限。 }
+        '429': { description: 同一读取请求已有回执上传在处理。 }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/devices/{device_id}/runs/{id}/control:
     parameters:
@@ -649,6 +721,11 @@ paths:
                 git_verification:
                   description: 托管 Git 任务的验证结果。completed 事件须提供已通过的回执。
                   $ref: '#/components/schemas/GitVerification'
+                artifacts:
+                  type: array
+                  maxItems: 8
+                  description: 本轮登记的产物副本元数据。支持 completed、failed、interrupted、stopped、approval_requested 和 waiting 事件。
+                  items: { $ref: '#/components/schemas/ArtifactManifest' }
                 input_receipt:
                   description: 支持输入回执的轮次可提交此字段。本轮有待确认输入时，completed 必须覆盖领取的全部输入 ID。waiting、approval_requested、failed 和 interrupted 可确认部分输入。
                   $ref: '#/components/schemas/InputReceipt'
@@ -1470,6 +1547,26 @@ components:
           description: 本轮实际处理过的输入 ID。每个 ID 都必须属于本轮领取的输入集合。
           $ref: '#/components/schemas/RunInputIDs'
     TransferKind: { type: string, enum: [prompt, file, message, result] }
+    ArtifactID: { type: string, pattern: '^[0-9a-f]{64}$' }
+    ArtifactReadID: { type: string, pattern: '^artifact-[0-9a-f]{32}$' }
+    ArtifactManifest:
+      type: object
+      required: [id, path, sha256, size]
+      properties:
+        id: { $ref: '#/components/schemas/ArtifactID' }
+        path: { type: string, minLength: 1, maxLength: 512, description: 工作目录内以斜杠分隔的相对文件路径。UTF-8 编码不超过 512 字节。 }
+        sha256: { $ref: '#/components/schemas/SHA256' }
+        size: { type: integer, format: int64, minimum: 0, maximum: 33554432 }
+    Artifact:
+      allOf:
+        - $ref: '#/components/schemas/ArtifactManifest'
+        - type: object
+          required: [task_id, run_id, device_id, created_at]
+          properties:
+            task_id: { $ref: '#/components/schemas/TaskID' }
+            run_id: { $ref: '#/components/schemas/RunID' }
+            device_id: { $ref: '#/components/schemas/DeviceID' }
+            created_at: { type: string, format: date-time }
     RunLease:
       type: object
       additionalProperties: false
@@ -1907,6 +2004,7 @@ components:
         children: { type: array, items: { $ref: '#/components/schemas/Task' } }
         dependencies: { type: array, items: { $ref: '#/components/schemas/Dependency' } }
         transfers: { type: array, items: { $ref: '#/components/schemas/Transfer' } }
+        artifacts: { type: array, items: { $ref: '#/components/schemas/Artifact' } }
         inputs: { type: array, items: { $ref: '#/components/schemas/TaskInput' } }
         waited_transfers: { type: array, items: { $ref: '#/components/schemas/WaitedTransfer' } }
     Workspace:

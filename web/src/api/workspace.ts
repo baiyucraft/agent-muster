@@ -158,6 +158,17 @@ export type Transfer = {
 
 /** 任务依赖的代次与完成状态，代次用于区分不同等待轮次。 */
 export type Dependency = { task_id: string; depends_on_task_id: string; generation: number; status: string; active?: boolean }
+/** 轮次交付的设备本地文件快照。路径相对工作目录，大小以字节计。 */
+export type Artifact = {
+  id: string
+  path: string
+  sha256: string
+  size: number
+  task_id: string
+  run_id: string
+  device_id: string
+  created_at: string
+}
 /** 关联到任务的输入记录，包括按文件分开的交接材料。旧记录可能没有输入回执。 */
 export type TaskInput = {
   id: string
@@ -208,7 +219,7 @@ export function latestApproval(candidate: Approval, known?: Approval): Approval 
 
 /** 主对话和看板的同一版本快照，cursor 用于后续 SSE 订阅。 */
 export type Workspace = { cursor: number; messages: Message[]; tasks: Task[]; projects: Project[]; directories: Directory[]; approvals: Approval[] }
-/** 任务详情快照，包含执行、输入、子任务、依赖和交接记录。 */
+/** 任务详情快照，包含执行、输入、子任务、依赖、交接记录和设备产物。 */
 export type TaskDetail = {
   task: Task
   runs: Run[]
@@ -219,6 +230,7 @@ export type TaskDetail = {
   inputs: TaskInput[]
   waited_transfers: WaitedTransfer[]
   approvals: Approval[]
+  artifacts: Artifact[]
 }
 
 /** 一条用户消息的 UTF-8 字节上限。 */
@@ -269,8 +281,24 @@ export async function readTask(token: string, id: string, signal: AbortSignal): 
   return {
     ...detail, runs: detail.runs ?? [], messages: detail.messages ?? [], children: detail.children ?? [],
     dependencies: detail.dependencies ?? [], transfers: detail.transfers ?? [],
-    inputs: detail.inputs ?? [], waited_transfers: detail.waited_transfers ?? [], approvals: detail.approvals ?? [],
+    inputs: detail.inputs ?? [], waited_transfers: detail.waited_transfers ?? [], approvals: detail.approvals ?? [], artifacts: detail.artifacts ?? [],
   }
+}
+
+/**
+ * 通过当前管理员会话取回设备上已登记的产物副本。
+ * @param token 当前管理员会话的令牌。
+ * @param artifact 详情快照中的产物身份和大小。
+ * @param signal 可取消请求及响应读取。
+ * @returns Hub 从执行设备取得并验证的文件内容。
+ * @throws 设备离线、内容不可用、读取超时或响应大小不一致时拒绝。
+ */
+export async function readArtifact(token: string, artifact: Artifact, signal: AbortSignal): Promise<Blob> {
+  const path = `/api/v1/runs/${encodeURIComponent(artifact.run_id)}/artifacts/${encodeURIComponent(artifact.id)}`
+  const response = await request(token, path, { signal }, 60_000)
+  const content = await response.blob()
+  if (content.size !== artifact.size) throw new Error('收到的产物大小与登记记录不一致。')
+  return content
 }
 
 /**

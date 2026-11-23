@@ -15,7 +15,7 @@ import (
 )
 
 func (worker *Worker) pruneRunLogs(ctx context.Context, cutoff time.Time) error {
-	logs, err := openRunLogDirectory(filepath.Join(worker.root, "logs"))
+	logs, err := openLocalDirectory(filepath.Join(worker.root, "logs"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
@@ -59,7 +59,7 @@ func (worker *Worker) pruneRunLogs(ctx context.Context, cutoff time.Time) error 
 }
 
 func pruneRunLogDirectory(logs *os.File, runID string, cutoff time.Time) error {
-	run, err := openLogChild(logs, runID, true, 0)
+	run, err := openLocalChild(logs, runID, true, 0, localShareReadWrite)
 	if err != nil {
 		return err
 	}
@@ -76,7 +76,7 @@ func pruneRunLogDirectory(logs *os.File, runID string, cutoff time.Time) error {
 		if !runreport.IsLogInvocation(name) {
 			continue
 		}
-		invocation, err := openLogChild(run, name, true, 0)
+		invocation, err := openLocalChild(run, name, true, 0, localShareReadWrite)
 		if err != nil {
 			pruneErr = errors.Join(pruneErr, err)
 			continue
@@ -91,7 +91,7 @@ func pruneRunLogDirectory(logs *os.File, runID string, cutoff time.Time) error {
 
 // deleteExpiredLog 按打开的文件句柄检查时间和删除，避免检查路径后被替换。
 func deleteExpiredLog(invocation *os.File, name string, cutoff time.Time) error {
-	file, err := openLogChild(invocation, name, false, windows.DELETE)
+	file, err := openLocalChild(invocation, name, false, windows.DELETE, localShareReadWrite)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}

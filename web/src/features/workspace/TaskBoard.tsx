@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { AdminTokenError, readDevices } from '../../api/devices'
-import { latestApproval, readTask, type Approval, type InvocationDiagnostics, type Run, type RunReviewAttempt, type Task, type TaskDetail, type TaskInput, type Transfer } from '../../api/workspace'
+import { useEffect, useRef, useState } from 'react'
+import { AdminTokenError, HubRequestError, readDevices } from '../../api/devices'
+import { latestApproval, readArtifact, readTask, type Approval, type Artifact, type InvocationDiagnostics, type Run, type RunReviewAttempt, type Task, type TaskDetail, type TaskInput, type Transfer } from '../../api/workspace'
 import { messageFor } from '../../useWorkspace'
 import { ApprovalCard, type ApprovalActions } from './ApprovalCard'
 import { MessageItem, Time } from './Conversation'
@@ -294,6 +294,7 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
             <p>第 {wait.generation} 次等待{wait.received_at && <> · <Time value={wait.received_at} /></>}</p>
           </article>)}
         </section>}
+        {detail.artifacts.length > 0 && <TaskArtifacts token={token} artifacts={detail.artifacts} deviceNames={deviceNames} onLock={onLock} />}
         {detail.transfers.length > 0 && <details className="task-detail-panel related-messages">
           <summary className="task-section-title">产物交接<span>{detail.transfers.length}</span></summary>
           <div className="transfer-list">{detail.transfers.map((transfer) => <article className="transfer-row" key={transfer.id}>
@@ -307,6 +308,77 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
         </details>}
         {relatedMessages && relatedMessages.length > 0 && <section className="task-detail-panel related-messages" aria-labelledby="related-heading"><h2 id="related-heading">关联对话</h2>{relatedMessages.map((message) => <MessageItem key={message.id} message={message} task={task} />)}</section>}
       </div>}
+    </section>
+  )
+}
+
+const artifactErrors: Partial<Record<number, string>> = {
+  404: '设备上找不到该产物。',
+  409: '执行设备暂不可用，请确认设备在线。',
+  429: '有一项产物正在下载，请稍后重试。',
+  502: '设备无法读取产物，或文件未通过校验。',
+  504: '设备读取超时，请重试。',
+}
+
+/**
+ * 列出已登记产物，点击后以当前会话请求设备副本。离开详情时取消请求。
+ * @param props 产物快照、设备名称和管理员会话凭据及锁定回调。
+ * @returns 带下载操作和逐项错误反馈的产物列表。
+ */
+function TaskArtifacts({ token, artifacts, deviceNames, onLock }: {
+  token: string
+  artifacts: Artifact[]
+  deviceNames: Map<string, string>
+  onLock: (reason: string) => void
+}) {
+  const controllerRef = useRef<AbortController | null>(null)
+  const [active, setActive] = useState('')
+  const [failure, setFailure] = useState<{ id: string; message: string }>()
+  useEffect(() => () => controllerRef.current?.abort(), [])
+
+  async function download(artifact: Artifact) {
+    if (controllerRef.current) return
+    const controller = new AbortController()
+    controllerRef.current = controller
+    setActive(artifact.id)
+    setFailure(undefined)
+    try {
+      const body = await readArtifact(token, artifact, controller.signal)
+      if (controller.signal.aborted) return
+      const url = URL.createObjectURL(body)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = artifact.path.split('/').at(-1) || 'artifact'
+      link.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000)
+    } catch (error) {
+      if (controller.signal.aborted) return
+      if (error instanceof AdminTokenError) onLock(error.message)
+      else setFailure({ id: artifact.id, message: (error instanceof HubRequestError && artifactErrors[error.status]) || messageFor(error) })
+    } finally {
+      controllerRef.current = null
+      if (!controller.signal.aborted) setActive('')
+    }
+  }
+
+  return (
+    <section className="task-detail-panel" aria-labelledby="artifact-heading">
+      <h2 id="artifact-heading">任务产物</h2>
+      <ul className="artifact-list">
+        {artifacts.map((artifact) => (
+          <li className="artifact-row" key={artifact.id}>
+            <div className="artifact-meta">
+              <strong>{artifact.path}</strong>
+              <span>{formatBytes(artifact.size)} · {deviceNames.get(artifact.device_id) ?? artifact.device_id}</span>
+              <Time value={artifact.created_at} />
+            </div>
+            <button type="button" className="outline-button" aria-label={`下载 ${artifact.path}`} disabled={Boolean(active)} onClick={() => void download(artifact)}>
+              {active === artifact.id ? '下载中…' : '下载'}
+            </button>
+            {failure?.id === artifact.id && <p className="artifact-error" role="alert">{failure.message}</p>}
+          </li>
+        ))}
+      </ul>
     </section>
   )
 }

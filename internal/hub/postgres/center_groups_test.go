@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/baiyucraft/agent-muster/internal/approval"
+	"github.com/baiyucraft/agent-muster/internal/artifact"
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
 )
 
@@ -88,8 +89,11 @@ func TestCenterTaskGroupPersistsPlanAndReportsOnce(t *testing.T) {
 	if resumed.ID == homeRun.ID || resumed.SessionID != "home-native" {
 		t.Fatalf("前置步骤未在原生会话续接: %+v", resumed)
 	}
+	index := makeTestArtifact(resumed.ID, "文档/索引.csv")
 	checkNotification(t, recordTaskControlEvent(ctx, store, "home", home, resumed, 1,
-		workspace.RunEvent{Kind: "completed", Text: "已生成 CSV 索引"}))
+		workspace.RunEvent{Kind: "started"}))
+	checkNotification(t, recordTaskControlEvent(ctx, store, "home", home, resumed, 2,
+		workspace.RunEvent{Kind: "completed", Text: "已生成 CSV 索引", Artifacts: []artifact.Reference{index}}))
 	centerGroupStep(t, readCenterGroup(t, ctx, store, rootID, "queued"), third.Title, "queued")
 
 	store.Close()
@@ -101,17 +105,26 @@ func TestCenterTaskGroupPersistsPlanAndReportsOnce(t *testing.T) {
 		strings.Count(finalRun.Prompt, "已生成 CSV 索引") != 1 || strings.Count(finalRun.Prompt, "已核对版本") != 1 {
 		t.Fatalf("重启后步骤的原始输入或前置结论缺失或重复: %+v", finalRun)
 	}
-	result := workspace.RunEvent{Kind: "completed", Text: "已汇总结论"}
-	checkNotification(t, recordTaskControlEvent(ctx, reopened, "office", office, finalRun, 1, result))
-	checkNotification(t, recordTaskControlEvent(ctx, reopened, "office", office, finalRun, 1, result))
+	summary := makeTestArtifact(finalRun.ID, "说明.md")
+	result := workspace.RunEvent{Kind: "completed", Text: "已汇总结论", Artifacts: []artifact.Reference{summary}}
+	checkNotification(t, recordTaskControlEvent(ctx, reopened, "office", office, finalRun, 1,
+		workspace.RunEvent{Kind: "started"}))
+	checkNotification(t, recordTaskControlEvent(ctx, reopened, "office", office, finalRun, 2, result))
+	checkNotification(t, recordTaskControlEvent(ctx, reopened, "office", office, finalRun, 2, result))
 	finished := readCenterGroup(t, ctx, reopened, rootID, "completed")
 	if !finished.Task.ReportPending || !strings.Contains(finished.Task.Result, "已生成 CSV 索引") ||
 		!strings.Contains(finished.Task.Result, "已汇总结论") {
 		t.Fatalf("任务组汇报缺少已完成步骤的结果: %+v", finished.Task)
 	}
+	firstDetail, err := reopened.TaskDetail(ctx, first.ID)
+	checkNotification(t, err)
+	if len(finished.Artifacts) != 2 || len(firstDetail.Artifacts) != 1 || firstDetail.Artifacts[0].Reference != index {
+		t.Fatalf("汇总产物未完整登记或错归步骤: %+v / %+v", finished.Artifacts, firstDetail.Artifacts)
+	}
 	report, err := reopened.ClaimDelivery(ctx)
 	checkNotification(t, err)
-	if report.Kind != "report" || report.TaskID != rootID || !strings.Contains(report.Text, "已核对版本") {
+	if report.Kind != "report" || report.TaskID != rootID || !strings.Contains(report.Text, "已核对版本") ||
+		!strings.Contains(report.Text, "home · "+index.Path) || !strings.Contains(report.Text, "office · "+summary.Path) {
 		t.Fatalf("领取到错误的中心汇报: %+v", report)
 	}
 	completion := workspace.Completion{Lease: report.Lease, Status: "handled", Text: "资料处理完毕。"}

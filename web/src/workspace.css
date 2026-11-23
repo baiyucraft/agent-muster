@@ -561,6 +561,12 @@ select {
 .request-error { display: flex; align-items: center; gap: 14px; margin: 0 0 14px; color: var(--red); font-size: 14px; }
 
 .transfer-list { display: grid; }
+.artifact-list { display: grid; margin: 9px 0 0; padding: 0; list-style: none; }
+.artifact-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px 12px; padding: 11px 0; border-top: 1px solid var(--border); }
+.artifact-row:last-child { padding-bottom: 0; }
+.artifact-meta { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.artifact-meta span, .artifact-meta time { color: var(--muted); font-size: var(--text-small); }
+.artifact-error { grid-column: 1 / -1; margin: 0; color: var(--red); overflow-wrap: anywhere; }
 .transfer-row { min-width: 0; display: grid; grid-template-columns: minmax(150px, 1.3fr) minmax(150px, 1fr) auto; align-items: center; gap: 9px 16px; border-top: 1px solid var(--border); padding: 13px 0; font-size: 12px; }
 .transfer-file { min-width: 0; display: grid; gap: 4px; }
 .transfer-file strong, .transfer-hash { overflow-wrap: anywhere; }

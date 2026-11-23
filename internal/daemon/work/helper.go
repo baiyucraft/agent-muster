@@ -58,13 +58,18 @@ func (service *localHelper) setRun(ctx context.Context, run control.Run, directo
 		return nil, nil, err
 	}
 	capability := hex.EncodeToString(secret[:])
+	runContext, cancel := context.WithCancel(ctx)
+	active := &activeRun{run: run, directory: directory, capability: capability, ctx: runContext}
 	service.mu.Lock()
-	service.active = &activeRun{run: run, directory: directory, capability: capability, ctx: ctx}
+	service.active = active
 	service.mu.Unlock()
 	return []string{"MUSTER_PIPE=" + service.address, "MUSTER_RUN_CAPABILITY=" + capability}, func() {
 		service.mu.Lock()
-		service.active = nil
+		if service.active == active {
+			service.active = nil
+		}
 		service.mu.Unlock()
+		cancel()
 	}, nil
 }
 
@@ -87,6 +92,11 @@ func (service *localHelper) handle(ctx context.Context, request helper.Request) 
 	switch request.Command {
 	case "status":
 		return map[string]any{"run_id": run.ID, "task_id": run.TaskID, "root_task_id": run.RootTaskID, "project_id": run.ProjectID, "binding_id": run.BindingID, "parent_device_id": run.ParentDeviceID, "attachments": run.Attachments, "delegation_targets": run.DelegationTargets, "dependency_results": run.DependencyResults}, nil
+	case "artifact":
+		if !allowsArtifacts(run) {
+			return nil, errors.New("本轮未启用普通目录产物登记")
+		}
+		return service.peer.worker.registerArtifact(ctx, run.ID, active.directory, request.File)
 	case "delegate", "spawn":
 		if !helperKey.MatchString(request.Key) || request.Prompt == "" || request.Title == "" || request.TargetDeviceID == "" || request.BindingID == "" {
 			return nil, errors.New("delegate 需要使用稳定 key、任务标题、提示词、目标设备与绑定")

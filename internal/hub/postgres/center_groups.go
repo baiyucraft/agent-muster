@@ -200,10 +200,7 @@ func reconcileCenterTaskGroup(ctx context.Context, tx pgx.Tx, rootID string) err
 // enqueueCenterGroupReport 为中心聚合结果创建固定的汇报项，重复结算沿用同一标识。
 func enqueueCenterGroupReport(ctx context.Context, tx pgx.Tx, rootID, status, result string) error {
 	reportID := "report-run-" + stableUUID(rootID+"\x00center-report")
-	_, err := tx.Exec(ctx, `INSERT INTO muster_deliveries(id,kind,body,task_id)
-		SELECT $1,'report',title || E'\n任务状态: ' || $2 || E'\n' || $3,id FROM muster_tasks
-		WHERE id=$4 ON CONFLICT (id) DO NOTHING`, reportID, status, result, rootID)
-	return err
+	return enqueueTaskReport(ctx, tx, reportID, rootID, "任务状态", status, result)
 }
 
 // boundedGroupSummary 限制汇报和后续步骤携带的结果字节数，保持合法 UTF-8。

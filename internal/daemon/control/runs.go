@@ -12,6 +12,7 @@ import (
 	"strconv"
 
 	"github.com/baiyucraft/agent-muster/internal/approval"
+	"github.com/baiyucraft/agent-muster/internal/artifact"
 	"github.com/baiyucraft/agent-muster/internal/gitdelivery"
 	"github.com/baiyucraft/agent-muster/internal/inputreceipt"
 	"github.com/baiyucraft/agent-muster/internal/runreport"
@@ -56,6 +57,7 @@ type Run struct {
 	InputMessages              map[string]string   `json:"input_messages,omitempty"` // 续接带回的未确认消息，按输入 ID 索引。
 	DelegationTargets          []DelegationTarget  `json:"delegation_targets,omitempty"`
 	ApprovalSupported          bool                `json:"approval_supported,omitempty"`
+	ArtifactsSupported         bool                `json:"artifacts_supported,omitempty"`          // Hub 接受本轮的本地产物引用。
 	ControlSupported           bool                `json:"control_supported,omitempty"`            // Hub 可向该运行下发停止指令。
 	DiagnosticsSupported       bool                `json:"diagnostics_supported,omitempty"`        // Hub 接受终态诊断字段。
 	ReviewDiagnosticsSupported bool                `json:"review_diagnostics_supported,omitempty"` // Hub 接受独立 Review 诊断及日志引用。
@@ -127,6 +129,7 @@ type RunEvent struct {
 	Diagnostics     *runreport.Diagnostics    `json:"diagnostics,omitempty"`
 	GitVerification *gitdelivery.Verification `json:"git_verification,omitempty"`
 	InputReceipt    *inputreceipt.Receipt     `json:"input_receipt,omitempty"` // 本轮确认处理的输入。
+	Artifacts       []artifact.Reference      `json:"artifacts,omitempty"`     // 已在本机保存的文件版本。
 }
 
 // ReportDirectories 向 Hub 上报本设备当前可派发的工作目录清单。

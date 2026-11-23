@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/baiyucraft/agent-muster/internal/artifact"
 	"github.com/baiyucraft/agent-muster/internal/hub/registry"
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
 	"github.com/baiyucraft/agent-muster/internal/inputreceipt"
@@ -41,6 +42,7 @@ var (
 func (s server) registerWorkspace(mux *http.ServeMux, options WorkspaceOptions, adminToken string) {
 	api := workspaceAPI{store: options.Store, token: sha256.Sum256([]byte(options.PluginToken))}
 	logs := runLogAPI{store: options.Store, requests: make(map[string]*pendingRunLog)}
+	artifacts := artifactAPI{store: options.Store}
 	enabled := options.Store != nil && ValidAdminToken(options.PluginToken) && options.PluginToken != adminToken
 	available := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +66,7 @@ func (s server) registerWorkspace(mux *http.ServeMux, options WorkspaceOptions, 
 	admin("GET /api/v1/workspace/usage", api.deviceUsage)
 	admin("GET /api/v1/tasks/{id}", api.task)
 	admin("GET /api/v1/tasks/{id}/runs/{run_id}/logs", logs.read)
+	admin("GET /api/v1/runs/{id}/artifacts/{artifact_id}", artifacts.read)
 	admin("POST /api/v1/tasks/{id}/control", api.controlTask)
 	admin("GET /api/v1/events", api.events)
 	admin("POST /api/v1/approvals/{id}/answer", api.answerApproval)
@@ -78,6 +81,8 @@ func (s server) registerWorkspace(mux *http.ServeMux, options WorkspaceOptions, 
 	device("PUT /api/v1/devices/{device_id}/directories", api.directories)
 	device("GET /api/v1/devices/{device_id}/run-log-requests", logs.list)
 	device("PUT /api/v1/devices/{device_id}/run-log-requests/{request_id}", logs.submit)
+	device("GET /api/v1/devices/{device_id}/artifact-reads", artifacts.list)
+	device("PUT /api/v1/devices/{device_id}/artifact-reads/{request_id}", artifacts.submit)
 	device("PUT /api/v1/devices/{device_id}/peer", api.registerPeer)
 	device("PUT /api/v1/devices/{device_id}/rtc", api.registerRTC)
 	device("PUT /api/v1/devices/{device_id}/rtc/public-key", api.reportRTCPublicKey)
@@ -256,6 +261,10 @@ func (api workspaceAPI) recordEvent(w http.ResponseWriter, r *http.Request, devi
 	}
 	var event workspace.RunEvent
 	if !readJSONLimit(w, r, &event, 256<<10) {
+		return
+	}
+	if !artifact.ValidFor(id, event.Artifacts) {
+		writeError(w, http.StatusBadRequest, "invalid run artifacts")
 		return
 	}
 	if !validText(event.Text, 12000, false) || (event.SessionID != "" && !sessionPattern.MatchString(event.SessionID)) ||
@@ -464,6 +473,8 @@ func workspaceJSON(w http.ResponseWriter, status int, value any, err error) {
 	case errors.Is(err, workspace.ErrInvalidGitPublication):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrInvalidInputReceipt):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, workspace.ErrInvalidArtifacts):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrConflict):
 		writeError(w, http.StatusConflict, "workspace state changed or request conflicts with a saved result")

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/baiyucraft/agent-muster/internal/approval"
+	"github.com/baiyucraft/agent-muster/internal/artifact"
 	"github.com/baiyucraft/agent-muster/internal/gitdelivery"
 	"github.com/baiyucraft/agent-muster/internal/inputreceipt"
 	"github.com/baiyucraft/agent-muster/internal/runreport"
@@ -28,6 +29,9 @@ var ErrInvalidGitPublication = errors.New("invalid Git publication evidence")
 
 // ErrInvalidInputReceipt 表示回执格式、输入归属或必需处理项未通过校验。
 var ErrInvalidInputReceipt = errors.New("invalid input receipt")
+
+// ErrInvalidArtifacts 表示产物引用不属于当前文件交付协议或未通过校验。
+var ErrInvalidArtifacts = errors.New("invalid run artifacts")
 
 // Directory 表示设备登记的执行目录标识与展示名称。
 type Directory struct {
@@ -143,6 +147,7 @@ type RunClaim struct {
 	ApprovalSupported    bool               `json:"approval_supported,omitempty"`
 	ControlSupported     bool               `json:"control_supported,omitempty"`
 	DiagnosticsSupported bool               `json:"diagnostics_supported,omitempty"`
+	ArtifactsSupported   bool               `json:"artifacts_supported,omitempty"` // Hub 接受本轮的本地产物引用。
 	// ReviewDiagnosticsSupported 声明当前 Hub 可接收独立 Review 诊断。
 	ReviewDiagnosticsSupported bool                `json:"review_diagnostics_supported,omitempty"`
 	GitPolicy                  *gitdelivery.Policy `json:"git_policy,omitempty"`
@@ -179,6 +184,7 @@ type RunEvent struct {
 	Diagnostics     *runreport.Diagnostics    `json:"diagnostics,omitempty"`
 	GitVerification *gitdelivery.Verification `json:"git_verification,omitempty"`
 	InputReceipt    *inputreceipt.Receipt     `json:"input_receipt,omitempty"` // 本轮确认处理的输入。
+	Artifacts       []artifact.Reference      `json:"artifacts,omitempty"`     // 已在设备保存的本地快照。
 }
 
 // Approval 记录原生会话提出的请示、首个有效答复及处理时间。
@@ -219,6 +225,16 @@ type Detail struct {
 	Inputs          []TaskInput    `json:"inputs"`
 	WaitedTransfers []TransferWait `json:"waited_transfers"`
 	Approvals       []Approval     `json:"approvals"`
+	Artifacts       []TaskArtifact `json:"artifacts,omitempty"`
+}
+
+// TaskArtifact 是 Hub 确认的设备文件版本。任务、运行及设备由已认证的运行记录确定。
+type TaskArtifact struct {
+	artifact.Reference
+	TaskID    string    `json:"task_id"`
+	RunID     string    `json:"run_id"`
+	DeviceID  string    `json:"device_id"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // TaskInput 记录任务输入的来源、消费状态与关联投递。
@@ -363,6 +379,7 @@ type Store interface {
 	DeviceUsage(context.Context) (DeviceUsage, error)
 	WorkspaceEvents(context.Context, int64) ([]int64, error)
 	TaskDetail(context.Context, string) (Detail, error)
+	Artifact(context.Context, string, string) (TaskArtifact, error)
 	RunLogDevice(context.Context, string, string) (string, error)
 	AuthenticateRunLogDevice(context.Context, string, [32]byte) error
 	ControlTask(context.Context, string, TaskControl) (Task, error)

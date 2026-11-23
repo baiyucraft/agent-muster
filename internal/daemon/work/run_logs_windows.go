@@ -19,13 +19,14 @@ import (
 const (
 	runLogPlatformSupported = true
 	maxLogDirectories       = 256
+	localShareReadWrite     = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE
 )
 
 func readLocalRunLogs(root, runID, invocation string) (runreport.LogResponse, error) {
 	if !logRunID.MatchString(runID) || invocation != "" && !runreport.ValidReviewLogInvocation(invocation) {
 		return runreport.LogResponse{}, fs.ErrInvalid
 	}
-	directory, err := openRunLogDirectory(filepath.Join(root, "logs", runID))
+	directory, err := openLocalDirectory(filepath.Join(root, "logs", runID))
 	if err != nil {
 		return runreport.LogResponse{}, err
 	}
@@ -72,7 +73,7 @@ func runLogResponse(files []runreport.LogFile) runreport.LogResponse {
 }
 
 func readLogInvocation(directory *os.File, name string, remaining int) ([]runreport.LogFile, error) {
-	invocation, err := openLogChild(directory, name, true, 0)
+	invocation, err := openLocalChild(directory, name, true, 0, localShareReadWrite)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -85,7 +86,7 @@ func readLogInvocation(directory *os.File, name string, remaining int) ([]runrep
 		if len(files) == remaining {
 			break
 		}
-		file, err := openLogChild(invocation, stream+".log", false, 0)
+		file, err := openLocalChild(invocation, stream+".log", false, 0, localShareReadWrite)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -129,7 +130,7 @@ func readLogTail(file *os.File, invocation, stream string) (runreport.LogFile, e
 	}, nil
 }
 
-func openRunLogDirectory(path string) (*os.File, error) {
+func openLocalDirectory(path string) (*os.File, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
@@ -143,14 +144,17 @@ func openRunLogDirectory(path string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	handle, err := windows.CreateFile(name, windows.FILE_READ_ATTRIBUTES|windows.FILE_TRAVERSE, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil,
+	handle, err := windows.CreateFile(name, windows.FILE_READ_ATTRIBUTES|windows.FILE_TRAVERSE, localShareReadWrite, nil,
 		windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return nil, err
 	}
 	directory := os.NewFile(uintptr(handle), root)
+	if absolute == root {
+		return directory, nil
+	}
 	for part := range strings.SplitSeq(absolute[len(root):], `\`) {
-		next, err := openLogChild(directory, part, true, 0)
+		next, err := openLocalChild(directory, part, true, 0, localShareReadWrite)
 		_ = directory.Close()
 		if err != nil {
 			return nil, err
@@ -160,7 +164,7 @@ func openRunLogDirectory(path string) (*os.File, error) {
 	return directory, nil
 }
 
-func openLogChild(parent *os.File, name string, directory bool, extraAccess uint32) (*os.File, error) {
+func openLocalChild(parent *os.File, name string, directory bool, extraAccess, share uint32) (*os.File, error) {
 	if !filepath.IsLocal(name) || filepath.Base(name) != name || name == "." || strings.ContainsAny(name, `:/\`) {
 		return nil, fs.ErrInvalid
 	}
@@ -182,7 +186,7 @@ func openLogChild(parent *os.File, name string, directory bool, extraAccess uint
 	// 按父目录句柄打开单一名称，重解析点无法改变读取边界。
 	var handle windows.Handle
 	err = windows.NtCreateFile(&handle, access, &attributes, &windows.IO_STATUS_BLOCK{}, nil, 0,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, windows.FILE_OPEN,
+		share, windows.FILE_OPEN,
 		options|windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_OPEN_REPARSE_POINT, 0, 0)
 	if status, ok := errors.AsType[windows.NTStatus](err); ok {
 		err = status.Errno()

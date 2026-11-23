@@ -46,6 +46,15 @@ CREATE TABLE IF NOT EXISTS run_claims (
 	id TEXT PRIMARY KEY REFERENCES runs(id),
 	data BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS run_artifacts (
+	run_id TEXT NOT NULL REFERENCES runs(id),
+	id TEXT NOT NULL,
+	path TEXT NOT NULL,
+	sha256 TEXT NOT NULL,
+	size INTEGER NOT NULL,
+	body BLOB NOT NULL,
+	PRIMARY KEY (run_id, id)
+);
 CREATE TABLE IF NOT EXISTS input_receipt_original_replies (
 	run_id TEXT PRIMARY KEY REFERENCES runs(id),
 	body BLOB NOT NULL
@@ -156,7 +165,10 @@ func Open(root string) (*Worker, error) {
 		lock.Close()
 		return nil, err
 	}
-	return &Worker{db: db, lock: lock, root: root, wake: make(chan struct{}, 1)}, nil
+	return &Worker{
+		db: db, lock: lock, root: root, wake: make(chan struct{}, 1),
+		artifactRegistration: make(chan struct{}, 1),
+	}, nil
 }
 
 // Close 关闭本机数据库并释放工作区独占锁。
@@ -328,6 +340,11 @@ func (worker *Worker) stageEventWithResult(ctx context.Context, runID string, ev
 	defer tx.Rollback()
 	if event.Kind != "started" && event.Kind != "session" {
 		if err := collectGitReviews(ctx, tx, runID, &event); err != nil {
+			return err
+		}
+		// 在提交终态的事务里冻结登记清单。后到的本机登记会因运行已结束而被拒绝。
+		event.Artifacts, err = collectArtifacts(ctx, tx, runID)
+		if err != nil {
 			return err
 		}
 	}

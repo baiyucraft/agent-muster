@@ -90,6 +90,10 @@ func NewHandler(store registry.Store, adminToken string, web http.Handler, optio
 		} else if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/tasks/") &&
 			strings.HasSuffix(r.URL.Path, "/logs") {
 			timeout = runLogTimeout
+		} else if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/runs/") &&
+			strings.Contains(r.URL.Path, "/artifacts/") || r.Method == http.MethodPut &&
+			strings.HasPrefix(r.URL.Path, "/api/v1/devices/") && strings.Contains(r.URL.Path, "/artifact-reads/") {
+			timeout = artifactReadTimeout
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()

@@ -33,6 +33,8 @@ type Worker struct {
 
 	logMu sync.Mutex
 
+	artifactRegistration chan struct{} // 限制同时读取和提交的产物快照数。
+
 	drainMu sync.Mutex
 	drain   *drainRequest
 }
@@ -171,6 +173,11 @@ func (worker *Worker) run(ctx context.Context, client hub, identity control.Iden
 		}
 		if retention := configuredLogRetention(); retention > 0 {
 			background.Go(func() { worker.runLogRetentionLoop(ctx, retention) })
+		}
+	}
+	if artifactPlatformSupported {
+		if artifactReader, ok := client.(artifactReadClient); ok {
+			background.Go(func() { worker.artifactReadLoop(ctx, artifactReader, identity) })
 		}
 	}
 
@@ -550,6 +557,9 @@ func (worker *Worker) preparePrompt(ctx context.Context, run control.Run, direct
 	}
 	if service != nil && service.peer.enabled() {
 		prompt += collaborationInstructions()
+	}
+	if service != nil && allowsArtifacts(run) {
+		prompt += artifactInstructions
 	}
 	if run.ApprovalSupported {
 		prompt += approvalInstructions

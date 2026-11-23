@@ -89,6 +89,10 @@ func (store *InventoryStore) TaskDetail(ctx context.Context, id string) (detail 
 		if err != nil {
 			return notFound(err)
 		}
+		detail.Artifacts, err = taskArtifacts(ctx, tx, detail.Task)
+		if err != nil {
+			return err
+		}
 		detail.Runs, err = selectRows(ctx, tx, `
 			SELECT r.id,r.task_id,t.directory_id,r.status,r.session_id,r.outcome,r.created_at,r.updated_at,r.generation,r.lease_until,r.diagnostics,r.git_verification,
 			CASE WHEN p.id IS NOT NULL THEN jsonb_build_object('id',p.id,'revision',p.policy_revision,'remote',p.remote,

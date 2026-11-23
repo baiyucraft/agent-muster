@@ -22,7 +22,7 @@ func main() {
 
 func run(args []string, stdin io.Reader, stdout io.Writer) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprintln(stdout, "用法: muster <status|delegate|send|receive|wait> [参数]，使用子命令 -h 查看参数")
+		_, err := fmt.Fprintln(stdout, "用法: muster <status|delegate|send|receive|wait|artifact> [参数]，使用子命令 -h 查看参数")
 		return err
 	}
 	if args[0] == "--version" || args[0] == "-version" {
@@ -53,6 +53,8 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 		flags.StringVar(&request.TargetDeviceID, "device", "", "目标设备 ID")
 	case "receive":
 		flags.StringVar(&request.TransferID, "transfer", "", "本轮接收的投递 ID")
+	case "artifact":
+		flags.StringVar(&request.File, "file", "", "当前工作目录内要登记的相对文件路径")
 	case "wait":
 		flags.Func("task", "等待的子任务 ID，可重复", func(id string) error {
 			request.TaskIDs = append(request.TaskIDs, id)
