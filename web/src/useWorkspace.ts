@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AdminTokenError, HubRequestError } from './api/devices'
-import { readWorkspace, waitForWorkspaceEvent, type Message, type Workspace } from './api/workspace'
+import { latestApproval, readWorkspace, waitForWorkspaceEvent, type Approval, type Message, type Workspace } from './api/workspace'
 
 /**
  * 将请求失败转换为界面可展示的说明。
@@ -33,7 +33,7 @@ function pause(signal: AbortSignal, milliseconds: number): Promise<void> {
  * 管理工作区快照、SSE 重连与主对话消息回填，卸载时关闭请求。
  * @param token 当前管理员会话的令牌。
  * @param onLock Hub 拒绝令牌时通知调用方锁定会话。
- * @returns 工作区快照、流状态、错误以及刷新和接收消息的操作。
+ * @returns 工作区快照、流状态、错误以及刷新和接收 Hub 写入结果的操作。
  */
 export function useWorkspace(token: string, onLock: (reason: string) => void) {
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
@@ -45,6 +45,18 @@ export function useWorkspace(token: string, onLock: (reason: string) => void) {
     setWorkspace((current) => current && !current.messages.some((item) => item.id === message.id)
       ? { ...current, messages: [...current.messages, message] }
       : current)
+    refresh()
+  }, [refresh])
+  const acceptApproval = useCallback((approval: Approval) => {
+    setWorkspace((current) => {
+      if (!current) return current
+      return {
+        ...current,
+        approvals: current.approvals.some((item) => item.id === approval.id)
+          ? current.approvals.map((item) => item.id === approval.id ? latestApproval(approval, item) : item)
+          : [...current.approvals, approval],
+      }
+    })
     refresh()
   }, [refresh])
 
@@ -59,7 +71,15 @@ export function useWorkspace(token: string, onLock: (reason: string) => void) {
           if (cursor === undefined) {
             const snapshot = await readWorkspace(token, signal)
             if (signal.aborted) return
-            setWorkspace(snapshot)
+            setWorkspace((current) => {
+              if (!current?.approvals.length || !snapshot.approvals.length) return snapshot
+              // 快照请求可能先于答复提交发出，保留已经从 Hub 确认的新状态。
+              const confirmed = new Map(current.approvals.map((approval) => [approval.id, approval]))
+              return {
+                ...snapshot,
+                approvals: snapshot.approvals.map((approval) => latestApproval(approval, confirmed.get(approval.id))),
+              }
+            })
             cursor = snapshot.cursor
           }
           setError('')
@@ -85,5 +105,5 @@ export function useWorkspace(token: string, onLock: (reason: string) => void) {
     return () => controller.abort()
   }, [token, onLock, revision])
 
-  return { workspace, streamState, error, refresh, acceptMessage }
+  return { workspace, streamState, error, refresh, acceptMessage, acceptApproval }
 }

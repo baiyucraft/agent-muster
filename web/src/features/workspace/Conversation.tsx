@@ -1,8 +1,9 @@
 import { useEffect, useRef, type FormEvent } from 'react'
 import musterIcon from '../../../../ui/muster-icon.svg'
-import { messageBytes, withinTextLimit, type Message, type Task } from '../../api/workspace'
+import { messageBytes, withinTextLimit, type Approval, type Message, type Task } from '../../api/workspace'
+import { ApprovalCard, type ApprovalActions } from './ApprovalCard'
 
-const messageLabel = { user: '你', reply: '中心助手', report: '任务汇报' }
+const messageLabel = { user: '你', reply: '中心助手', report: '任务汇报', approval: '任务请示' }
 const messageStatus = { accepted: '已受理', handled: '', interrupted: '处理已中断' }
 const timestamp = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
 
@@ -10,7 +11,12 @@ export function Time({ value }: { value: string }) {
   return <time dateTime={value}>{timestamp.format(new Date(value))}</time>
 }
 
-export function MessageItem({ message, task }: { message: Message; task?: Task }) {
+export function MessageItem({ message, task, approval, approvalActions }: {
+  message: Message
+  task?: Task
+  approval?: Approval
+  approvalActions?: ApprovalActions
+}) {
   const status = message.status && messageStatus[message.status]
   return (
     <article className="message" data-kind={message.kind}>
@@ -23,8 +29,14 @@ export function MessageItem({ message, task }: { message: Message; task?: Task }
           <Time value={message.created_at} />
           {status && <span className="message-status" data-status={message.status}>{status}</span>}
         </div>
-        <p className="message-text">{message.text}</p>
-        {message.task_id && <a className="task-link" href={`#board/${message.task_id}`}>{task?.title ?? '查看关联任务'} <span aria-hidden="true">↗</span></a>}
+        {approval && approvalActions ? (
+          <ApprovalCard approval={approval} task={task} actions={approvalActions} />
+        ) : (
+          <>
+            <p className="message-text">{message.text}</p>
+            {message.task_id && <a className="task-link" href={`#board/${message.task_id}`}>{task?.title ?? '查看关联任务'} <span aria-hidden="true">↗</span></a>}
+          </>
+        )}
       </div>
     </article>
   )
@@ -33,6 +45,8 @@ export function MessageItem({ message, task }: { message: Message; task?: Task }
 type ConversationProps = {
   messages?: Message[]
   tasks: Task[]
+  approvals: Approval[]
+  approvalActions: ApprovalActions
   canSend: boolean
   draft: string
   followTask?: Task
@@ -43,11 +57,12 @@ type ConversationProps = {
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
 }
 
-export function Conversation({ messages, tasks, canSend, draft, followTask, sending, sendError, onDraftChange, onClearFollowTask, onSubmit }: ConversationProps) {
+export function Conversation({ messages, tasks, approvals, approvalActions, canSend, draft, followTask, sending, sendError, onDraftChange, onClearFollowTask, onSubmit }: ConversationProps) {
   const composer = useRef<HTMLTextAreaElement>(null)
   const thread = useRef<HTMLDivElement>(null)
   const followLatest = useRef(true)
   const tasksByID = new Map(tasks.map((task) => [task.id, task]))
+  const approvalsByID = new Map(approvals.map((approval) => [approval.id, approval]))
   const validDraft = withinTextLimit(draft, messageBytes)
 
   useEffect(() => {
@@ -68,7 +83,10 @@ export function Conversation({ messages, tasks, canSend, draft, followTask, send
         }}>
           {!messages && <p className="panel-placeholder">正在读取对话…</p>}
           {messages?.length === 0 && <div className="conversation-empty"><img src={musterIcon} alt="" /><h2>交办第一件事</h2></div>}
-          {messages?.map((message) => <MessageItem key={message.id} message={message} task={message.task_id ? tasksByID.get(message.task_id) : undefined} />)}
+          {messages?.map((message) => (
+            <MessageItem key={message.id} message={message} task={message.task_id ? tasksByID.get(message.task_id) : undefined}
+              approval={message.kind === 'approval' ? approvalsByID.get(message.id) : undefined} approvalActions={approvalActions} />
+          ))}
         </div>
 
         <form className="composer" onSubmit={onSubmit}>

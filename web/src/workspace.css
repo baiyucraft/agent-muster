@@ -372,6 +372,7 @@ select {
 .task-status[data-state='failed'] { color: var(--red); background: var(--red-bg); }
 .task-status[data-state='interrupted'] { color: var(--amber); background: var(--amber-bg); }
 .task-status[data-state='waiting'], .task-status[data-state='waiting_dependencies'], .task-status[data-state='waiting_delivery'] { color: var(--amber); background: var(--amber-bg); }
+.task-status[data-state='waiting_reply'], .task-status[data-state='approval_requested'] { color: var(--amber); background: var(--amber-bg); }
 .task-status[data-state='paused'], .task-status[data-state='cancelled'] { color: var(--muted); background: var(--neutral); }
 
 .task-tree-card { min-width: 0; margin-bottom: 9px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--surface); }

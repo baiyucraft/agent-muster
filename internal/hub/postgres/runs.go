@@ -88,6 +88,7 @@ func (store *InventoryStore) ClaimRun(ctx context.Context, device string, token 
 			return err
 		}
 		claim.LeaseUntil = claim.LeaseUntil.UTC()
+		claim.ApprovalSupported = true
 		claim.Attachments, err = selectRows(ctx, tx, "SELECT "+transferColumns+` FROM muster_run_transfers rt
 			JOIN muster_transfers tr ON tr.id=rt.transfer_id WHERE rt.run_id=$1 AND rt.direction='input'
 			ORDER BY tr.kind,tr.id`, scanTransfer, claim.ID)
@@ -162,6 +163,18 @@ func readRunState(ctx context.Context, tx pgx.Tx, device, id string) (value runS
 // RecordRunEvent 按运行 ID 和递增序号记账，并对规范化后的相同事件去重。
 // 已结束运行收到的有效事件只保留审计记录。
 func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, token [32]byte, id string, sequence int64, event workspace.RunEvent) error {
+	if event.Kind == "approval_requested" {
+		if event.Approval == nil || len(event.WaitForTaskIDs)+len(event.TransferIDs) != 0 {
+			return workspace.ErrInvalidApproval
+		}
+		question, err := event.Approval.Normalize()
+		if err != nil {
+			return workspace.ErrInvalidApproval
+		}
+		event.Approval = &question
+	} else if event.Approval != nil {
+		return workspace.ErrInvalidApproval
+	}
 	return store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		if err := authenticateDevice(ctx, tx, device, token); err != nil {
 			return err
@@ -217,6 +230,13 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 			return advanceWorkspace(ctx, tx)
 		}
 		switch event.Kind {
+		case "approval_requested":
+			if legacy {
+				return workspace.ErrConflict
+			}
+			if err := recordApproval(ctx, tx, run, id, sessionID, *event.Approval); err != nil {
+				return err
+			}
 		case "waiting":
 			if sessionID == "" || len(event.WaitForTaskIDs)+len(event.TransferIDs) == 0 || legacy {
 				return workspace.ErrConflict
@@ -241,7 +261,13 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 			WHERE id=$1`, id, status, sessionID, event.Text); err != nil {
 			return err
 		}
-		if run.CurrentRun == id {
+		switch event.Kind {
+		case "approval_requested", "waiting", "completed":
+			if err := finishApproval(ctx, tx, id); err != nil {
+				return err
+			}
+		}
+		if run.CurrentRun == id && event.Kind != "approval_requested" {
 			if err := updateTaskFromRun(ctx, tx, run, id, status, sessionID, event.Text, terminal, len(event.WaitForTaskIDs) > 0); err != nil {
 				return err
 			}

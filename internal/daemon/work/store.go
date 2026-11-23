@@ -313,15 +313,16 @@ func (worker *Worker) stageEventWithResult(ctx context.Context, runID string, ev
 		}
 	}
 	var sequence int64
+	// 请示补写之前保存的原始回执只留在本机，终态事件仍通过同一个 outbox 提交。
 	err = tx.QueryRowContext(ctx, `
 		UPDATE runs SET
 			sequence=sequence+1,
 			session_id=COALESCE(NULLIF(?,''),session_id),
-			state=CASE WHEN ?='session' THEN state WHEN ?='waiting' THEN 'completed' ELSE ? END,
-			text=?
+			state=CASE WHEN ?='session' THEN state WHEN ? IN ('waiting','approval_requested') THEN 'completed' ELSE ? END,
+			text=CASE WHEN ? IN ('approval_requested','interrupted') AND text<>'' THEN text ELSE ? END
 		WHERE id=? AND state IN ('starting','started')
 		RETURNING sequence
-	`, event.SessionID, event.Kind, event.Kind, event.Kind, event.Text, runID).Scan(&sequence)
+	`, event.SessionID, event.Kind, event.Kind, event.Kind, event.Kind, event.Text, runID).Scan(&sequence)
 	if err != nil {
 		return err
 	}

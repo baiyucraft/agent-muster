@@ -1,0 +1,74 @@
+.approval-board {
+  display: grid;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+
+.approval-board h2 { margin: 0; font-size: 15px; }
+
+.approval-card {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-inline-start: 3px solid var(--accent-border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+
+.approval-card[data-status='pending'] { border-inline-start-color: var(--amber); }
+.message-content > .approval-card { margin-top: var(--space-2); }
+
+.approval-meta, .approval-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.approval-status {
+  border-radius: 4px;
+  padding: 2px 6px;
+  color: var(--accent);
+  background: var(--accent-bg);
+  font-size: var(--text-small);
+  font-weight: 650;
+}
+
+.approval-card[data-status='pending'] .approval-status { color: var(--amber); background: var(--amber-bg); }
+.approval-card[data-status='handled'] .approval-status { color: var(--green); background: var(--green-bg); }
+.approval-task, .approval-impact { font-size: var(--text-small); }
+.approval-question, .approval-impact, .approval-answer p, .approval-error { margin: 0; white-space: pre-wrap; }
+.approval-question { font-size: var(--text-body); font-weight: 650; line-height: 1.5; }
+.approval-impact { color: var(--muted); line-height: 1.5; }
+.approval-form { display: grid; gap: var(--space-2); margin-top: var(--space-2); }
+.approval-options > button { max-width: 100%; padding-block: 5px; overflow-wrap: anywhere; text-align: start; }
+
+.approval-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-2);
+}
+
+.approval-entry textarea {
+  width: 100%;
+  min-height: var(--control-height);
+  padding: var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--inset);
+  resize: vertical;
+}
+
+.approval-entry textarea[aria-invalid='true'] { border-color: var(--red); }
+.approval-error { color: var(--red); font-size: var(--text-small); }
+.approval-answer { padding: var(--space-2); border-radius: var(--radius-control); background: var(--inset); }
+
+@media (max-width: 480px) {
+  .approval-card { padding: var(--space-3); }
+  .approval-entry { grid-template-columns: minmax(0, 1fr); }
+  .approval-entry .primary-button { justify-self: end; }
+}

@@ -52,6 +52,10 @@ func (store *InventoryStore) Workspace(ctx context.Context) (snapshot workspace.
 		if err != nil {
 			return err
 		}
+		snapshot.Approvals, err = selectRows(ctx, tx, "SELECT "+approvalColumns+" ORDER BY a.created_at,a.id", scanApproval)
+		if err != nil {
+			return err
+		}
 		snapshot.Tasks, err = selectRows(ctx, tx, "SELECT "+taskColumns+" FROM muster_tasks t ORDER BY t.updated_at DESC,t.id", scanTask)
 		if err != nil {
 			return err
@@ -85,6 +89,11 @@ func (store *InventoryStore) TaskDetail(ctx context.Context, id string) (detail 
 			return err
 		}
 		detail.Messages, err = selectRows(ctx, tx, "SELECT "+messageColumns+" FROM muster_messages WHERE task_id=$1 ORDER BY sequence", scanMessage, id)
+		if err != nil {
+			return err
+		}
+		detail.Approvals, err = selectRows(ctx, tx, "SELECT "+approvalColumns+
+			" WHERE a.task_id=$1 OR t.root_id=$1 ORDER BY a.created_at,a.id", scanApproval, id)
 		if err != nil {
 			return err
 		}
@@ -140,7 +149,8 @@ func taskInputs(ctx context.Context, tx pgx.Tx, id string) ([]workspace.TaskInpu
 			SELECT id,status,generation,created_at,claimed_at,prompt_transfer_id,dependency_results
 			FROM muster_runs WHERE task_id=$1
 		)
-		SELECT COALESCE(m.id,r.id),CASE
+		SELECT COALESCE(a.id,m.id,r.id),CASE
+			WHEN a.id IS NOT NULL THEN 'approval'
 			WHEN m.id IS NOT NULL THEN 'message'
 			WHEN r.prompt_transfer_id<>'' THEN 'delegation'
 			WHEN r.dependency_results IS NOT NULL THEN 'dependency'
@@ -151,6 +161,7 @@ func taskInputs(ctx context.Context, tx pgx.Tx, id string) ([]workspace.TaskInpu
 			ARRAY(SELECT transfer_id FROM muster_run_transfers WHERE run_id=r.id AND direction='input' ORDER BY transfer_id),
 			COALESCE(m.created_at,r.created_at),r.claimed_at
 		FROM messages m FULL JOIN runs r ON r.id='run-' || m.id
+		LEFT JOIN muster_approvals a ON a.resume_run_id=r.id
 		CROSS JOIN muster_tasks t WHERE t.id=$1
 		ORDER BY COALESCE(m.created_at,r.created_at),COALESCE(m.id,r.id)`, func(row pgx.Row) (workspace.TaskInput, error) {
 		var value workspace.TaskInput

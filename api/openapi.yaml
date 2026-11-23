@@ -238,7 +238,7 @@ paths:
       security: [{ adminBearer: [] }]
       responses:
         '200':
-          description: 主对话、任务、项目、目录和同一事务视图的事件游标
+          description: 主对话、任务、请示、项目、目录和同一事务视图的事件游标
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Workspace' }
@@ -269,6 +269,36 @@ paths:
         '200': { $ref: '#/components/responses/TaskDetail' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { description: 任务不存在 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/approvals/{id}/answer:
+    parameters:
+      - { name: id, in: path, required: true, schema: { $ref: '#/components/schemas/ApprovalID' } }
+    post:
+      operationId: answerApproval
+      security: [{ adminBearer: [] }]
+      requestBody:
+        description: JSON 请求体不超过 80 KiB。
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [answer]
+              properties:
+                answer: { type: string, minLength: 1, maxLength: 2000, description: 选项或自由文本。原文不超过 2000 UTF-8 字节，不含空字符，去除两端空白后须有内容。 }
+      responses:
+        '200':
+          description: 已保存第一条有效答复并登记原会话续接。重复或并发提交返回已保存的答复和当前状态。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        '400': { description: 无效的请示 ID 或答复 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 请示不存在 }
+        '409': { description: 请示的任务状态与续接条件冲突 }
+        '413': { description: 请求体超过大小上限 }
+        '415': { description: 请求体须使用 application/json }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/projects/{id}:
     parameters:
@@ -360,6 +390,9 @@ paths:
                   directory_id: { $ref: '#/components/schemas/DirectoryID' }
                   prompt: { type: string }
                   session_id: { type: string, description: 首轮为空 }
+                  approval_supported:
+                    type: boolean
+                    description: 为 true 时设备可提交请示回执。字段缺省视为未启用。
                   agent_kind: { $ref: '#/components/schemas/AgentKind' }
                   generation: { type: integer, format: int64, minimum: 1 }
                   lease: { $ref: '#/components/schemas/Lease' }
@@ -406,6 +439,7 @@ paths:
       operationId: recordRunEvent
       security: [{ deviceBearer: [] }]
       requestBody:
+        description: JSON 请求体不超过 80 KiB。请示事件须携带当前运行代次和租约。
         required: true
         content:
           application/json:
@@ -414,19 +448,24 @@ paths:
               additionalProperties: false
               required: [kind]
               properties:
-                kind: { type: string, enum: [started, session, waiting, completed, failed, interrupted] }
+                kind: { type: string, enum: [started, session, waiting, approval_requested, completed, failed, interrupted] }
                 generation: { type: integer, format: int64, minimum: 1 }
                 lease: { $ref: '#/components/schemas/Lease' }
                 session_id: { type: string, description: session 事件必填 }
                 text: { type: string, description: 根任务汇报摘要。不超过 12000 UTF-8 字节。 }
                 wait_for_task_ids: { type: array, maxItems: 32, items: { $ref: '#/components/schemas/TaskID' } }
                 transfer_ids: { $ref: '#/components/schemas/TransferIDs' }
+                approval:
+                  description: approval_requested 事件必填。需要已知的原生会话，与等待任务和投递字段互斥。
+                  $ref: '#/components/schemas/ApprovalRequest'
       responses:
         '204': { description: 事件已保存或已确认过相同内容 }
         '400': { description: 无效的事件或序号 }
         '401': { $ref: '#/components/responses/DeviceUnauthorized' }
         '404': { description: 设备未领取该运行 }
-        '409': { description: 事件序号、内容或原生会话发生冲突 }
+        '409': { description: 事件序号、内容、原生会话或请示状态发生冲突 }
+        '413': { description: 请求体超过大小上限 }
+        '415': { description: 请求体须使用 application/json }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/devices/{device_id}/peer:
     parameters: [{ $ref: '#/components/parameters/DeviceID' }]
@@ -1125,8 +1164,8 @@ components:
       type: object
       required: [id, kind, status, created_at]
       properties:
-        id: { type: string }
-        kind: { type: string, enum: [message, delegation, dependency, execution] }
+        id: { type: string, description: 请示答复使用关联的请示 ID。 }
+        kind: { type: string, enum: [message, delegation, dependency, execution, approval] }
         status: { type: string }
         created_at: { type: string, format: date-time }
         message_id: { type: string }
@@ -1190,12 +1229,49 @@ components:
       required: [id, kind, text, created_at]
       properties:
         id: { type: string }
-        kind: { type: string, enum: [user, reply, report] }
+        kind: { type: string, enum: [user, reply, report, approval] }
         text: { type: string }
         task_id: { $ref: '#/components/schemas/TaskID' }
         status: { type: string, enum: [accepted, handled, interrupted] }
         created_at: { type: string, format: date-time }
-    TaskState: { type: string, enum: [queued, running, waiting_dependencies, waiting_delivery, completed, failed, interrupted, paused, cancelled] }
+    ApprovalID:
+      type: string
+      pattern: '^approval-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    ApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [question]
+      properties:
+        question: { type: string, minLength: 1, maxLength: 2000, description: 原文不超过 2000 UTF-8 字节，不含空字符，去除两端空白后须有内容。 }
+        options:
+          type: array
+          maxItems: 8
+          uniqueItems: true
+          description: 可在 Web 中直接选择的答复。每项原文不超过 240 UTF-8 字节，不含空字符，去除两端空白后非空且互不重复。
+          items: { type: string, minLength: 1, maxLength: 240 }
+        impact: { type: string, maxLength: 2000, description: 决定可能影响的下一步。原文不超过 2000 UTF-8 字节，不含空字符。 }
+    Approval:
+      type: object
+      required: [id, task_id, root_task_id, run_id, question, options, status, created_at]
+      properties:
+        id:
+          description: 与主对话里 kind 为 approval 的消息 ID 相同。
+          $ref: '#/components/schemas/ApprovalID'
+        task_id: { $ref: '#/components/schemas/TaskID' }
+        root_task_id: { $ref: '#/components/schemas/TaskID' }
+        run_id: { $ref: '#/components/schemas/RunID' }
+        question: { type: string }
+        options: { type: array, items: { type: string } }
+        impact: { type: string }
+        status:
+          type: string
+          enum: [pending, answered, handled]
+          description: 依次表示待答复、答复已保存和设备已处理。
+        answer: { type: string }
+        created_at: { type: string, format: date-time }
+        answered_at: { type: string, format: date-time }
+        handled_at: { type: string, format: date-time }
+    TaskState: { type: string, enum: [queued, running, waiting_dependencies, waiting_delivery, waiting_reply, completed, failed, interrupted, paused, cancelled] }
     Task:
       type: object
       required: [id, project_id, project_name, device_id, directory_id, status, title, report_pending, updated_at]
@@ -1224,7 +1300,7 @@ components:
         id: { $ref: '#/components/schemas/RunID' }
         task_id: { $ref: '#/components/schemas/TaskID' }
         directory_id: { $ref: '#/components/schemas/DirectoryID' }
-        status: { type: string, enum: [queued, running, waiting, waiting_delivery, completed, failed, interrupted, paused, cancelled] }
+        status: { type: string, enum: [queued, running, waiting, waiting_delivery, approval_requested, completed, failed, interrupted, paused, cancelled] }
         session_id: { type: string }
         generation: { type: integer, format: int64, minimum: 1 }
         lease_until: { type: string, format: date-time }
@@ -1233,11 +1309,12 @@ components:
         updated_at: { type: string, format: date-time }
     TaskDetail:
       type: object
-      required: [task, runs, messages]
+      required: [task, runs, messages, approvals]
       properties:
         task: { $ref: '#/components/schemas/Task' }
         runs: { type: array, items: { $ref: '#/components/schemas/Run' } }
         messages: { type: array, items: { $ref: '#/components/schemas/Message' } }
+        approvals: { type: array, items: { $ref: '#/components/schemas/Approval' } }
         children: { type: array, items: { $ref: '#/components/schemas/Task' } }
         dependencies: { type: array, items: { $ref: '#/components/schemas/Dependency' } }
         transfers: { type: array, items: { $ref: '#/components/schemas/Transfer' } }
@@ -1245,10 +1322,11 @@ components:
         waited_transfers: { type: array, items: { $ref: '#/components/schemas/WaitedTransfer' } }
     Workspace:
       type: object
-      required: [cursor, messages, tasks, projects, directories]
+      required: [cursor, messages, tasks, projects, directories, approvals]
       properties:
         cursor: { type: integer, format: int64 }
         messages: { type: array, items: { $ref: '#/components/schemas/Message' } }
+        approvals: { type: array, items: { $ref: '#/components/schemas/Approval' } }
         tasks: { type: array, items: { $ref: '#/components/schemas/Task' } }
         projects: { type: array, items: { $ref: '#/components/schemas/Project' } }
         directories: { type: array, items: { $ref: '#/components/schemas/Directory' } }

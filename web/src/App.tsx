@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import musterIcon from '../../ui/muster-icon.svg'
 import { AdminTokenError } from './api/devices'
-import { messageBytes, newID, sendMessage, withinTextLimit, type Task } from './api/workspace'
+import { answerApproval, approvalAnswerBytes, messageBytes, newID, sendMessage, withinTextLimit, type Task } from './api/workspace'
 import { DeviceInventory } from './features/devices/DeviceInventory'
+import type { ApprovalActions } from './features/workspace/ApprovalCard'
 import { Conversation } from './features/workspace/Conversation'
 import { Projects } from './features/workspace/Projects'
 import { TaskBoard } from './features/workspace/TaskBoard'
@@ -65,7 +66,7 @@ export function App() {
 }
 
 function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: string) => void }) {
-  const { workspace, streamState, error, refresh, acceptMessage } = useWorkspace(token, onLock)
+  const { workspace, streamState, error, refresh, acceptMessage, acceptApproval } = useWorkspace(token, onLock)
   const [route, setRoute] = useState(readRoute)
   const [draft, setDraft] = useState('')
   const [followTask, setFollowTask] = useState<Task>()
@@ -73,6 +74,8 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
   const [sendError, setSendError] = useState('')
   const sendingRequest = useRef<AbortController | null>(null)
   const lastSubmission = useRef<{ id: string; text: string; task_id?: string } | undefined>(undefined)
+  const approvalRequests = useRef(new Map<string, AbortController>())
+  const [approvalSubmissions, setApprovalSubmissions] = useState<ApprovalActions['submissions']>(() => new Map())
 
   useEffect(() => {
     const routeChanged = () => setRoute(readRoute())
@@ -80,6 +83,41 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
     return () => window.removeEventListener('hashchange', routeChanged)
   }, [])
   useEffect(() => () => sendingRequest.current?.abort(), [])
+  useEffect(() => {
+    const requests = approvalRequests.current
+    return () => {
+      for (const controller of requests.values()) controller.abort()
+      requests.clear()
+    }
+  }, [])
+
+  async function submitApproval(id: string, value: string) {
+    const answer = value.trim()
+    const requests = approvalRequests.current
+    if (!answer || !withinTextLimit(answer, approvalAnswerBytes) || requests.has(id)) return
+    const controller = new AbortController()
+    requests.set(id, controller)
+    setApprovalSubmissions((current) => new Map(current).set(id, { pending: true, error: '' }))
+    let submissionError = ''
+    try {
+      const approval = await answerApproval(token, id, answer, controller.signal)
+      if (!controller.signal.aborted) acceptApproval(approval)
+    } catch (failure) {
+      if (controller.signal.aborted) return
+      if (failure instanceof AdminTokenError) onLock(failure.message)
+      else submissionError = messageFor(failure)
+    } finally {
+      requests.delete(id)
+      if (!controller.signal.aborted) {
+        setApprovalSubmissions((current) => {
+          const next = new Map(current)
+          if (submissionError) next.set(id, { pending: false, error: submissionError })
+          else next.delete(id)
+          return next
+        })
+      }
+    }
+  }
 
   async function submitMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -120,6 +158,7 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
   }
 
   const streamLabel = { loading: '连接中', live: '实时更新', retry: '正在重连', unavailable: '服务暂不可用' }[streamState]
+  const approvalActions: ApprovalActions = { submissions: approvalSubmissions, onAnswer: submitApproval }
 
   return (
     <div className="workspace-shell" data-view={route.view}>
@@ -141,6 +180,8 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
           <Conversation
             messages={workspace?.messages}
             tasks={workspace?.tasks ?? []}
+            approvals={workspace?.approvals ?? []}
+            approvalActions={approvalActions}
             canSend={workspace !== null && streamState !== 'unavailable'}
             draft={draft}
             followTask={followTask}
@@ -151,7 +192,7 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
             onSubmit={submitMessage}
           />
         )}
-        {route.view === 'board' && <TaskBoard token={token} tasks={workspace?.tasks} cursor={workspace?.cursor} taskID={route.taskID} onFollow={attachTask} onLock={onLock} />}
+        {route.view === 'board' && <TaskBoard token={token} tasks={workspace?.tasks} approvals={workspace?.approvals ?? []} approvalActions={approvalActions} cursor={workspace?.cursor} taskID={route.taskID} onFollow={attachTask} onLock={onLock} />}
         {route.view === 'projects' && <Projects token={token} workspace={workspace} onSaved={refresh} onLock={onLock} />}
       </main>
     </div>

@@ -109,10 +109,11 @@ func TestInterruptedRunProducesOneRecoveryReceipt(t *testing.T) {
 	}
 	defer worker.Close()
 	ctx := context.Background()
+	const original = "MUSTER_APPROVAL_V1\n\x00"
 	if _, err := worker.db.ExecContext(ctx, `
-		INSERT INTO runs (id,task_id,directory_id,prompt,session_id,requested_session_id,state)
-		VALUES ('run-1','task-1','dir-1','prompt','session-1','session-1','started')
-	`); err != nil {
+		INSERT INTO runs (id,task_id,directory_id,prompt,session_id,requested_session_id,state,text)
+		VALUES ('run-1','task-1','dir-1','prompt','session-1','session-1','started',?)
+	`, original); err != nil {
 		t.Fatal(err)
 	}
 	if err := worker.recoverInterrupted(ctx); err != nil {
@@ -121,16 +122,19 @@ func TestInterruptedRunProducesOneRecoveryReceipt(t *testing.T) {
 	if err := worker.recoverInterrupted(ctx); err != nil {
 		t.Fatal(err)
 	}
-	var state string
+	var state, stored, payload string
 	var receipts int
-	if err := worker.db.QueryRowContext(ctx, `SELECT state FROM runs WHERE id='run-1'`).Scan(&state); err != nil {
+	if err := worker.db.QueryRowContext(ctx, `SELECT state,text FROM runs WHERE id='run-1'`).Scan(&state, &stored); err != nil {
 		t.Fatal(err)
 	}
-	if err := worker.db.QueryRowContext(ctx, `SELECT count(*) FROM outbox WHERE run_id='run-1'`).Scan(&receipts); err != nil {
+	if err := worker.db.QueryRowContext(ctx, `SELECT count(*),max(payload) FROM outbox WHERE run_id='run-1'`).Scan(&receipts, &payload); err != nil {
 		t.Fatal(err)
 	}
 	if state != "interrupted" || receipts != 1 {
 		t.Fatalf("state=%q receipts=%d", state, receipts)
+	}
+	if stored != original || strings.Contains(payload, approvalMarker) {
+		t.Fatalf("recovery did not keep the malformed reply local: %q, %q", stored, payload)
 	}
 }
 

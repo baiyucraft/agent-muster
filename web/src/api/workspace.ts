@@ -3,14 +3,14 @@ import { request } from './devices'
 /** 主对话中的消息，可能关联任务及中心 Agent 的处理状态。 */
 export type Message = {
   id: string
-  kind: 'user' | 'reply' | 'report'
+  kind: 'user' | 'reply' | 'report' | 'approval'
   text: string
   task_id?: string
   status?: 'accepted' | 'handled' | 'interrupted'
   created_at: string
 }
 
-type RunStatus = 'queued' | 'running' | 'waiting' | 'waiting_delivery' | 'completed' | 'failed' | 'paused' | 'cancelled' | 'interrupted'
+type RunStatus = 'queued' | 'running' | 'waiting' | 'waiting_delivery' | 'completed' | 'failed' | 'paused' | 'cancelled' | 'interrupted' | 'approval_requested'
 
 /** 看板的任务摘要，包含关联设备、Agent、依赖等待及待汇报状态。 */
 export type Task = {
@@ -18,7 +18,7 @@ export type Task = {
   project_id: string
   project_name: string
   device_id: string
-  status: Exclude<RunStatus, 'waiting'> | 'waiting_dependencies'
+  status: Exclude<RunStatus, 'waiting' | 'approval_requested'> | 'waiting_dependencies' | 'waiting_reply'
   title: string
   updated_at: string
   result?: string
@@ -76,7 +76,7 @@ export type Dependency = { task_id: string; depends_on_task_id: string; generati
 /** 关联到任务的输入记录，可来自消息、子任务依赖或执行操作。 */
 export type TaskInput = {
   id: string
-  kind: 'message' | 'delegation' | 'dependency' | 'execution'
+  kind: 'message' | 'delegation' | 'dependency' | 'execution' | 'approval'
   status: string
   created_at: string
   message_id?: string
@@ -87,8 +87,36 @@ export type TaskInput = {
 }
 /** 某次等待代次所需的交接记录，接收后可带确认时间。 */
 export type WaitedTransfer = { transfer_id: string; generation: number; active: boolean; status: 'waiting' | 'received'; received_at?: string }
+/** 请示及已保存的答复。任务、根任务和运行 ID 由 Hub 记录。 */
+export type Approval = {
+  id: string
+  task_id: string
+  root_task_id: string
+  run_id: string
+  question: string
+  options: string[]
+  impact?: string
+  status: 'pending' | 'answered' | 'handled'
+  answer?: string
+  created_at: string
+  answered_at?: string
+  handled_at?: string
+}
+
+const approvalStage: Record<Approval['status'], number> = { pending: 0, answered: 1, handled: 2 }
+
+/**
+ * 比较同一条请示的两份记录，保留已确认的最新状态。
+ * @param candidate 收到的记录，可能来自较早发出的快照请求。
+ * @param known 已显示的同一条请示，可为空。
+ * @returns 处理进度最新的记录，状态相同则返回收到的记录。
+ */
+export function latestApproval(candidate: Approval, known?: Approval): Approval {
+  return known && approvalStage[known.status] > approvalStage[candidate.status] ? known : candidate
+}
+
 /** 主对话和看板的同一版本快照，cursor 用于后续 SSE 订阅。 */
-export type Workspace = { cursor: number; messages: Message[]; tasks: Task[]; projects: Project[]; directories: Directory[] }
+export type Workspace = { cursor: number; messages: Message[]; tasks: Task[]; projects: Project[]; directories: Directory[]; approvals: Approval[] }
 /** 任务详情快照，包含执行、输入、子任务、依赖和交接记录。 */
 export type TaskDetail = {
   task: Task
@@ -99,10 +127,13 @@ export type TaskDetail = {
   transfers: Transfer[]
   inputs: TaskInput[]
   waited_transfers: WaitedTransfer[]
+  approvals: Approval[]
 }
 
 /** 一条用户消息的 UTF-8 字节上限。 */
 export const messageBytes = 6_000
+/** 一条请示答复的 UTF-8 字节上限。 */
+export const approvalAnswerBytes = 2_000
 /** 项目名称的 UTF-8 字节上限。 */
 export const projectNameBytes = 120
 
@@ -128,7 +159,10 @@ export async function readWorkspace(token: string, signal: AbortSignal): Promise
   const response = await request(token, '/api/v1/workspace', { signal })
   const snapshot = (await response.json()) as Workspace
   if (!Number.isSafeInteger(snapshot.cursor)) throw new Error('Hub 返回了无效的更新游标。')
-  return { ...snapshot, messages: snapshot.messages ?? [], tasks: snapshot.tasks ?? [], projects: snapshot.projects ?? [], directories: snapshot.directories ?? [] }
+  return {
+    ...snapshot, messages: snapshot.messages ?? [], tasks: snapshot.tasks ?? [], projects: snapshot.projects ?? [],
+    directories: snapshot.directories ?? [], approvals: snapshot.approvals ?? [],
+  }
 }
 
 /**
@@ -144,8 +178,26 @@ export async function readTask(token: string, id: string, signal: AbortSignal): 
   return {
     ...detail, runs: detail.runs ?? [], messages: detail.messages ?? [], children: detail.children ?? [],
     dependencies: detail.dependencies ?? [], transfers: detail.transfers ?? [],
-    inputs: detail.inputs ?? [], waited_transfers: detail.waited_transfers ?? [],
+    inputs: detail.inputs ?? [], waited_transfers: detail.waited_transfers ?? [], approvals: detail.approvals ?? [],
   }
+}
+
+/**
+ * 提交请示的答复。并发答复成功时，Hub 返回首条有效的已保存答复。
+ * @param token 当前管理员会话的令牌。
+ * @param id Hub 分配的请示 ID。
+ * @param answer 去除首尾空白后的非空答复。
+ * @param signal 终止等待 HTTP 响应。
+ * @returns Hub 已保存的请示记录。
+ */
+export async function answerApproval(token: string, id: string, answer: string, signal: AbortSignal): Promise<Approval> {
+  const response = await request(token, `/api/v1/approvals/${encodeURIComponent(id)}/answer`, {
+    signal,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answer }),
+  })
+  return (await response.json()) as Approval
 }
 
 /**

@@ -5,9 +5,14 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/baiyucraft/agent-muster/internal/approval"
 )
 
 var ErrConflict = errors.New("workspace state conflict")
+
+// ErrInvalidApproval 表示请示或答复未通过输入校验。
+var ErrInvalidApproval = errors.New("invalid approval or answer")
 
 // Directory 表示设备登记的执行目录标识与展示名称。
 type Directory struct {
@@ -102,6 +107,7 @@ type RunClaim struct {
 	Attachments       []Transfer         `json:"attachments,omitempty"`
 	DependencyResults []DependencyResult `json:"dependency_results,omitempty"`
 	DelegationTargets []DelegationTarget `json:"delegation_targets,omitempty"`
+	ApprovalSupported bool               `json:"approval_supported,omitempty"`
 }
 
 // DependencyResult 记录父任务续接时收到的子任务标识和状态。
@@ -123,13 +129,31 @@ type DelegationTarget struct {
 
 // RunEvent 是设备上报的单条运行事件，携带运行代次和租约。
 type RunEvent struct {
-	Kind           string   `json:"kind"`
-	SessionID      string   `json:"session_id,omitempty"`
-	Text           string   `json:"text,omitempty"`
-	Generation     int64    `json:"generation"`
-	Lease          string   `json:"lease"`
-	WaitForTaskIDs []string `json:"wait_for_task_ids,omitempty"`
-	TransferIDs    []string `json:"transfer_ids,omitempty"`
+	Kind           string             `json:"kind"`
+	SessionID      string             `json:"session_id,omitempty"`
+	Text           string             `json:"text,omitempty"`
+	Generation     int64              `json:"generation"`
+	Lease          string             `json:"lease"`
+	WaitForTaskIDs []string           `json:"wait_for_task_ids,omitempty"`
+	TransferIDs    []string           `json:"transfer_ids,omitempty"`
+	Approval       *approval.Question `json:"approval,omitempty"`
+}
+
+// Approval 记录原生会话提出的请示、首个有效答复及处理时间。
+// ID 与主对话消息一致，TaskID 指向发起请示的任务，可能是子任务。
+type Approval struct {
+	ID         string     `json:"id"`
+	TaskID     string     `json:"task_id"`
+	RootTaskID string     `json:"root_task_id"`
+	RunID      string     `json:"run_id"`
+	Question   string     `json:"question"`
+	Options    []string   `json:"options"`
+	Impact     string     `json:"impact,omitempty"`
+	Status     string     `json:"status"`
+	Answer     string     `json:"answer,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	AnsweredAt *time.Time `json:"answered_at,omitempty"`
+	HandledAt  *time.Time `json:"handled_at,omitempty"`
 }
 
 // Snapshot 是工作区在同一事件游标位置上的对话、任务、项目和目录快照。
@@ -139,6 +163,7 @@ type Snapshot struct {
 	Tasks       []Task      `json:"tasks"`
 	Projects    []Project   `json:"projects"`
 	Directories []Directory `json:"directories"`
+	Approvals   []Approval  `json:"approvals"`
 }
 
 // Detail 汇集单项任务的运行记录、子任务、依赖、输入和投递。
@@ -151,6 +176,7 @@ type Detail struct {
 	Transfers       []Transfer     `json:"transfers"`
 	Inputs          []TaskInput    `json:"inputs"`
 	WaitedTransfers []TransferWait `json:"waited_transfers"`
+	Approvals       []Approval     `json:"approvals"`
 }
 
 // TaskInput 记录任务输入的来源、消费状态与关联投递。
@@ -274,6 +300,7 @@ type Store interface {
 	SaveProject(context.Context, Project) (Project, error)
 	Projects(context.Context) ([]Project, error)
 	SubmitMessage(context.Context, Message) (Message, error)
+	AnswerApproval(context.Context, string, string) (Approval, error)
 	ReplaceDirectories(context.Context, string, [32]byte, []Directory) error
 	ClaimRun(context.Context, string, [32]byte) (RunClaim, error)
 	RenewRun(context.Context, string, [32]byte, string, int64, string) (time.Time, error)

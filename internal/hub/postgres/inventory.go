@@ -24,6 +24,9 @@ var createM1WorkspaceTables string
 //go:embed migrations/004_m1_transfers_and_bindings.sql
 var createM1TransferTables string
 
+//go:embed migrations/008_approvals.sql
+var createApprovalTables string
+
 // InventoryStore 使用 PostgreSQL 保存单次配对与设备清单。
 type InventoryStore struct {
 	pool *pgxpool.Pool
@@ -59,7 +62,11 @@ func OpenInventory(ctx context.Context, databaseURL string) (*InventoryStore, er
 		if err := migrateDeviceRTC(ctx, tx); err != nil {
 			return err
 		}
-		return migrateDeviceUpdates(ctx, tx)
+		if err := migrateDeviceUpdates(ctx, tx); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, createApprovalTables, pgx.QueryExecModeSimpleProtocol)
+		return err
 	})
 	if err != nil {
 		pool.Close()

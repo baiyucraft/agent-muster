@@ -226,7 +226,7 @@ func appendRun(ctx context.Context, tx pgx.Tx, taskID, runID string) error {
 	if parent != "" {
 		return registry.ErrNotFound
 	}
-	if status == "running" || status == "queued" {
+	if status == "running" || status == "queued" || status == "waiting_reply" {
 		return nil
 	}
 	if session == "" {

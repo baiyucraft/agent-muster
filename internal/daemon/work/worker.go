@@ -405,7 +405,12 @@ func (worker *Worker) invoke(ctx context.Context, run control.Run, service *loca
 		if waitErr != nil {
 			event.Kind = "failed"
 			err = waitErr
-		} else if wait.Kind == "waiting" {
+			return event, err
+		}
+		if run.ApprovalSupported {
+			err = worker.finishApproval(ctx, run, dir, execute, &event, wait.Kind == "waiting")
+		}
+		if event.Kind == "completed" && wait.Kind == "waiting" {
 			event.Kind, event.WaitForTaskIDs, event.TransferIDs = wait.Kind, wait.WaitForTaskIDs, wait.TransferIDs
 			event.Text = ""
 		}
@@ -452,6 +457,9 @@ func (worker *Worker) preparePrompt(ctx context.Context, run control.Run, direct
 	}
 	if service != nil && service.peer.enabled() {
 		prompt += collaborationInstructions()
+	}
+	if run.ApprovalSupported {
+		prompt += approvalInstructions
 	}
 	return prompt, nil
 }

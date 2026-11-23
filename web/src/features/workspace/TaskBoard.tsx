@@ -1,17 +1,19 @@
 import { useEffect, useState } from 'react'
 import { AdminTokenError, readDevices } from '../../api/devices'
-import { readTask, type Run, type Task, type TaskDetail, type TaskInput, type Transfer } from '../../api/workspace'
+import { latestApproval, readTask, type Approval, type Run, type Task, type TaskDetail, type TaskInput, type Transfer } from '../../api/workspace'
 import { messageFor } from '../../useWorkspace'
+import { ApprovalCard, type ApprovalActions } from './ApprovalCard'
 import { MessageItem, Time } from './Conversation'
 
 const statusText: Record<Task['status'] | Run['status'], string> = {
   queued: '排队', running: '运行中', waiting: '等待', waiting_dependencies: '等待子任务', waiting_delivery: '等待交付',
+  waiting_reply: '等待答复', approval_requested: '已发起请示',
   completed: '已完成', failed: '执行失败', paused: '已暂停', cancelled: '已取消', interrupted: '待核对',
 }
 const groups: { stage: string; name: string; states: Task['status'][] }[] = [
   { stage: 'queued', name: '排队', states: ['queued'] },
   { stage: 'running', name: '运行中', states: ['running'] },
-  { stage: 'waiting', name: '等待', states: ['waiting_dependencies', 'waiting_delivery', 'paused', 'interrupted'] },
+  { stage: 'waiting', name: '等待', states: ['waiting_reply', 'waiting_dependencies', 'waiting_delivery', 'paused', 'interrupted'] },
   { stage: 'finished', name: '已结束', states: ['completed', 'failed', 'cancelled'] },
 ]
 
@@ -30,6 +32,7 @@ const taskInputText: Record<TaskInput['kind'], string> = {
   delegation: '派发输入',
   dependency: '依赖续接',
   execution: '运行输入',
+  approval: '请示答复',
 }
 
 const inputStatusText: Record<string, string> = {
@@ -41,13 +44,15 @@ const inputStatusText: Record<string, string> = {
 type TaskBoardProps = {
   token: string
   tasks?: Task[]
+  approvals: Approval[]
+  approvalActions: ApprovalActions
   cursor?: number
   taskID?: string
   onFollow: (task: Task) => void
   onLock: (reason: string) => void
 }
 
-export function TaskBoard({ token, tasks, cursor, taskID, onFollow, onLock }: TaskBoardProps) {
+export function TaskBoard({ token, tasks, approvals, approvalActions, cursor, taskID, onFollow, onLock }: TaskBoardProps) {
   const [deviceNames, setDeviceNames] = useState<Map<string, string>>(() => new Map())
   useEffect(() => {
     const controller = new AbortController()
@@ -59,7 +64,8 @@ export function TaskBoard({ token, tasks, cursor, taskID, onFollow, onLock }: Ta
     return () => controller.abort()
   }, [token, onLock])
 
-  if (taskID) return <TaskDetails key={taskID} token={token} taskID={taskID} cursor={cursor} tasks={tasks} deviceNames={deviceNames} onFollow={onFollow} onLock={onLock} />
+  if (taskID) return <TaskDetails key={taskID} token={token} taskID={taskID} cursor={cursor} tasks={tasks} approvals={approvals}
+    approvalActions={approvalActions} deviceNames={deviceNames} onFollow={onFollow} onLock={onLock} />
 
   const roots = tasks?.filter((task) => !task.parent_task_id)
   const childrenByParent = new Map<string, Task[]>()
@@ -73,11 +79,13 @@ export function TaskBoard({ token, tasks, cursor, taskID, onFollow, onLock }: Ta
   return (
     <section aria-labelledby="board-heading">
       <div className="view-heading"><h1 id="board-heading">任务看板</h1>{roots && <span className="view-count">{roots.length} 项任务</span>}</div>
+      <BoardApprovals approvals={approvals} tasks={tasks} actions={approvalActions} />
       {!roots && <p className="panel-placeholder">正在读取看板…</p>}
       {roots?.length === 0 && <p className="panel-placeholder">暂无任务。<a className="text-link" href="#conversation">在主对话交办</a></p>}
       {roots && roots.length > 0 && <div className="board-grid">
         {groups.map((group) => {
           const entries = roots.filter((task) => group.states.includes(task.status))
+          if (group.stage === 'waiting') entries.sort((left, right) => Number(right.status === 'waiting_reply') - Number(left.status === 'waiting_reply'))
           return (
             <section key={group.stage} className="board-column" data-stage={group.stage} aria-label={group.name}>
               <h2>{group.name}<span>{entries.length}</span></h2>
@@ -87,6 +95,27 @@ export function TaskBoard({ token, tasks, cursor, taskID, onFollow, onLock }: Ta
           )
         })}
       </div>}
+    </section>
+  )
+}
+
+function BoardApprovals({ approvals, tasks, actions }: { approvals: Approval[]; tasks?: Task[]; actions: ApprovalActions }) {
+  const [answeredHere, setAnsweredHere] = useState(() => new Set<string>())
+  const visible = approvals.filter((approval) => approval.status === 'pending' || answeredHere.has(approval.id))
+  const pendingCount = visible.filter((approval) => approval.status === 'pending').length
+  const tasksByID = new Map(tasks?.map((task) => [task.id, task]))
+  const boardActions: ApprovalActions = {
+    ...actions,
+    onAnswer: (id, answer) => {
+      setAnsweredHere((current) => new Set(current).add(id))
+      return actions.onAnswer(id, answer)
+    },
+  }
+  if (!visible.length) return null
+  return (
+    <section className="approval-board" aria-labelledby="board-approvals">
+      <h2 id="board-approvals">{pendingCount > 0 ? '待答复请示' : '请示答复'}</h2>
+      {visible.map((approval) => <ApprovalCard key={approval.id} approval={approval} task={tasksByID.get(approval.task_id)} actions={boardActions} />)}
     </section>
   )
 }
@@ -110,11 +139,11 @@ function ChildTasks({ tasks }: { tasks: Task[] }) {
   return <div className="child-task-list">{tasks.map((task) => <a href={`#board/${task.id}`} className="child-task-row" key={task.id}><span>{task.title}</span><TaskStatus status={task.status} /></a>)}</div>
 }
 
-type TaskDetailsProps = Required<Pick<TaskBoardProps, 'token' | 'taskID' | 'onFollow' | 'onLock'>> & Pick<TaskBoardProps, 'cursor' | 'tasks'> & {
+type TaskDetailsProps = Required<Pick<TaskBoardProps, 'token' | 'taskID' | 'onFollow' | 'onLock'>> & Pick<TaskBoardProps, 'cursor' | 'tasks' | 'approvals' | 'approvalActions'> & {
   deviceNames: Map<string, string>
 }
 
-function TaskDetails({ token, cursor, tasks, taskID, deviceNames, onFollow, onLock }: TaskDetailsProps) {
+function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskID, deviceNames, onFollow, onLock }: TaskDetailsProps) {
   const [detail, setDetail] = useState<TaskDetail>()
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
@@ -137,6 +166,12 @@ function TaskDetails({ token, cursor, tasks, taskID, deviceNames, onFollow, onLo
     detail.task.status === 'queued' || detail.task.status === 'running' || detail.runs.some((run) => run.session_id)
   )
   const taskName = (id: string) => tasks?.find((task) => task.id === id)?.title ?? id
+  const taskApprovals = new Map(detail?.approvals.map((approval) => [approval.id, approval]))
+  for (const approval of approvals) {
+    if (approval.task_id !== taskID && approval.root_task_id !== taskID) continue
+    taskApprovals.set(approval.id, latestApproval(approval, taskApprovals.get(approval.id)))
+  }
+  const relatedMessages = detail?.messages.filter((message) => message.kind !== 'approval' || !taskApprovals.has(message.id))
 
   return (
     <section aria-labelledby="task-heading">
@@ -147,6 +182,15 @@ function TaskDetails({ token, cursor, tasks, taskID, deviceNames, onFollow, onLo
       </div>
       {error && <div className="request-error" role="alert"><p>{error}</p><button type="button" className="outline-button" onClick={() => setRetry((current) => current + 1)}>重试</button></div>}
       {!detail && !error && <p className="panel-placeholder">正在读取详情…</p>}
+      {taskApprovals.size > 0 && (
+        <section className="approval-board" aria-labelledby="task-approvals">
+          <h2 id="task-approvals">请示</h2>
+          {[...taskApprovals.values()].map((approval) => (
+            <ApprovalCard key={approval.id} approval={approval} actions={approvalActions}
+              task={approval.task_id === taskID ? undefined : tasks?.find((task) => task.id === approval.task_id)} />
+          ))}
+        </section>
+      )}
       {detail && <div className="task-detail-grid">
         <div className="task-detail-panel">
           {detail.task.parent_task_id && <div className="task-ancestry">
@@ -209,7 +253,7 @@ function TaskDetails({ token, cursor, tasks, taskID, deviceNames, onFollow, onLo
             {transfer.last_error && <p className="transfer-error">{transfer.last_error}</p>}
           </article>)}</div>
         </details>}
-        {detail.messages.length > 0 && <section className="task-detail-panel related-messages" aria-labelledby="related-heading"><h2 id="related-heading">关联对话</h2>{detail.messages.map((message) => <MessageItem key={message.id} message={message} task={detail.task} />)}</section>}
+        {relatedMessages && relatedMessages.length > 0 && <section className="task-detail-panel related-messages" aria-labelledby="related-heading"><h2 id="related-heading">关联对话</h2>{relatedMessages.map((message) => <MessageItem key={message.id} message={message} task={detail.task} />)}</section>}
       </div>}
     </section>
   )

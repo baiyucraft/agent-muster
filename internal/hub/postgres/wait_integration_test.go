@@ -4,12 +4,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/baiyucraft/agent-muster/internal/approval"
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
 	"github.com/jackc/pgx/v5"
 )
 
 func TestAmendmentPreservesPendingWait(t *testing.T) {
-	for _, scenario := range []string{"child finishes first", "amendment finishes first", "amendment replaces wait"} {
+	for _, scenario := range []string{"child finishes first", "amendment finishes first", "amendment replaces wait", "approval survives restart"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, address := newTestSchema(t)
 			store, err := OpenInventory(ctx, address)
@@ -85,7 +86,46 @@ func TestAmendmentPreservesPendingWait(t *testing.T) {
 			child := claim("office", office, "child-run")
 			finishChild := func() { record("office", office, child, 1, workspace.RunEvent{Kind: "failed"}) }
 
-			if scenario == "child finishes first" {
+			wantRuns := 3
+			if scenario == "approval survives restart" {
+				request := workspace.RunEvent{Kind: "approval_requested", Approval: &approval.Question{Question: "仍然使用 CSV 吗？", Options: []string{"使用", "改用 JSON"}}}
+				record("home", home, amend, 2, request)
+				finishChild()
+				claim("home", home, "")
+				pending := detail()
+				if pending.Task.Status != "waiting_reply" || pending.Task.ReportPending ||
+					len(pending.Approvals) != 1 || len(pending.Runs) != 2 ||
+					!pending.Dependencies[0].Active || pending.Dependencies[0].Status != "failed" {
+					t.Fatalf("请示期间丢失依赖状态或提前续接: %+v", pending)
+				}
+				answered, err := store.AnswerApproval(ctx, pending.Approvals[0].ID, "使用")
+				check(err)
+				if answered.Status != "answered" || answered.Answer != "使用" {
+					t.Fatalf("答复写入异常: %+v", answered)
+				}
+				store.Close()
+				store, err = OpenInventory(ctx, address)
+				check(err)
+				defer store.Close()
+				afterRestart := detail()
+				if afterRestart.Task.Status != "queued" || len(afterRestart.Runs) != 3 ||
+					afterRestart.Approvals[0].Status != "answered" || afterRestart.Approvals[0].Answer != "使用" {
+					t.Fatalf("重启后的答复或运行未恢复: %+v", afterRestart)
+				}
+				decision := claim("home", home, afterRestart.Runs[2].ID)
+				if decision.SessionID != "native" {
+					t.Fatalf("答复未在原生会话续接: %+v", decision)
+				}
+				record("home", home, amend, 3, workspace.RunEvent{Kind: "completed", Text: "旧轮次迟到结果"})
+				if got := detail(); got.Approvals[0].Status != "answered" {
+					t.Fatalf("旧轮次结果错误推进答复状态: %+v", got.Approvals)
+				}
+				record("home", home, decision, 1, workspace.RunEvent{Kind: "completed", Text: "已按答复处理"})
+				if got := detail(); got.Approvals[0].Status != "handled" {
+					t.Fatalf("答复未标记已处理: %+v", got.Approvals)
+				}
+				wantRuns = 4
+			} else if scenario == "child finishes first" {
 				finishChild()
 				current := claim("home", home, "run-follow-up")
 				if current.Lease != amend.Lease {
@@ -115,10 +155,10 @@ func TestAmendmentPreservesPendingWait(t *testing.T) {
 			}
 
 			got := detail()
-			if got.Task.Status != "queued" || got.Task.ReportPending || len(got.Runs) != 3 {
+			if got.Task.Status != "queued" || got.Task.ReportPending || len(got.Runs) != wantRuns {
 				t.Fatalf("expected a single dependency wake and no interim report: %+v", got)
 			}
-			resume := claim("home", home, got.Runs[2].ID)
+			resume := claim("home", home, got.Runs[wantRuns-1].ID)
 			if resume.SessionID != "native" || resume.Generation <= amend.Generation {
 				t.Fatalf("wake did not resume original session: %+v", resume)
 			}

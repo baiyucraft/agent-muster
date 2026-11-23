@@ -59,6 +59,7 @@ func (s server) registerWorkspace(mux *http.ServeMux, options WorkspaceOptions, 
 	admin("GET /api/v1/workspace", api.snapshot)
 	admin("GET /api/v1/tasks/{id}", api.task)
 	admin("GET /api/v1/events", api.events)
+	admin("POST /api/v1/approvals/{id}/answer", api.answerApproval)
 	admin("PUT /api/v1/projects/{id}", api.saveProject)
 	admin("POST /api/v1/conversation/messages", api.submitMessage)
 	plugin("GET /api/v1/plugin/projects", api.projects)
@@ -224,6 +225,11 @@ func (api workspaceAPI) recordEvent(w http.ResponseWriter, r *http.Request, devi
 	}
 	switch event.Kind {
 	case "started", "interrupted", "failed":
+	case "approval_requested":
+		if event.Approval == nil || len(event.TransferIDs) != 0 {
+			writeError(w, http.StatusBadRequest, "approval requires a question and cannot include transfers")
+			return
+		}
 	case "waiting":
 		if !validWait(event) {
 			writeError(w, http.StatusBadRequest, "wait requires dependencies")
@@ -244,6 +250,22 @@ func (api workspaceAPI) recordEvent(w http.ResponseWriter, r *http.Request, devi
 		return
 	}
 	workspaceJSON(w, http.StatusNoContent, nil, api.store.RecordRunEvent(r.Context(), device, token, id, sequence, event))
+}
+
+func (api workspaceAPI) answerApproval(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !prefixedUUID(id, "approval-") {
+		writeError(w, http.StatusBadRequest, "invalid approval id")
+		return
+	}
+	var input struct {
+		Answer string `json:"answer"`
+	}
+	if !readWorkspaceText(w, r, &input) {
+		return
+	}
+	value, err := api.store.AnswerApproval(r.Context(), id, input.Answer)
+	workspaceJSON(w, http.StatusOK, value, err)
 }
 
 func (api workspaceAPI) projects(w http.ResponseWriter, r *http.Request) {
@@ -359,6 +381,8 @@ func (api workspaceAPI) events(w http.ResponseWriter, r *http.Request) {
 
 func workspaceJSON(w http.ResponseWriter, status int, value any, err error) {
 	switch {
+	case errors.Is(err, workspace.ErrInvalidApproval):
+		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrConflict):
 		writeError(w, http.StatusConflict, "workspace state changed or request conflicts with a saved result")
 	case err != nil:
