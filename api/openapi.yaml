@@ -365,6 +365,35 @@ paths:
         '413': { description: 请求体超过大小上限 }
         '415': { description: 请求体须使用 application/json }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/tasks/{id}/takeover:
+    parameters: [{ $ref: '#/components/parameters/TaskID' }]
+    put:
+      operationId: takeOverTask
+      security: [{ adminBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [request_id, summary]
+              properties:
+                request_id: { type: string, format: uuid, description: 同一次接手请求和摘要的重试沿用此 ID。 }
+                summary: { type: string, description: 去除两端空白后为 1 至 6000 UTF-8 字节。 }
+      responses:
+        '200':
+          description: 返回使用管理员确认摘要的关联新根任务。自动推送须另行授权。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+        '400': { description: 无效的任务 ID、请求 ID 或摘要 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 原任务不存在 }
+        '409': { description: 当前状态不可接手，已有其他接手请求或摘要冲突。 }
+        '413': { description: 请求体超过大小上限 }
+        '415': { description: 请求体须使用 application/json }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/approvals/{id}/answer:
     parameters:
       - { name: id, in: path, required: true, schema: { $ref: '#/components/schemas/ApprovalID' } }
@@ -584,6 +613,9 @@ paths:
                     propertyNames: { pattern: '^message:[A-Za-z0-9._-]{1,128}$' }
                     additionalProperties: { type: string }
                   session_id: { type: string, description: 首轮为空 }
+                  session_failure_supported:
+                    type: boolean
+                    description: 为 true 时设备可随已退出的续接轮次上报可证实的原生会话接入失败。字段缺省视为未启用。
                   approval_supported:
                     type: boolean
                     description: 为 true 时设备可提交请示回执。字段缺省视为未启用。
@@ -761,9 +793,27 @@ paths:
                 input_receipt:
                   description: 支持输入回执的轮次可提交此字段。本轮有待确认输入时，completed 必须覆盖领取的全部输入 ID。waiting、approval_requested、failed 和 interrupted 可确认部分输入。
                   $ref: '#/components/schemas/InputReceipt'
+                session_failure:
+                  type: string
+                  enum: [busy, unavailable]
+                  description: 已确认 dsh 续接进程退出，原生会话尚未接收业务输入。busy 延后重试，unavailable 使原任务进入待核对。
               allOf:
                 - if: { properties: { kind: { enum: [started, session, stopped] } } }
                   then: { not: { required: [input_receipt] } }
+                - if: { required: [session_failure] }
+                  then:
+                    required: [generation, lease]
+                    properties:
+                      kind: { const: failed }
+                      session_id: { const: '' }
+                      wait_for_task_ids: { maxItems: 0 }
+                      transfer_ids: { maxItems: 0 }
+                      artifacts: { maxItems: 0 }
+                    not:
+                      anyOf:
+                        - required: [approval]
+                        - required: [input_receipt]
+                        - required: [git_verification]
       responses:
         '204': { description: 事件已保存或已确认过相同内容 }
         '400': { description: 无效的事件、序号、运行诊断、输入回执或 Git 验证回执 }
@@ -1913,7 +1963,8 @@ components:
           uniqueItems: true
           description: 中心计划定义的直接前置任务 ID 列表。
           items: { $ref: '#/components/schemas/TaskID' }
-        waiting_reason: { type: string, enum: [children, delivery, transfers, prerequisites] }
+        waiting_reason: { type: string, enum: [children, delivery, transfers, prerequisites, session_busy, session_unavailable] }
+        takeover_source_task_id: { $ref: '#/components/schemas/TaskID', description: 新根任务接手的原任务。 }
         current_run_generation: { type: integer, format: int64, minimum: 0, description: 组合根任务为 0。 }
         git_policy_revision: { type: integer, format: int64, minimum: 1, description: 托管 Git 任务冻结的规则版本 }
         git_publish: { type: boolean, description: 任务要求确认远端目标包含候选提交。 }
@@ -2133,6 +2184,8 @@ components:
         artifacts: { type: array, items: { $ref: '#/components/schemas/Artifact' } }
         inputs: { type: array, items: { $ref: '#/components/schemas/TaskInput' } }
         waited_transfers: { type: array, items: { $ref: '#/components/schemas/WaitedTransfer' } }
+        takeovers: { type: array, maxItems: 1, items: { $ref: '#/components/schemas/Task' }, description: 接手当前任务的关联任务。 }
+        takeover_allowed: { type: boolean, description: Hub 确认原轮已退出且可由管理员提交摘要重新接手。 }
     Workspace:
       type: object
       required: [cursor, messages, tasks, projects, directories, approvals]

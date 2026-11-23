@@ -246,7 +246,7 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
             onSubmit={submitMessage}
           />
         )}
-        {route.view === 'board' && <TaskBoard token={token} tasks={workspace?.tasks} approvals={workspace?.approvals ?? []} approvalActions={approvalActions} taskControlActions={taskControlActions} cursor={workspace?.cursor} taskID={route.taskID} onFollow={attachTask} onLock={onLock} />}
+        {route.view === 'board' && <TaskBoard token={token} tasks={workspace?.tasks} approvals={workspace?.approvals ?? []} approvalActions={approvalActions} taskControlActions={taskControlActions} cursor={workspace?.cursor} taskID={route.taskID} onFollow={attachTask} onLock={onLock} onRefresh={refresh} />}
         {route.view === 'projects' && <Projects token={token} workspace={workspace} onSaved={refresh} onLock={onLock} />}
         {route.view === 'usage' && <DeviceUsage token={token} onLock={onLock} />}
       </main>

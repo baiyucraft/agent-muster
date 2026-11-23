@@ -33,6 +33,9 @@ var ErrInvalidInputReceipt = errors.New("invalid input receipt")
 // ErrInvalidArtifacts 表示产物引用不属于当前文件交付协议或未通过校验。
 var ErrInvalidArtifacts = errors.New("invalid run artifacts")
 
+// ErrInvalidSessionFailure 表示事件中的原生会话失败分类或附带证据无效。
+var ErrInvalidSessionFailure = errors.New("invalid native session failure")
+
 // Directory 表示设备登记的执行目录标识与展示名称。
 type Directory struct {
 	ID       string `json:"id"`
@@ -95,14 +98,21 @@ type Task struct {
 	ControlActions       []string  `json:"control_actions,omitempty"`
 	GitPolicyRevision    int64     `json:"git_policy_revision,omitempty"`
 	GitPublish           bool      `json:"git_publish,omitempty"`
-	CenterGroup          bool      `json:"center_group,omitempty"`        // 中心聚合任务没有设备运行。
-	DependsOnTaskIDs     []string  `json:"depends_on_task_ids,omitempty"` // 中心计划定义的固定前置步骤。
+	CenterGroup          bool      `json:"center_group,omitempty"`            // 中心聚合任务没有设备运行。
+	DependsOnTaskIDs     []string  `json:"depends_on_task_ids,omitempty"`     // 中心计划定义的固定前置步骤。
+	TakeoverSourceTaskID string    `json:"takeover_source_task_id,omitempty"` // 重新接手时关联的原任务。
 }
 
 // TaskControl 是管理员任务操作。请求 ID 在同一任务下去重，重复时返回当前状态。
 type TaskControl struct {
 	Action    string `json:"action"`
 	RequestID string `json:"request_id"`
+}
+
+// TaskTakeover 是管理员确认的接手摘要。同一来源任务按请求 ID 和摘要去重。
+type TaskTakeover struct {
+	RequestID string `json:"request_id"`
+	Summary   string `json:"summary"`
 }
 
 // Run 描述任务的一轮执行，保留其状态、原生会话、租约及设备上报的诊断摘要。
@@ -124,30 +134,31 @@ type Run struct {
 
 // RunClaim 是设备领取运行后的数据，包含执行上下文、租约、输入和可委派目标。
 type RunClaim struct {
-	ID                   string             `json:"id"`
-	TaskID               string             `json:"task_id"`
-	DirectoryID          string             `json:"directory_id"`
-	Prompt               string             `json:"prompt"`
-	SessionID            string             `json:"session_id"`
-	AgentKind            string             `json:"agent_kind"`
-	ProjectID            string             `json:"project_id"`
-	Generation           int64              `json:"generation"`
-	Lease                string             `json:"lease"`
-	LeaseUntil           time.Time          `json:"lease_until"`
-	BindingID            string             `json:"binding_id"`
-	ParentTaskID         string             `json:"parent_task_id,omitempty"`
-	ParentDeviceID       string             `json:"parent_device_id,omitempty"`
-	RootTaskID           string             `json:"root_task_id"`
-	PromptTransferID     string             `json:"prompt_transfer_id,omitempty"`
-	Attachments          []Transfer         `json:"attachments,omitempty"`
-	DependencyResults    []DependencyResult `json:"dependency_results,omitempty"`
-	InputIDs             []string           `json:"input_ids,omitempty"`      // 首次领取时冻结的输入。
-	InputMessages        map[string]string  `json:"input_messages,omitempty"` // 续接时带回的未处理消息，按输入 ID 索引。
-	DelegationTargets    []DelegationTarget `json:"delegation_targets,omitempty"`
-	ApprovalSupported    bool               `json:"approval_supported,omitempty"`
-	ControlSupported     bool               `json:"control_supported,omitempty"`
-	DiagnosticsSupported bool               `json:"diagnostics_supported,omitempty"`
-	ArtifactsSupported   bool               `json:"artifacts_supported,omitempty"` // Hub 接受本轮的本地产物引用。
+	ID                      string             `json:"id"`
+	TaskID                  string             `json:"task_id"`
+	DirectoryID             string             `json:"directory_id"`
+	Prompt                  string             `json:"prompt"`
+	SessionID               string             `json:"session_id"`
+	SessionFailureSupported bool               `json:"session_failure_supported,omitempty"` // Hub 可处理原生续接开始前的分类故障。
+	AgentKind               string             `json:"agent_kind"`
+	ProjectID               string             `json:"project_id"`
+	Generation              int64              `json:"generation"`
+	Lease                   string             `json:"lease"`
+	LeaseUntil              time.Time          `json:"lease_until"`
+	BindingID               string             `json:"binding_id"`
+	ParentTaskID            string             `json:"parent_task_id,omitempty"`
+	ParentDeviceID          string             `json:"parent_device_id,omitempty"`
+	RootTaskID              string             `json:"root_task_id"`
+	PromptTransferID        string             `json:"prompt_transfer_id,omitempty"`
+	Attachments             []Transfer         `json:"attachments,omitempty"`
+	DependencyResults       []DependencyResult `json:"dependency_results,omitempty"`
+	InputIDs                []string           `json:"input_ids,omitempty"`      // 首次领取时冻结的输入。
+	InputMessages           map[string]string  `json:"input_messages,omitempty"` // 续接时带回的未处理消息，按输入 ID 索引。
+	DelegationTargets       []DelegationTarget `json:"delegation_targets,omitempty"`
+	ApprovalSupported       bool               `json:"approval_supported,omitempty"`
+	ControlSupported        bool               `json:"control_supported,omitempty"`
+	DiagnosticsSupported    bool               `json:"diagnostics_supported,omitempty"`
+	ArtifactsSupported      bool               `json:"artifacts_supported,omitempty"` // Hub 接受本轮的本地产物引用。
 	// ReviewDiagnosticsSupported 声明当前 Hub 可接收独立 Review 诊断。
 	ReviewDiagnosticsSupported bool                `json:"review_diagnostics_supported,omitempty"`
 	GitPolicy                  *gitdelivery.Policy `json:"git_policy,omitempty"`
@@ -174,6 +185,7 @@ type DelegationTarget struct {
 // RunEvent 是设备上报的单条运行事件，携带运行代次和租约。诊断摘要只随本轮终态上报。
 type RunEvent struct {
 	Kind            string                    `json:"kind"`
+	SessionFailure  string                    `json:"session_failure,omitempty"` // dsh 原生续接启动前的失败分类：busy 或 unavailable。
 	SessionID       string                    `json:"session_id,omitempty"`
 	Text            string                    `json:"text,omitempty"`
 	Generation      int64                     `json:"generation"`
@@ -227,6 +239,8 @@ type Detail struct {
 	WaitedTransfers []TransferWait `json:"waited_transfers"`
 	Approvals       []Approval     `json:"approvals"`
 	Artifacts       []TaskArtifact `json:"artifacts,omitempty"`
+	Takeovers       []Task         `json:"takeovers,omitempty"`
+	TakeoverAllowed bool           `json:"takeover_allowed,omitempty"`
 }
 
 // TaskArtifact 是 Hub 确认的设备文件版本。任务、运行及设备由已认证的运行记录确定。
@@ -388,6 +402,7 @@ type Store interface {
 	RunLogDevice(context.Context, string, string) (string, error)
 	AuthenticateRunLogDevice(context.Context, string, [32]byte) error
 	ControlTask(context.Context, string, TaskControl) (Task, error)
+	TakeOverTask(context.Context, string, TaskTakeover) (Task, error)
 	SaveProject(context.Context, Project) (Project, error)
 	Projects(context.Context) ([]Project, error)
 	BindingCandidates(context.Context) ([]BindingCandidate, error)

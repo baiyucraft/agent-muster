@@ -58,6 +58,9 @@ var addRunArtifacts string
 //go:embed migrations/018_binding_proposals.sql
 var addBindingProposals string
 
+//go:embed migrations/019_session_recovery.sql
+var addSessionRecovery string
+
 // InventoryStore 使用 PostgreSQL 保存设备与工作区记录。
 type InventoryStore struct {
 	pool      *pgxpool.Pool
@@ -128,6 +131,12 @@ func OpenInventory(ctx context.Context, databaseURL string) (*InventoryStore, er
 			return err
 		}
 		if _, err := tx.Exec(ctx, addBindingProposals, pgx.QueryExecModeSimpleProtocol); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, addSessionRecovery, pgx.QueryExecModeSimpleProtocol); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, addSessionTakeovers, pgx.QueryExecModeSimpleProtocol); err != nil {
 			return err
 		}
 		return migrateQueuedManualRecoveries(ctx, tx)

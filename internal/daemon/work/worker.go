@@ -442,6 +442,9 @@ func (worker *Worker) execute(ctx context.Context, run control.Run, peer *collab
 	if event.Kind == "stopped" {
 		event.InputReceipt = nil
 	}
+	if event.Kind != "failed" || runCtx.Err() != nil {
+		event.SessionFailure = ""
+	}
 	event.Text = trimUTF8(event.Text, 12000)
 	return worker.stageTerminalEvent(persist, run, event, control.Manifest{}, nil, pendingPush)
 }
@@ -456,7 +459,7 @@ func (worker *Worker) invoke(ctx context.Context, run control.Run, service *loca
 		return event, err
 	}
 	sessionID := run.SessionID
-	var didStart bool
+	var didStart, sessionAdopted bool
 	event.Text, err = execute(ctx, run.AgentKind, dir, prompt, sessionID, env, func() error {
 		started := control.RunEvent{Kind: "started", SessionID: sessionID, Generation: run.Generation, Lease: run.Lease}
 		if err := worker.stageEvent(ctx, run.ID, started); err != nil {
@@ -470,6 +473,7 @@ func (worker *Worker) invoke(ctx context.Context, run control.Run, service *loca
 		didStart = true
 		return nil
 	}, func(id string) error {
+		sessionAdopted = true
 		persist, stopPersist := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer stopPersist()
 		if err := worker.stageEvent(persist, run.ID, control.RunEvent{Kind: "session", SessionID: id, Generation: run.Generation, Lease: run.Lease}); err != nil {
@@ -494,6 +498,14 @@ func (worker *Worker) invoke(ctx context.Context, run control.Run, service *loca
 	case didStart && ctx.Err() != nil:
 		event.Kind = "interrupted"
 		err = errors.Join(context.Cause(ctx), err)
+	case err != nil && didStart && run.SessionFailureSupported && run.SessionID != "" && (run.AgentKind == "" || run.AgentKind == "dsh") &&
+		!sessionAdopted && event.Text == "" && event.InputReceipt == nil:
+		switch {
+		case errors.Is(err, runner.ErrSessionBusy):
+			event.SessionFailure = "busy"
+		case errors.Is(err, runner.ErrSessionUnavailable):
+			event.SessionFailure = "unavailable"
+		}
 	case err == nil:
 		event.Kind = "completed"
 		wait, waitErr := worker.requestedWait(ctx, run.ID)

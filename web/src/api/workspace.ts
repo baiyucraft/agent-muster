@@ -18,6 +18,9 @@ export type TaskControlAction = 'pause' | 'stop_current' | 'resume' | 'cancel'
 /** 重试同一次操作时保持请求 ID，新操作使用新的 ID。 */
 export type TaskControlRequest = { action: TaskControlAction; request_id: string }
 
+/** 管理员确认的新任务摘要。相同摘要的重试继续使用同一个请求 ID。 */
+export type TaskTakeoverRequest = { request_id: string; summary: string }
+
 /** 看板的任务摘要，包含关联设备、Agent、依赖等待及待汇报状态。 */
 export type Task = {
   id: string
@@ -37,7 +40,9 @@ export type Task = {
   center_group?: boolean
   /** 中心派发时冻结的直接前置任务 ID。 */
   depends_on_task_ids?: string[]
-  waiting_reason?: 'children' | 'delivery' | 'transfers' | 'prerequisites'
+  waiting_reason?: 'children' | 'delivery' | 'transfers' | 'prerequisites' | 'session_busy' | 'session_unavailable'
+  /** 本任务以新会话重新接手的来源任务。 */
+  takeover_source_task_id?: string
   current_run_generation?: number
   wait_generation?: number
   git_policy_revision?: number
@@ -257,10 +262,17 @@ export type TaskDetail = {
   waited_transfers: WaitedTransfer[]
   approvals: Approval[]
   artifacts: Artifact[]
+  /** 由当前任务产生的接手任务。旧 Hub 没有此字段时按空列表处理。 */
+  takeovers: Task[]
+  /** Hub 确认当前任务可重新接手。字段缺省时不开放入口。 */
+  takeover_allowed?: boolean
 }
 
 /** 一条用户消息的 UTF-8 字节上限。 */
 export const messageBytes = 6_000
+
+/** 管理员确认的接手摘要 UTF-8 字节上限。 */
+export const takeoverSummaryBytes = 6_000
 /** 一条请示答复的 UTF-8 字节上限。 */
 export const approvalAnswerBytes = 2_000
 /** 项目名称的 UTF-8 字节上限。 */
@@ -307,7 +319,7 @@ export async function readTask(token: string, id: string, signal: AbortSignal): 
   return {
     ...detail, runs: detail.runs ?? [], messages: detail.messages ?? [], children: detail.children ?? [],
     dependencies: detail.dependencies ?? [], transfers: detail.transfers ?? [],
-    inputs: detail.inputs ?? [], waited_transfers: detail.waited_transfers ?? [], approvals: detail.approvals ?? [], artifacts: detail.artifacts ?? [],
+    inputs: detail.inputs ?? [], waited_transfers: detail.waited_transfers ?? [], approvals: detail.approvals ?? [], artifacts: detail.artifacts ?? [], takeovers: detail.takeovers ?? [],
   }
 }
 
@@ -339,6 +351,25 @@ export async function controlTask(token: string, id: string, input: TaskControlR
   const response = await request(token, `/api/v1/tasks/${encodeURIComponent(id)}/control`, {
     signal,
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  return (await response.json()) as Task
+}
+
+/**
+ * 将管理员确认的摘要作为接手任务的新输入。
+ * @param token 当前管理员会话的令牌。
+ * @param id 原任务 ID。
+ * @param input 接手摘要及重试沿用的提交 ID。
+ * @param signal 停止等待 HTTP 响应。
+ * @returns Hub 确认的新任务，同一次请求重试返回同一条记录。
+ * @throws 原任务不可接手或提交内容冲突时请求失败。
+ */
+export async function takeoverTask(token: string, id: string, input: TaskTakeoverRequest, signal: AbortSignal): Promise<Task> {
+  const response = await request(token, `/api/v1/tasks/${encodeURIComponent(id)}/takeover`, {
+    signal,
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })

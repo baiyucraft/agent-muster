@@ -2,9 +2,25 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
 )
+
+func (api workspaceAPI) takeOverTask(w http.ResponseWriter, r *http.Request) {
+	var input workspace.TaskTakeover
+	if !readWorkspaceText(w, r, &input) {
+		return
+	}
+	id := r.PathValue("id")
+	input.Summary = strings.TrimSpace(input.Summary)
+	if !prefixedUUID(id, "task-") || !uuidPattern.MatchString(input.RequestID) || !validText(input.Summary, 6000, true) {
+		writeError(w, http.StatusBadRequest, "invalid takeover request")
+		return
+	}
+	value, err := api.store.TakeOverTask(r.Context(), id, input)
+	workspaceJSON(w, http.StatusOK, value, err)
+}
 
 func (api workspaceAPI) controlTask(w http.ResponseWriter, r *http.Request) {
 	var input workspace.TaskControl

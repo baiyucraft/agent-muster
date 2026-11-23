@@ -17,13 +17,16 @@ const projectColumns = "id, name, device_id, directory_id, directory_label, agen
 const messageColumns = "id, kind, body, COALESCE(task_id, requested_task_id), status, created_at"
 const taskColumns = `t.id, COALESCE(t.project_id,''), t.project_name, COALESCE(t.device_id,''), COALESCE(t.directory_id,''), t.status, t.title, t.result,
 	EXISTS (SELECT 1 FROM muster_deliveries d WHERE d.task_id = t.id AND d.kind = 'report' AND NOT d.done),
-	t.updated_at,COALESCE(t.parent_id,''),t.root_id,COALESCE(t.binding_id,''),t.agent_kind,t.waiting_reason,
+	t.updated_at,COALESCE(t.parent_id,''),t.root_id,COALESCE(t.binding_id,''),t.agent_kind,
+	CASE WHEN t.status='queued' AND EXISTS (SELECT 1 FROM muster_runs retry WHERE retry.id=t.current_run_id
+		AND retry.session_retry_after IS NOT NULL AND retry.claimed_at IS NULL) THEN 'session_busy' ELSE t.waiting_reason END,
 	COALESCE((SELECT generation FROM muster_runs WHERE id=t.current_run_id),0),t.input_generation,
 	t.control_mode,
 	EXISTS (SELECT 1 FROM muster_runs r WHERE r.id=t.current_run_id AND r.claimed_at IS NOT NULL AND r.status IN ('queued','running')),
 	COALESCE((SELECT r.control_supported FROM muster_runs r WHERE r.id=t.current_run_id),false),
 	COALESCE((t.git_policy->>'revision')::bigint,0),t.git_publish,t.center_group,
-	ARRAY(SELECT prerequisite_id FROM muster_center_task_dependencies WHERE task_id=t.id ORDER BY prerequisite_id)`
+	ARRAY(SELECT prerequisite_id FROM muster_center_task_dependencies WHERE task_id=t.id ORDER BY prerequisite_id),
+	COALESCE((SELECT source_task_id FROM muster_session_takeovers x WHERE x.task_id=t.id),'')`
 
 // WorkspaceEvents 按游标升序返回指定位置之后最多 128 条工作区事件。
 // 超过当前工作区位置的游标返回冲突。
@@ -92,6 +95,16 @@ func (store *InventoryStore) TaskDetail(ctx context.Context, id string) (detail 
 		detail.Task, err = scanTask(tx.QueryRow(ctx, "SELECT "+taskColumns+" FROM muster_tasks t WHERE t.id=$1", id))
 		if err != nil {
 			return notFound(err)
+		}
+		if detail.Task.WaitingReason == "session_unavailable" {
+			if err := tx.QueryRow(ctx, "SELECT ("+eligibleTakeover+") FROM muster_tasks t WHERE t.id=$1", id).Scan(&detail.TakeoverAllowed); err != nil {
+				return err
+			}
+		}
+		detail.Takeovers, err = selectRows(ctx, tx, "SELECT "+taskColumns+` FROM muster_tasks t
+			JOIN muster_session_takeovers x ON x.task_id=t.id WHERE x.source_task_id=$1`, scanTask, id)
+		if err != nil {
+			return err
 		}
 		detail.Artifacts, err = taskArtifacts(ctx, tx, detail.Task)
 		if err != nil {
@@ -375,12 +388,12 @@ func (store *InventoryStore) SubmitMessage(ctx context.Context, input workspace.
 			return err
 		}
 		if input.TaskID != "" {
-			var mode string
+			var mode, reason string
 			var group bool
-			if err := tx.QueryRow(ctx, "SELECT control_mode,center_group FROM muster_tasks WHERE id=$1", input.TaskID).Scan(&mode, &group); err != nil {
+			if err := tx.QueryRow(ctx, "SELECT control_mode,waiting_reason,center_group FROM muster_tasks WHERE id=$1", input.TaskID).Scan(&mode, &reason, &group); err != nil {
 				return notFound(err)
 			}
-			if group || mode == "cancel" {
+			if group || mode == "cancel" || reason == "session_unavailable" {
 				return workspace.ErrConflict
 			}
 		}
@@ -470,7 +483,7 @@ func scanTask(row pgx.Row) (value workspace.Task, err error) {
 		&value.Status, &value.Title, &value.Result, &value.ReportPending, &value.UpdatedAt,
 		&value.ParentTaskID, &value.RootTaskID, &value.BindingID, &value.AgentKind, &value.WaitingReason,
 		&value.CurrentRunGeneration, &value.WaitGeneration, &control.mode, &control.active, &control.supported,
-		&value.GitPolicyRevision, &value.GitPublish, &value.CenterGroup, &value.DependsOnTaskIDs)
+		&value.GitPolicyRevision, &value.GitPublish, &value.CenterGroup, &value.DependsOnTaskIDs, &value.TakeoverSourceTaskID)
 	control.status = value.Status
 	value.ControlActions = control.actions()
 	if value.CenterGroup && len(value.ControlActions) != 0 {

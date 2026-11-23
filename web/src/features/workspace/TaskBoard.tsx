@@ -6,6 +6,7 @@ import { ApprovalCard, type ApprovalActions } from './ApprovalCard'
 import { MessageItem, Time } from './Conversation'
 import { RunLogs } from './RunLogs'
 import { TaskControls, type TaskControlActions } from './TaskControls'
+import { TaskTakeover } from './TaskTakeover'
 
 const statusText: Record<Task['status'] | Run['status'], string> = {
   queued: '排队', running: '运行中', waiting: '等待', waiting_dependencies: '等待依赖', waiting_delivery: '等待交付',
@@ -29,6 +30,8 @@ const waitingReasonText: Record<string, string> = {
   children: '等待所依赖的子任务结束并交付结果',
   transfers: '等待接收设备确认交接',
   prerequisites: '等待前置任务完成',
+  session_busy: '原会话被占用，等待继续执行',
+  session_unavailable: '原会话不可用',
 }
 
 const taskInputText: Record<TaskInput['kind'], string> = {
@@ -63,9 +66,10 @@ type TaskBoardProps = {
   taskID?: string
   onFollow: (task: Task) => void
   onLock: (reason: string) => void
+  onRefresh: () => void
 }
 
-export function TaskBoard({ token, tasks, approvals, approvalActions, taskControlActions, cursor, taskID, onFollow, onLock }: TaskBoardProps) {
+export function TaskBoard({ token, tasks, approvals, approvalActions, taskControlActions, cursor, taskID, onFollow, onLock, onRefresh }: TaskBoardProps) {
   const [deviceNames, setDeviceNames] = useState<Map<string, string>>(() => new Map())
   useEffect(() => {
     const controller = new AbortController()
@@ -78,7 +82,7 @@ export function TaskBoard({ token, tasks, approvals, approvalActions, taskContro
   }, [token, onLock])
 
   if (taskID) return <TaskDetails key={taskID} token={token} taskID={taskID} cursor={cursor} tasks={tasks} approvals={approvals}
-    approvalActions={approvalActions} taskControlActions={taskControlActions} deviceNames={deviceNames} onFollow={onFollow} onLock={onLock} />
+    approvalActions={approvalActions} taskControlActions={taskControlActions} deviceNames={deviceNames} onFollow={onFollow} onLock={onLock} onRefresh={onRefresh} />
 
   const roots = tasks?.filter((task) => !task.parent_task_id)
   const childrenByParent = new Map<string, Task[]>()
@@ -160,11 +164,11 @@ function ChildTasks({ tasks, deviceNames }: { tasks: Task[]; deviceNames?: Map<s
   ))}</div>
 }
 
-type TaskDetailsProps = Required<Pick<TaskBoardProps, 'token' | 'taskID' | 'onFollow' | 'onLock'>> & Pick<TaskBoardProps, 'cursor' | 'tasks' | 'approvals' | 'approvalActions' | 'taskControlActions'> & {
+type TaskDetailsProps = Required<Pick<TaskBoardProps, 'token' | 'taskID' | 'onFollow' | 'onLock' | 'onRefresh'>> & Pick<TaskBoardProps, 'cursor' | 'tasks' | 'approvals' | 'approvalActions' | 'taskControlActions'> & {
   deviceNames: Map<string, string>
 }
 
-function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskControlActions, taskID, deviceNames, onFollow, onLock }: TaskDetailsProps) {
+function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskControlActions, taskID, deviceNames, onFollow, onLock, onRefresh }: TaskDetailsProps) {
   const [detail, setDetail] = useState<TaskDetail>()
   const [runsOpen, setRunsOpen] = useState(false)
   const [error, setError] = useState('')
@@ -187,7 +191,7 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
   const controlResult = taskControlActions.submissions.get(taskID)?.result
   const snapshotTask = tasks?.find((task) => task.id === taskID)
   const task = latestTask(detail?.task, latestTask(snapshotTask, controlResult))
-  const canFollow = detail && task && !error && !task.parent_task_id && !task.center_group && task.status !== 'cancelled' && task.status !== 'cancelling' && (
+  const canFollow = detail && task && !error && !task.parent_task_id && !task.center_group && task.status !== 'cancelled' && task.status !== 'cancelling' && task.waiting_reason !== 'session_unavailable' && (
     task.status === 'queued' || task.status === 'running' || task.status === 'paused' || detail.runs.some((run) => run.session_id)
   )
   const taskName = (id: string) => tasks?.find((task) => task.id === id)?.title ?? id
@@ -218,13 +222,14 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
       )}
       {detail && task && <div className="task-detail-grid">
         <div className="task-detail-panel">
-          {task.parent_task_id && <div className="task-ancestry">
-            <a className="text-link" href={`#board/${task.parent_task_id}`}>父任务 {taskName(task.parent_task_id)}</a>
-            {task.root_task_id && task.root_task_id !== task.parent_task_id && <a className="text-link" href={`#board/${task.root_task_id}`}>根任务 {taskName(task.root_task_id)}</a>}
+          {(task.parent_task_id || task.takeover_source_task_id) && <div className="task-ancestry">
+            {task.parent_task_id && <a className="text-link" href={`#board/${task.parent_task_id}`}>父任务 {taskName(task.parent_task_id)}</a>}
+            {task.parent_task_id && task.root_task_id && task.root_task_id !== task.parent_task_id && <a className="text-link" href={`#board/${task.root_task_id}`}>根任务 {taskName(task.root_task_id)}</a>}
+            {task.takeover_source_task_id && <a className="text-link" href={`#board/${task.takeover_source_task_id}`}>原任务 {taskName(task.takeover_source_task_id)}</a>}
           </div>}
           <dl className="task-facts">
             <div><dt>状态</dt><dd aria-live="polite"><TaskStatus status={task.status} />{task.report_pending && ' · 待汇报'}</dd></div>
-            {task.waiting_reason && <div><dt>等待原因</dt><dd>{waitingReasonText[task.waiting_reason] ?? task.waiting_reason}</dd></div>}
+            {task.waiting_reason && task.waiting_reason !== 'session_unavailable' && <div><dt>等待原因</dt><dd>{waitingReasonText[task.waiting_reason] ?? task.waiting_reason}</dd></div>}
             {!task.center_group && <>
               <div><dt>项目</dt><dd>{task.project_name}</dd></div>
               <div><dt>设备</dt><dd>{deviceNames.get(task.device_id) ?? task.device_id}</dd></div>
@@ -232,6 +237,8 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
             </>}
             <div><dt>更新时间</dt><dd><Time value={task.updated_at} /></dd></div>
           </dl>
+          {task.waiting_reason === 'session_unavailable' && <TaskTakeover token={token} taskID={taskID} allowed={detail.takeover_allowed === true && !error}
+            onRefresh={() => { setRetry((current) => current + 1); onRefresh() }} onLock={onLock} />}
           <TaskControls task={task} actions={taskControlActions} disabled={Boolean(error)} />
           {task.result && <div className="detail-result"><h2>结果</h2><p className="message-text">{task.result}</p></div>}
           <details className="task-technical">
@@ -260,6 +267,7 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
           </article>)}
         </details>}
         {detail.children.length > 0 && <section className="task-detail-panel" aria-labelledby="children-heading"><h2 id="children-heading">子任务</h2><ChildTasks tasks={detail.children} deviceNames={task.center_group ? deviceNames : undefined} /></section>}
+        {detail.takeovers.length > 0 && <section className="task-detail-panel" aria-labelledby="takeovers-heading"><h2 id="takeovers-heading">接手任务</h2><ChildTasks tasks={detail.takeovers} /></section>}
         {task.depends_on_task_ids && task.depends_on_task_ids.length > 0 && <section className="task-detail-panel" aria-labelledby="prerequisites-heading">
           <h2 id="prerequisites-heading">前置任务</h2>
           <div className="child-task-list">{task.depends_on_task_ids.map((id) => {

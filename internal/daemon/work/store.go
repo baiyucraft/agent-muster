@@ -347,6 +347,11 @@ func (worker *Worker) stageEventWithResult(ctx context.Context, runID string, ev
 		if err != nil {
 			return err
 		}
+		if event.SessionFailure != "" {
+			if err := verifyUnopenedSession(ctx, tx, runID, &event); err != nil {
+				return err
+			}
+		}
 	}
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -384,6 +389,33 @@ func (worker *Worker) stageEventWithResult(ctx context.Context, runID string, ev
 		return err
 	}
 	worker.notify()
+	return nil
+}
+
+// verifyUnopenedSession 校验原生拒绝与本轮持久化记录一致。证据存在时保留普通终态。
+func verifyUnopenedSession(ctx context.Context, tx *sql.Tx, runID string, event *control.RunEvent) error {
+	if event.Kind != "failed" || event.InputReceipt != nil || event.Approval != nil || event.GitVerification != nil ||
+		len(event.Artifacts)+len(event.WaitForTaskIDs)+len(event.TransferIDs) != 0 ||
+		(event.Diagnostics != nil && len(event.Diagnostics.Reviews) != 0) {
+		event.SessionFailure = ""
+		return nil
+	}
+	var hasEvidence bool
+	err := tx.QueryRowContext(ctx, `SELECT
+		EXISTS (SELECT 1 FROM input_receipt_original_replies WHERE run_id=?1) OR
+		EXISTS (SELECT 1 FROM peer_manifests WHERE run_id=?1) OR
+		EXISTS (SELECT 1 FROM helper_waits WHERE run_id=?1) OR
+		EXISTS (SELECT 1 FROM delegations WHERE run_id=?1) OR
+		EXISTS (SELECT 1 FROM git_push_attempts WHERE run_id=?1)`, runID).Scan(&hasEvidence)
+	if err != nil {
+		return err
+	}
+	if hasEvidence {
+		event.SessionFailure = ""
+	} else {
+		// 本机运行记录中的会话 ID 仍保留；分类事件只描述本轮未采纳会话。
+		event.SessionID = ""
+	}
 	return nil
 }
 

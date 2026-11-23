@@ -270,23 +270,23 @@ func insertTask(ctx context.Context, tx pgx.Tx, taskID, runID, title, parentID, 
 }
 
 func appendRun(ctx context.Context, tx pgx.Tx, taskID, runID string) error {
-	var status, session, parent, mode string
+	var status, session, parent, mode, reason string
 	var pendingDependency bool
 	err := tx.QueryRow(ctx, `
-		SELECT t.status,t.session_id,COALESCE(t.parent_id,''),t.control_mode,EXISTS (
+		SELECT t.status,t.session_id,COALESCE(t.parent_id,''),t.control_mode,t.waiting_reason,EXISTS (
 			SELECT 1 FROM muster_runs r WHERE r.id=t.current_run_id AND r.status='queued'
-				AND r.claimed_at IS NULL AND r.ready_priority=$2 AND r.dependency_results IS NOT NULL
+				AND r.claimed_at IS NULL AND r.session_retry_origin IS NULL AND r.ready_priority=$2 AND r.dependency_results IS NOT NULL
 		) FROM muster_tasks t
 		JOIN muster_directories d USING (device_id,directory_id)
 		JOIN muster_devices v USING (device_id) WHERE t.id=$1 AND v.revoked_at IS NULL`, taskID, priorityDependency).
-		Scan(&status, &session, &parent, &mode, &pendingDependency)
+		Scan(&status, &session, &parent, &mode, &reason, &pendingDependency)
 	if err != nil {
 		return notFound(err)
 	}
 	if parent != "" {
 		return registry.ErrNotFound
 	}
-	if mode == "cancel" || status == "interrupted" && mode == "pause" {
+	if mode == "cancel" || reason == "session_unavailable" || status == "interrupted" && mode == "pause" {
 		return workspace.ErrConflict
 	}
 	if status == "running" || status == "queued" && !pendingDependency || status == "waiting_reply" || status == "paused" {

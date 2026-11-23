@@ -67,6 +67,8 @@ func (worker *Worker) invokeGit(ctx context.Context, run control.Run, peer *coll
 			return event, errors.New(feedback)
 		}
 		run.SessionID = event.SessionID
+		// 本轮已经运行过模型。返修遇到的续接错误按普通失败保存。
+		run.SessionFailureSupported = false
 		run.Prompt = gitRepairPrompt(feedback, evidence, filepath.Join(worker.root, "git", run.TaskID))
 		// 输入已在同一运行中处理，返修沿用 event 中的回执和原生会话。
 		run.InputIDs = nil

@@ -43,8 +43,10 @@ func freezeRunInputs(ctx context.Context, tx pgx.Tx, taskID, runID string) error
 func loadClaimInputs(ctx context.Context, tx pgx.Tx, claim *workspace.RunClaim, supported bool) error {
 	type runInput struct{ id, carriedPrompt string }
 	inputs, err := selectRows(ctx, tx, `SELECT ri.input_id,
-		CASE WHEN i.message_id IS NOT NULL AND i.origin_run_id<>$1 THEN origin.input ELSE '' END
+		CASE WHEN i.message_id IS NOT NULL AND i.origin_run_id<>COALESCE(run.session_retry_origin,run.id)
+		THEN origin.input ELSE '' END
 		FROM muster_run_inputs ri JOIN muster_task_inputs i ON (i.task_id,i.id)=(ri.task_id,ri.input_id)
+		JOIN muster_runs run ON run.id=ri.run_id
 		JOIN muster_runs origin ON origin.id=i.origin_run_id WHERE ri.run_id=$1 ORDER BY origin.sequence,ri.input_id`,
 		func(row pgx.Row) (item runInput, err error) {
 			err = row.Scan(&item.id, &item.carriedPrompt)
@@ -107,8 +109,13 @@ func requireStartedForInputReceipt(ctx context.Context, tx pgx.Tx, runID string,
 	return nil
 }
 
-// markRunInputsDelivered 只记录实际启动的当前轮次。领取和会话 ID 上报不足以确认投递。
+// markRunInputsDelivered 记录实际启动的当前轮次，并保留回退所需的上一条送达记录。
 func markRunInputsDelivered(ctx context.Context, tx pgx.Tx, runID string) error {
+	if _, err := tx.Exec(ctx, `UPDATE muster_run_inputs ri SET previous_delivery_run_id=i.delivered_run_id
+		FROM muster_task_inputs i WHERE ri.run_id=$1 AND (i.task_id,i.id)=(ri.task_id,ri.input_id)
+		AND i.handled_run_id IS NULL AND i.delivered_run_id IS DISTINCT FROM $1`, runID); err != nil {
+		return err
+	}
 	_, err := tx.Exec(ctx, `UPDATE muster_task_inputs i SET delivered_run_id=$1 FROM muster_run_inputs ri
 		WHERE ri.run_id=$1 AND (i.task_id,i.id)=(ri.task_id,ri.input_id) AND i.handled_run_id IS NULL`, runID)
 	return err

@@ -68,6 +68,7 @@ func (s server) registerWorkspace(mux *http.ServeMux, options WorkspaceOptions, 
 	admin("GET /api/v1/tasks/{id}/runs/{run_id}/logs", logs.read)
 	admin("GET /api/v1/runs/{id}/artifacts/{artifact_id}", artifacts.read)
 	admin("POST /api/v1/tasks/{id}/control", api.controlTask)
+	admin("PUT /api/v1/tasks/{id}/takeover", api.takeOverTask)
 	admin("GET /api/v1/events", api.events)
 	admin("POST /api/v1/approvals/{id}/answer", api.answerApproval)
 	admin("PUT /api/v1/projects/{id}", api.saveProject)
@@ -268,6 +269,11 @@ func (api workspaceAPI) recordEvent(w http.ResponseWriter, r *http.Request, devi
 	}
 	if !artifact.ValidFor(id, event.Artifacts) {
 		writeError(w, http.StatusBadRequest, "invalid run artifacts")
+		return
+	}
+	if event.SessionFailure != "" && (event.Kind != "failed" || event.SessionID != "" ||
+		(event.SessionFailure != "busy" && event.SessionFailure != "unavailable") || !validRunLease(event.Generation, event.Lease)) {
+		writeError(w, http.StatusBadRequest, "invalid session failure")
 		return
 	}
 	if !validText(event.Text, 12000, false) || (event.SessionID != "" && !sessionPattern.MatchString(event.SessionID)) ||
@@ -477,6 +483,8 @@ func workspaceJSON(w http.ResponseWriter, status int, value any, err error) {
 	case errors.Is(err, workspace.ErrInvalidGitPublication):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrInvalidInputReceipt):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, workspace.ErrInvalidSessionFailure):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrInvalidArtifacts):
 		writeError(w, http.StatusBadRequest, err.Error())

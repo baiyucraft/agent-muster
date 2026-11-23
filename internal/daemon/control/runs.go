@@ -61,6 +61,7 @@ type Run struct {
 	ControlSupported           bool                `json:"control_supported,omitempty"`            // Hub 可向该运行下发停止指令。
 	DiagnosticsSupported       bool                `json:"diagnostics_supported,omitempty"`        // Hub 接受终态诊断字段。
 	ReviewDiagnosticsSupported bool                `json:"review_diagnostics_supported,omitempty"` // Hub 接受独立 Review 诊断及日志引用。
+	SessionFailureSupported    bool                `json:"session_failure_supported,omitempty"`    // Hub 接受续接前由原生 CLI 确认的失败分类。
 	GitPolicy                  *gitdelivery.Policy `json:"git_policy,omitempty"`                   // Git 任务首次派发时冻结的规则。
 	GitPublish                 bool                `json:"git_publish,omitempty"`                  // 创建根任务时明确启用了推送交付。
 }
@@ -128,8 +129,9 @@ type RunEvent struct {
 	Approval        *approval.Question        `json:"approval,omitempty"`
 	Diagnostics     *runreport.Diagnostics    `json:"diagnostics,omitempty"`
 	GitVerification *gitdelivery.Verification `json:"git_verification,omitempty"`
-	InputReceipt    *inputreceipt.Receipt     `json:"input_receipt,omitempty"` // 本轮确认处理的输入。
-	Artifacts       []artifact.Reference      `json:"artifacts,omitempty"`     // 已在本机保存的文件版本。
+	InputReceipt    *inputreceipt.Receipt     `json:"input_receipt,omitempty"`   // 本轮确认处理的输入。
+	Artifacts       []artifact.Reference      `json:"artifacts,omitempty"`       // 已在本机保存的文件版本。
+	SessionFailure  string                    `json:"session_failure,omitempty"` // 未打开原生会话的失败分类，busy 或 unavailable。仅用于无 session_id 的 failed 事件。
 }
 
 // ReportDirectories 向 Hub 上报本设备当前可派发的工作目录清单。
