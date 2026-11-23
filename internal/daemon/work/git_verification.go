@@ -34,7 +34,7 @@ func (worker *Worker) invokeGit(ctx context.Context, run control.Run, peer *coll
 			return event, err
 		}
 	}
-	acceptance := run.Prompt
+	acceptance := run.Prompt + inputMessageContext(run.InputMessages)
 	run.Prompt += "\n\n请在本轮提供的 Git 工作树内完成修改，并逐个暂存和提交修改的项目文件。.muster-inbox 是设备收件目录，请留在本机。设备会在独立检出中测试候选提交，请将推送留给交付流程。"
 	for repairs := 0; ; repairs++ {
 		event.GitVerification = nil
@@ -68,6 +68,9 @@ func (worker *Worker) invokeGit(ctx context.Context, run control.Run, peer *coll
 		}
 		run.SessionID = event.SessionID
 		run.Prompt = gitRepairPrompt(feedback, evidence, filepath.Join(worker.root, "git", run.TaskID))
+		// 输入已在同一运行中处理，返修沿用 event 中的回执和原生会话。
+		run.InputIDs = nil
+		run.InputMessages = nil
 	}
 }
 

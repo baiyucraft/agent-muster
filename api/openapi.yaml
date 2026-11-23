@@ -499,9 +499,13 @@ paths:
           in: header
           description: 支持独立审查、推送和回读的设备发送值 1，并同时声明支持停止指令和候选验证。
           schema: { type: string, enum: ['1'] }
+        - name: Muster-Input-Receipt
+          in: header
+          description: 支持按输入 ID 提交处理回执的设备发送值 1。
+          schema: { type: string, enum: ['1'] }
       responses:
         '200':
-          description: 已领取运行。重复领取未结束的运行会返回原指令。
+          description: 已领取运行。重复领取未结束的运行会返回原指令。完整 JSON 响应上限为 256 KiB，输入 ID 回执上限为 16 KiB。超限的首次领取会把该任务标为待核对并保留未处理输入，设备可继续领取其他任务。
           content:
             application/json:
               schema:
@@ -512,6 +516,14 @@ paths:
                   task_id: { $ref: '#/components/schemas/TaskID' }
                   directory_id: { $ref: '#/components/schemas/DirectoryID' }
                   prompt: { type: string }
+                  input_ids:
+                    description: 本轮需要设备确认处理的输入 ID。按领取请求协商能力后返回。
+                    $ref: '#/components/schemas/RunInputIDs'
+                  input_messages:
+                    type: object
+                    description: 续接带回的未处理消息，键为对应的 message 输入 ID。本轮新指令仍通过 prompt 提供。
+                    propertyNames: { pattern: '^message:[A-Za-z0-9._-]{1,128}$' }
+                    additionalProperties: { type: string }
                   session_id: { type: string, description: 首轮为空 }
                   approval_supported:
                     type: boolean
@@ -543,6 +555,7 @@ paths:
                   delegation_targets:
                     type: array
                     maxItems: 64
+                    description: 可用于设备协作的目标建议。领取响应空间不足时，Hub 可省略此字段。
                     items:
                       type: object
                       required: [project_id, project_name, binding_id, device_id, device_name, agent_kind, directory_label]
@@ -611,7 +624,7 @@ paths:
       operationId: recordRunEvent
       security: [{ deviceBearer: [] }]
       requestBody:
-        description: JSON 请求体不超过 80 KiB。请示与停止事件须携带当前运行代次和租约。停止事件须在确认本轮进程树退出后上报。
+        description: JSON 请求体不超过 256 KiB。请示与停止事件须携带当前运行代次和租约。停止事件须在确认本轮进程树退出后上报。
         required: true
         content:
           application/json:
@@ -636,9 +649,15 @@ paths:
                 git_verification:
                   description: 托管 Git 任务的验证结果。completed 事件须提供已通过的回执。
                   $ref: '#/components/schemas/GitVerification'
+                input_receipt:
+                  description: 支持输入回执的轮次可提交此字段。本轮有待确认输入时，completed 必须覆盖领取的全部输入 ID。waiting、approval_requested、failed 和 interrupted 可确认部分输入。
+                  $ref: '#/components/schemas/InputReceipt'
+              allOf:
+                - if: { properties: { kind: { enum: [started, session, stopped] } } }
+                  then: { not: { required: [input_receipt] } }
       responses:
         '204': { description: 事件已保存或已确认过相同内容 }
-        '400': { description: 无效的事件、序号、运行诊断或 Git 验证回执 }
+        '400': { description: 无效的事件、序号、运行诊断、输入回执或 Git 验证回执 }
         '401': { $ref: '#/components/responses/DeviceUnauthorized' }
         '404': { description: 设备未领取该运行 }
         '409': { description: 事件序号、内容、原生会话、请示或运行控制状态发生冲突 }
@@ -904,6 +923,7 @@ paths:
       operationId: authorizeGitPush
       security: [{ deviceBearer: [] }]
       requestBody:
+        description: JSON 请求体不超过 80 KiB。
         required: true
         content:
           application/json:
@@ -916,16 +936,20 @@ paths:
                 lease: { $ref: '#/components/schemas/Lease' }
                 verification: { $ref: '#/components/schemas/GitVerification' }
                 destination_fingerprint: { type: string, pattern: '^[a-f0-9]{64}$', description: 设备为实际推送地址计算的指纹。 }
+                input_receipt:
+                  description: 支持输入回执的轮次存在待确认输入时，须覆盖领取的全部输入 ID，方可申请推送授权。
+                  $ref: '#/components/schemas/InputReceipt'
       responses:
         '200':
           description: 已保存或重放同一推送意图。仅 push_allowed 为 true 时可发起推送。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/GitPushIntent' }
-        '400': { description: 推送请求或验证证据无效 }
+        '400': { description: 推送请求、输入回执或验证证据无效 }
         '401': { $ref: '#/components/responses/DeviceUnauthorized' }
         '404': { description: 设备未领取该运行 }
         '409': { description: 运行状态、控制指令、追加输入或意图内容冲突 }
+        '413': { description: 请求体超过大小上限 }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/devices/{device_id}/runs/{id}/git-push/{intent_id}/observation:
     parameters:
@@ -1430,6 +1454,21 @@ components:
       maxItems: 32
       uniqueItems: true
       items: { $ref: '#/components/schemas/TransferID' }
+    RunInputIDs:
+      type: array
+      uniqueItems: true
+      items:
+        type: string
+        pattern: '^(message|transfer):[A-Za-z0-9._-]{1,128}$'
+    InputReceipt:
+      type: object
+      additionalProperties: false
+      description: 设备领取时确保完整的输入回执 JSON 不超过 16 KiB。
+      required: [handled_input_ids]
+      properties:
+        handled_input_ids:
+          description: 本轮实际处理过的输入 ID。每个 ID 都必须属于本轮领取的输入集合。
+          $ref: '#/components/schemas/RunInputIDs'
     TransferKind: { type: string, enum: [prompt, file, message, result] }
     RunLease:
       type: object
@@ -1480,7 +1519,7 @@ components:
       required: [id, kind, status, created_at]
       properties:
         id: { type: string, description: 请示答复使用关联的请示 ID。 }
-        kind: { type: string, enum: [message, delegation, dependency, execution, approval] }
+        kind: { type: string, enum: [message, delegation, dependency, execution, approval, transfer] }
         status: { type: string }
         created_at: { type: string, format: date-time }
         message_id: { type: string }
@@ -1488,6 +1527,15 @@ components:
         generation: { type: integer, format: int64, minimum: 1 }
         claimed_at: { type: string, format: date-time }
         transfer_ids: { type: array, items: { $ref: '#/components/schemas/TransferID' } }
+        receipt_status: { type: string, enum: [awaiting_delivery, delivered, handled, needs_review], description: Hub 确认的输入处理进度。 }
+        receipt_run_id: { $ref: '#/components/schemas/RunID' }
+        handled_at: { type: string, format: date-time, description: Hub 确认输入已处理的时间。 }
+      allOf:
+        - if: { properties: { kind: { const: transfer } } }
+          then:
+            required: [transfer_ids]
+            properties:
+              transfer_ids: { minItems: 1, maxItems: 1 }
     WaitedTransfer:
       type: object
       required: [transfer_id, generation, active, status]

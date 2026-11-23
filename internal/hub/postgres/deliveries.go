@@ -170,6 +170,12 @@ func (store *InventoryStore) Dispatch(ctx context.Context, id string, input work
 				return err
 			}
 		}
+		if input.TaskID != "" {
+			if _, err := tx.Exec(ctx, `INSERT INTO muster_task_inputs(task_id,id,origin_run_id,message_id)
+				VALUES($1,'message:' || $2,$3,$2)`, taskID, messageID, runID); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.Exec(ctx, "UPDATE muster_messages SET task_id=$2,status='handled' WHERE id=$1", messageID, taskID); err != nil {
 			return err
 		}

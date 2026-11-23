@@ -3,12 +3,14 @@ package postgres
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"time"
 
 	"github.com/baiyucraft/agent-muster/internal/hub/registry"
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
+	"github.com/baiyucraft/agent-muster/internal/inputreceipt"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -71,11 +73,17 @@ func (store *InventoryStore) ClaimRunWithCapabilities(ctx context.Context, devic
 
 // ClaimRunWithGitPublication 仅向同时支持运行控制、候选验证与推送回读的设备领取推送任务。
 func (store *InventoryStore) ClaimRunWithGitPublication(ctx context.Context, device string, token [32]byte, controlSupported, gitVerificationSupported, gitPublishSupported bool) (claim workspace.RunClaim, err error) {
+	return store.ClaimRunWithInputReceipts(ctx, device, token, controlSupported, gitVerificationSupported, gitPublishSupported, false)
+}
+
+// ClaimRunWithInputReceipts 协商轮次处理回执能力并在首次领取时冻结输入清单。
+// 同一轮次再次领取时保留已协商的能力、输入和租约身份。
+func (store *InventoryStore) ClaimRunWithInputReceipts(ctx context.Context, device string, token [32]byte, controlSupported, gitVerificationSupported, gitPublishSupported, inputReceiptSupported bool) (claim workspace.RunClaim, err error) {
 	err = store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		if err := authenticateDevice(ctx, tx, device, token); err != nil {
 			return err
 		}
-		var firstClaim bool
+		var firstClaim, receiptNegotiated, inputsFrozen bool
 		// 先处理已受理的用户要求。已领取的运行保持归属，设备可继续按原租约恢复。
 		err := tx.QueryRow(ctx, `
 			WITH choice AS (
@@ -90,6 +98,7 @@ func (store *InventoryStore) ClaimRunWithGitPublication(ctx context.Context, dev
 				AND (t.git_policy IS NULL OR $4)
 				AND (NOT t.git_publish OR ($3 AND $4 AND $5))
 				AND (COALESCE(t.git_policy->>'review_agent','')='' OR $5 OR (r.claimed_at IS NOT NULL AND NOT r.git_review_supported))
+				AND (NOT r.input_receipt_supported OR $7)
 				AND NOT EXISTS (SELECT 1 FROM muster_runs active WHERE active.device_id=$1
 					AND active.id<>r.id AND active.status IN ('queued','running') AND active.claimed_at IS NOT NULL)
 				ORDER BY (r.claimed_at IS NOT NULL) DESC,
@@ -99,17 +108,21 @@ func (store *InventoryStore) ClaimRunWithGitPublication(ctx context.Context, dev
 			UPDATE muster_runs r SET claimed_at=COALESCE(r.claimed_at,clock_timestamp()),
 				control_supported=CASE WHEN choice.first_claim THEN $3 ELSE r.control_supported END,
 				git_review_supported=CASE WHEN choice.first_claim THEN $5 ELSE r.git_review_supported END,
+				input_receipt_supported=CASE WHEN choice.first_claim THEN $7 ELSE r.input_receipt_supported END,
+				input_receipts_frozen=r.input_receipts_frozen OR choice.first_claim,
 				input_session=CASE WHEN choice.first_claim THEN choice.session_id ELSE r.input_session END,
 				lease=COALESCE(NULLIF(r.lease,''),$2),lease_until=clock_timestamp()+interval '60 seconds'
 			FROM choice,muster_tasks t LEFT JOIN muster_tasks parent ON parent.id=t.parent_id
 			WHERE r.id=choice.id AND t.id=r.task_id
 			RETURNING r.id,t.id,t.directory_id,r.input,r.input_session,t.agent_kind,t.project_id,r.generation,
 				r.lease,r.lease_until,t.binding_id,COALESCE(t.parent_id,''),COALESCE(parent.device_id,''),t.root_id,
-				r.prompt_transfer_id,r.dependency_results,choice.first_claim,r.control_supported,t.git_policy,t.git_publish`,
-			device, rand.Text(), controlSupported, gitVerificationSupported, gitPublishSupported, priorityDependency).
+				r.prompt_transfer_id,r.dependency_results,choice.first_claim,r.control_supported,t.git_policy,t.git_publish,
+				r.input_receipt_supported,r.input_receipts_frozen`,
+			device, rand.Text(), controlSupported, gitVerificationSupported, gitPublishSupported, priorityDependency, inputReceiptSupported).
 			Scan(&claim.ID, &claim.TaskID, &claim.DirectoryID, &claim.Prompt, &claim.SessionID, &claim.AgentKind,
 				&claim.ProjectID, &claim.Generation, &claim.Lease, &claim.LeaseUntil, &claim.BindingID, &claim.ParentTaskID,
-				&claim.ParentDeviceID, &claim.RootTaskID, &claim.PromptTransferID, &claim.DependencyResults, &firstClaim, &claim.ControlSupported, &claim.GitPolicy, &claim.GitPublish)
+				&claim.ParentDeviceID, &claim.RootTaskID, &claim.PromptTransferID, &claim.DependencyResults, &firstClaim, &claim.ControlSupported, &claim.GitPolicy, &claim.GitPublish,
+				&receiptNegotiated, &inputsFrozen)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -119,9 +132,21 @@ func (store *InventoryStore) ClaimRunWithGitPublication(ctx context.Context, dev
 		claim.LeaseUntil = claim.LeaseUntil.UTC()
 		claim.ApprovalSupported = true
 		claim.DiagnosticsSupported = true
+		claim.ReviewDiagnosticsSupported = true
+		if firstClaim {
+			if err := freezeRunInputs(ctx, tx, claim.TaskID, claim.ID); err != nil {
+				return err
+			}
+		}
+		if err := loadClaimInputs(ctx, tx, &claim, receiptNegotiated); err != nil {
+			return err
+		}
 		claim.Attachments, err = selectRows(ctx, tx, "SELECT "+transferColumns+` FROM muster_run_transfers rt
 			JOIN muster_transfers tr ON tr.id=rt.transfer_id WHERE rt.run_id=$1 AND rt.direction='input'
-			ORDER BY tr.kind,tr.id`, scanTransfer, claim.ID)
+			AND (NOT $3 OR tr.kind='prompt' OR tr.id=$2 OR EXISTS (
+				SELECT 1 FROM muster_run_inputs ri WHERE ri.run_id=$1 AND ri.input_id='transfer:' || tr.id
+			))
+			ORDER BY tr.kind,tr.id`, scanTransfer, claim.ID, claim.PromptTransferID, inputsFrozen)
 		if err != nil {
 			return err
 		}
@@ -137,32 +162,82 @@ func (store *InventoryStore) ClaimRunWithGitPublication(ctx context.Context, dev
 					&target.DeviceName, &target.AgentKind, &target.DirectoryLabel)
 				return target, err
 			}, device, claim.ProjectID)
-		if err == nil && firstClaim {
-			return advanceWorkspace(ctx, tx)
+		if err != nil {
+			return err
 		}
-		return err
+		fits, err := fitRunClaim(&claim)
+		if err != nil || !firstClaim {
+			return err
+		}
+		if !fits {
+			if err := interruptOversizedClaim(ctx, tx, device, claim); err != nil {
+				return err
+			}
+			claim = workspace.RunClaim{}
+		}
+		return advanceWorkspace(ctx, tx)
 	})
 	return
 }
 
+func fitRunClaim(claim *workspace.RunClaim) (bool, error) {
+	payload, err := json.Marshal(claim)
+	// Hub 的 JSON Encoder 会在响应末尾追加一个换行。
+	if err == nil && len(payload)+1 > inputreceipt.MaxClaimBytes && len(claim.DelegationTargets) > 0 {
+		// 目标建议可省略，输入标识、消息和附件必须保留。
+		claim.DelegationTargets = nil
+		payload, err = json.Marshal(claim)
+	}
+	if err != nil || len(payload)+1 > inputreceipt.MaxClaimBytes {
+		return false, err
+	}
+	if len(claim.InputIDs) == 0 {
+		return true, nil
+	}
+	receipt, err := json.Marshal(inputreceipt.Receipt{HandledIDs: claim.InputIDs})
+	return len(receipt) <= inputreceipt.MaxReceiptBytes, err
+}
+
+func interruptOversizedClaim(ctx context.Context, tx pgx.Tx, device string, claim workspace.RunClaim) error {
+	run, err := readRunState(ctx, tx, device, claim.ID)
+	if err != nil {
+		return err
+	}
+	const outcome = "待处理的输入超过单轮传输上限。请核对任务输入并分批重新交办。"
+	// 领取尚未提交，设备没有获得此轮执行权。保留冻结输入供任务详情核对。
+	if _, err := tx.Exec(ctx, `UPDATE muster_runs SET status='interrupted',claimed_at=NULL,lease='',lease_until=NULL,
+		outcome=$2,updated_at=clock_timestamp() WHERE id=$1`, claim.ID, outcome); err != nil {
+		return err
+	}
+	run.WaitingReason = ""
+	if err := updateTaskFromRun(ctx, tx, run, claim.ID, "interrupted", claim.SessionID, outcome, true, false); err != nil {
+		return err
+	}
+	if run.ParentTaskID != "" && run.ParentDeviceID == "" {
+		return reconcileCenterTaskGroup(ctx, tx, run.ParentTaskID)
+	}
+	return nil
+}
+
 type runState struct {
-	TaskID             string
-	CurrentRun         string
-	ParentTaskID       string
-	ParentDeviceID     string
-	RootTaskID         string
-	Status             string
-	WaitingReason      string
-	SessionID          string
-	Generation         int64
-	Lease              string
-	LeaseLive          bool
-	LegacyEvents       bool
-	ControlMode        string
-	ControlSupported   bool
-	ManagedGit         bool
-	GitPublish         bool
-	GitReviewSupported bool
+	TaskID                string
+	CurrentRun            string
+	ParentTaskID          string
+	ParentDeviceID        string
+	RootTaskID            string
+	Status                string
+	WaitingReason         string
+	SessionID             string
+	Generation            int64
+	Lease                 string
+	LeaseLive             bool
+	LegacyEvents          bool
+	ControlMode           string
+	ControlSupported      bool
+	ManagedGit            bool
+	GitPublish            bool
+	GitReviewSupported    bool
+	InputReceiptSupported bool
 }
 
 // RenewRun 校验设备、当前运行、代次及有效租约后延长租期，返回新的到期时间。
@@ -187,12 +262,12 @@ func (store *InventoryStore) RenewRun(ctx context.Context, device string, token 
 func readRunState(ctx context.Context, tx pgx.Tx, device, id string) (value runState, err error) {
 	err = tx.QueryRow(ctx, `SELECT t.id,t.current_run_id,COALESCE(t.parent_id,''),COALESCE(p.device_id,''),t.root_id,r.status,t.waiting_reason,
 		COALESCE(NULLIF(r.session_id,''),r.input_session),r.generation,r.lease,
-		COALESCE(r.lease_until>=clock_timestamp(),false),r.legacy_events,t.control_mode,r.control_supported,t.git_policy IS NOT NULL,t.git_publish,r.git_review_supported
+		COALESCE(r.lease_until>=clock_timestamp(),false),r.legacy_events,t.control_mode,r.control_supported,t.git_policy IS NOT NULL,t.git_publish,r.git_review_supported,r.input_receipt_supported
 		FROM muster_runs r JOIN muster_tasks t ON t.id=r.task_id LEFT JOIN muster_tasks p ON t.parent_id=p.id
 		WHERE r.id=$1 AND r.device_id=$2 AND r.claimed_at IS NOT NULL`, id, device).
 		Scan(&value.TaskID, &value.CurrentRun, &value.ParentTaskID, &value.ParentDeviceID, &value.RootTaskID,
 			&value.Status, &value.WaitingReason, &value.SessionID, &value.Generation, &value.Lease, &value.LeaseLive,
-			&value.LegacyEvents, &value.ControlMode, &value.ControlSupported, &value.ManagedGit, &value.GitPublish, &value.GitReviewSupported)
+			&value.LegacyEvents, &value.ControlMode, &value.ControlSupported, &value.ManagedGit, &value.GitPublish, &value.GitReviewSupported, &value.InputReceiptSupported)
 	return value, notFound(err)
 }
 
@@ -200,6 +275,9 @@ func readRunState(ctx context.Context, tx pgx.Tx, device, id string) (value runS
 // 诊断摘要随首个有效终态一同保存。已结束运行收到的有效事件只保留审计记录。
 func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, token [32]byte, id string, sequence int64, event workspace.RunEvent) error {
 	terminal := event.Kind != "started" && event.Kind != "session"
+	if event.InputReceipt != nil && (!terminal || event.Kind == "stopped") {
+		return workspace.ErrInvalidInputReceipt
+	}
 	if event.Diagnostics != nil && (!terminal || !event.Diagnostics.Valid()) {
 		return workspace.ErrInvalidRunDiagnostics
 	}
@@ -229,6 +307,13 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 		legacy := run.LegacyEvents && event.Generation == 0 && event.Lease == ""
 		if !legacy && (event.Lease == "" || event.Lease != run.Lease || event.Generation != run.Generation) {
 			return workspace.ErrConflict
+		}
+		if event.InputReceipt != nil && !run.InputReceiptSupported {
+			return workspace.ErrInvalidInputReceipt
+		}
+		requireCompleteReceipt := event.Kind == "completed" && run.InputReceiptSupported
+		if err := validateRunInputReceipt(ctx, tx, id, event.InputReceipt, requireCompleteReceipt); err != nil {
+			return err
 		}
 		if (!run.ManagedGit && event.GitVerification != nil) ||
 			(run.ManagedGit && event.Kind == "completed" && (event.GitVerification == nil || event.GitVerification.TestStatus != "passed")) {
@@ -313,6 +398,21 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 		event.Text = outcome
 		if event.Kind == "stopped" && (!run.ControlSupported || run.CurrentRun != id || !run.stopping()) {
 			return workspace.ErrConflict
+		}
+		if run.CurrentRun == id {
+			if event.Kind == "started" {
+				if err := markRunInputsDelivered(ctx, tx, id); err != nil {
+					return err
+				}
+			}
+			if terminal {
+				if err := requireStartedForInputReceipt(ctx, tx, id, event.InputReceipt); err != nil {
+					return err
+				}
+				if err := markRunInputsHandled(ctx, tx, id, event.InputReceipt); err != nil {
+					return err
+				}
+			}
 		}
 		if run.CurrentRun == id && run.stopping() && event.Kind != "started" && event.Kind != "session" {
 			if run.ControlMode == "cancel" || event.Kind == "stopped" || event.Kind == "interrupted" {

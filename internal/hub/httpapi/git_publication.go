@@ -8,11 +8,11 @@ import (
 
 func (api workspaceAPI) authorizeGitPush(w http.ResponseWriter, r *http.Request, device string, token [32]byte) {
 	var input gitdelivery.PushRequest
-	if !readJSON(w, r, &input) {
+	if !readWorkspaceText(w, r, &input) {
 		return
 	}
 	id := r.PathValue("id")
-	if !prefixedUUID(id, "run-") || !validRunLease(input.Generation, input.Lease) {
+	if !prefixedUUID(id, "run-") || !validRunLease(input.Generation, input.Lease) || !input.InputReceipt.Valid() {
 		writeError(w, http.StatusBadRequest, "invalid Git push request")
 		return
 	}

@@ -73,6 +73,7 @@ func (worker *Worker) publishGitCandidate(ctx context.Context, run control.Run, 
 	}
 	attempt := gitPushAttempt{Request: gitdelivery.PushRequest{
 		Generation: run.Generation, Lease: run.Lease, Verification: *event.GitVerification, DestinationFingerprint: fingerprint,
+		InputReceipt: event.InputReceipt,
 	}, Result: event, RecheckUntil: time.Now().Add(gitConfirmationWindow)}
 	// 先记录申请及候选。Hub 已提交但响应丢失时，重启可用原请求找回意图。
 	if err := worker.saveGitAttempt(ctx, run.ID, attempt); err != nil {
@@ -236,7 +237,8 @@ func (worker *Worker) clearGitAttempt(ctx context.Context, runID string) error {
 
 func gitAuthorizationRejected(err error) bool {
 	var status *control.HTTPError
-	return errors.As(err, &status) && (status.Status == http.StatusConflict || status.Status == http.StatusBadRequest || status.Status == http.StatusUnprocessableEntity)
+	return errors.As(err, &status) && (status.Status == http.StatusConflict || status.Status == http.StatusBadRequest ||
+		status.Status == http.StatusUnprocessableEntity || status.Status == http.StatusRequestEntityTooLarge)
 }
 
 func (worker *Worker) recoverGitPush(ctx context.Context, peer *collaboration) (bool, error) {

@@ -37,12 +37,20 @@ const taskInputText: Record<TaskInput['kind'], string> = {
   dependency: '依赖续接',
   execution: '运行输入',
   approval: '请示答复',
+  transfer: '交接文件',
 }
 
 const inputStatusText: Record<string, string> = {
   ...statusText,
   accepted: '已受理',
   handled: '已处理',
+}
+
+const inputReceiptText: Record<NonNullable<TaskInput['receipt_status']>, string> = {
+  awaiting_delivery: '待送达',
+  delivered: '已送达',
+  handled: '已处理',
+  needs_review: '待核对',
 }
 
 type TaskBoardProps = {
@@ -269,10 +277,18 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
         </section>}
         {(detail.inputs.length > 0 || detail.waited_transfers.length > 0) && <section className="task-detail-panel" aria-labelledby="inputs-heading">
           <h2 id="inputs-heading">任务输入与等待</h2>
-          {detail.inputs.map((input) => <article className="run-row" key={input.id}>
-            <header><strong>{taskInputText[input.kind]}</strong><span>{inputStatusText[input.status] ?? input.status}</span></header>
-            <p><Time value={input.created_at} />{input.generation ? ` · 执行第 ${input.generation} 轮` : ''}{input.transfer_ids?.length ? ` · ${input.transfer_ids.length} 项交接` : ''}</p>
-          </article>)}
+          {detail.inputs.map((input) => {
+            const { receipt_status: receipt, receipt_run_id: receiptRunID, handled_at: handledAt } = input
+            const transfer = input.kind === 'transfer' ? detail.transfers.find((item) => item.id === input.transfer_ids?.[0]) : undefined
+            const generation = receiptRunID ? detail.runs.find((run) => run.id === receiptRunID)?.generation : input.generation
+            return <article className="run-row task-input-row" key={input.id}>
+              <header>
+                <strong>{transfer?.name ?? taskInputText[input.kind]}</strong>
+                {receipt ? <span className="task-status" data-input-receipt={receipt}>{inputReceiptText[receipt]}</span> : <span>{inputStatusText[input.status] ?? input.status}</span>}
+              </header>
+              <p><Time value={handledAt ?? input.created_at} />{generation ? ` · 执行第 ${generation} 轮` : ''}{input.kind !== 'transfer' && input.transfer_ids?.length ? ` · ${input.transfer_ids.length} 项交接` : ''}</p>
+            </article>
+          })}
           {detail.waited_transfers.map((wait) => <article className="run-row" key={`${wait.transfer_id}/${wait.generation}`}>
             <header><strong>{detail.transfers.find((transfer) => transfer.id === wait.transfer_id)?.name ?? '产物交接'}</strong><span>{wait.status === 'received' ? '已确认接收' : wait.active ? '等待接收' : '已结束等待'}</span></header>
             <p>第 {wait.generation} 次等待{wait.received_at && <> · <Time value={wait.received_at} /></>}</p>

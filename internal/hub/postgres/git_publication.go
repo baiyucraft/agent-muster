@@ -33,6 +33,12 @@ func (store *InventoryStore) AuthorizeGitPush(ctx context.Context, device string
 		if !run.GitPublish || !run.ControlSupported || input.Lease == "" || run.Lease != input.Lease || run.Generation != input.Generation {
 			return workspace.ErrConflict
 		}
+		if input.InputReceipt != nil && !run.InputReceiptSupported {
+			return workspace.ErrInvalidInputReceipt
+		}
+		if err := validateRunInputReceipt(ctx, tx, id, input.InputReceipt, run.InputReceiptSupported); err != nil {
+			return err
+		}
 		intent, evidence, err := readGitPush(ctx, tx, id)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -55,6 +61,9 @@ func (store *InventoryStore) AuthorizeGitPush(ctx context.Context, device string
 		}
 		if !allowed {
 			return workspace.ErrConflict
+		}
+		if err := requireStartedForInputReceipt(ctx, tx, id, input.InputReceipt); err != nil {
+			return err
 		}
 		policy, err := readFrozenGitPolicy(ctx, tx, run.TaskID)
 		if err != nil {

@@ -159,25 +159,42 @@ func taskInputs(ctx context.Context, tx pgx.Tx, id string) ([]workspace.TaskInpu
 		), runs AS (
 			SELECT id,status,generation,created_at,claimed_at,prompt_transfer_id,dependency_results
 			FROM muster_runs WHERE task_id=$1
+		), inputs AS (
+			SELECT i.*,COALESCE(i.handled_run_id,i.delivered_run_id,'') AS receipt_run_id,
+				CASE WHEN i.handled_run_id IS NOT NULL THEN 'handled'
+					WHEN delivered.status IN ('queued','running') THEN 'delivered'
+					WHEN i.delivered_run_id IS NOT NULL THEN 'needs_review'
+					WHEN tr.received_at IS NOT NULL THEN 'delivered' ELSE 'awaiting_delivery' END AS receipt_status
+			FROM muster_task_inputs i LEFT JOIN runs delivered ON delivered.id=i.delivered_run_id
+			LEFT JOIN muster_transfers tr ON tr.id=i.transfer_id WHERE i.task_id=$1
+		), summaries AS (
+			SELECT COALESCE(a.id,m.id,r.id) AS id,CASE
+				WHEN a.id IS NOT NULL THEN 'approval'
+				WHEN m.id IS NOT NULL THEN 'message'
+				WHEN r.prompt_transfer_id<>'' THEN 'delegation'
+				WHEN r.dependency_results IS NOT NULL THEN 'dependency'
+				ELSE 'execution' END AS kind,
+				CASE WHEN t.status='waiting' AND t.waiting_reason='delivery' AND t.current_run_id=r.id
+					THEN 'waiting_delivery' ELSE COALESCE(r.status,m.status) END AS status,
+				COALESCE(m.id,'') AS message_id,COALESCE(r.id,'') AS run_id,COALESCE(r.generation,0) AS generation,
+				ARRAY(SELECT transfer_id FROM muster_run_transfers WHERE run_id=r.id AND direction='input' ORDER BY transfer_id) AS transfer_ids,
+				COALESCE(m.created_at,r.created_at) AS created_at,r.claimed_at,
+				COALESCE(i.receipt_status,'') AS receipt_status,COALESCE(i.receipt_run_id,'') AS receipt_run_id,i.handled_at
+			FROM messages m FULL JOIN runs r ON r.id='run-' || m.id
+			LEFT JOIN muster_approvals a ON a.resume_run_id=r.id
+			LEFT JOIN inputs i ON i.message_id=m.id
+			CROSS JOIN muster_tasks t WHERE t.id=$1
+			UNION ALL
+			SELECT i.id,'transfer',r.status,'',r.id,r.generation,ARRAY[i.transfer_id],tr.created_at,r.claimed_at,
+				i.receipt_status,i.receipt_run_id,i.handled_at
+			FROM inputs i JOIN runs r ON r.id=i.origin_run_id JOIN muster_transfers tr ON tr.id=i.transfer_id
 		)
-		SELECT COALESCE(a.id,m.id,r.id),CASE
-			WHEN a.id IS NOT NULL THEN 'approval'
-			WHEN m.id IS NOT NULL THEN 'message'
-			WHEN r.prompt_transfer_id<>'' THEN 'delegation'
-			WHEN r.dependency_results IS NOT NULL THEN 'dependency'
-			ELSE 'execution' END,
-			CASE WHEN t.status='waiting' AND t.waiting_reason='delivery' AND t.current_run_id=r.id
-				THEN 'waiting_delivery' ELSE COALESCE(r.status,m.status) END,
-			COALESCE(m.id,''),COALESCE(r.id,''),COALESCE(r.generation,0),
-			ARRAY(SELECT transfer_id FROM muster_run_transfers WHERE run_id=r.id AND direction='input' ORDER BY transfer_id),
-			COALESCE(m.created_at,r.created_at),r.claimed_at
-		FROM messages m FULL JOIN runs r ON r.id='run-' || m.id
-		LEFT JOIN muster_approvals a ON a.resume_run_id=r.id
-		CROSS JOIN muster_tasks t WHERE t.id=$1
-		ORDER BY COALESCE(m.created_at,r.created_at),COALESCE(m.id,r.id)`, func(row pgx.Row) (workspace.TaskInput, error) {
+		SELECT id,kind,status,message_id,run_id,generation,transfer_ids,created_at,claimed_at,
+			receipt_status,receipt_run_id,handled_at FROM summaries ORDER BY created_at,id`, func(row pgx.Row) (workspace.TaskInput, error) {
 		var value workspace.TaskInput
 		err := row.Scan(&value.ID, &value.Kind, &value.Status, &value.MessageID, &value.RunID,
-			&value.Generation, &value.TransferIDs, &value.CreatedAt, &value.ClaimedAt)
+			&value.Generation, &value.TransferIDs, &value.CreatedAt, &value.ClaimedAt,
+			&value.ReceiptStatus, &value.ReceiptRunID, &value.HandledAt)
 		return value, err
 	}, id)
 }

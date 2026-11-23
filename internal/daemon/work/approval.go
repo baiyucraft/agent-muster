@@ -20,7 +20,7 @@ const approvalInstructions = "\n\n只有必须请用户决定且当前无法继�
 	"第一行仅写 " + approvalMarker + "，第二行写单个 JSON 对象，例如 " +
 	`{"question":"要用哪种索引格式？","options":["CSV","JSON"],"impact":"决定交付文件格式"}` +
 	"。options 和 impact 可省略。问题和影响范围各限 2000 个 UTF-8 字节，最多 8 个选项，每项限 240 字节。" +
-	"请示不使用 Markdown 围栏或附带正文，不同时执行本机 muster wait。普通结果仍使用最终文本。"
+	"请示不使用 Markdown 围栏或附带业务正文，不同时执行本机 muster wait。普通结果仍使用最终文本。"
 
 var errApprovalFormat = errors.New("无法解析本轮请示，已保留原始回复供核对")
 

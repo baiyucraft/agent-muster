@@ -15,8 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/baiyucraft/agent-muster/internal/daemon/control"
 	"github.com/baiyucraft/agent-muster/internal/hub/postgres"
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
+	"github.com/baiyucraft/agent-muster/internal/inputreceipt"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -207,18 +209,52 @@ func TestWorkspaceRecovery(t *testing.T) {
 		workspace.Completion{Lease: firstReport.Lease, Status: "handled", Text: "Old lease"}, 409, nil)
 	complete(reclaimed, "Index ready.")
 
-	post("00000000-0000-4000-8000-000000000004", "Use CSV", task)
+	const amendmentID = "00000000-0000-4000-8000-000000000004"
+	post(amendmentID, "Use CSV", task)
 	followUp := claimDelivery("message")
 	if updated := dispatch(followUp, workspace.Dispatch{TaskID: task, Prompt: "Use CSV"}); updated != task {
 		t.Fatalf("follow-up created a different task %s", updated)
 	}
 	complete(followUp, "")
-	next := claimRun()
+	client, err := control.NewClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceIdentity := control.Identity{HubURL: server.URL, DeviceID: device.ID, Token: device.Token}
+	claimed, err := client.ClaimRun(ctx, deviceIdentity)
+	if err != nil || claimed == nil {
+		t.Fatalf("设备领取追加要求失败: %v", err)
+	}
+	next := workspace.RunClaim{ID: claimed.ID, SessionID: claimed.SessionID, DirectoryID: claimed.DirectoryID,
+		Generation: claimed.Generation, Lease: claimed.Lease}
 	if next.ID == run.ID || next.SessionID != "session-test" || next.DirectoryID != dir {
 		t.Fatalf("wrong resume claim %#v", next)
 	}
+	if wanted := "message:" + amendmentID; len(claimed.InputIDs) != 1 || claimed.InputIDs[0] != wanted {
+		t.Fatalf("领取结果未冻结追加输入: %v", claimed.InputIDs)
+	}
 	record(run, 4, workspace.RunEvent{Kind: "interrupted"}, 204)
-	record(next, 1, workspace.RunEvent{Kind: "completed", SessionID: next.SessionID, Text: "Created index.csv"}, 204)
+	record(next, 1, workspace.RunEvent{Kind: "started", SessionID: next.SessionID}, 204)
+	var preparedDetail workspace.Detail
+	do("GET", "tasks/"+task, admin, nil, 200, &preparedDetail)
+	receiptStatus := func(detail workspace.Detail) string {
+		for _, input := range detail.Inputs {
+			if input.MessageID == amendmentID {
+				return input.ReceiptStatus
+			}
+		}
+		return ""
+	}
+	if status := receiptStatus(preparedDetail); status != "delivered" {
+		t.Fatalf("启动后追加输入状态为 %q", status)
+	}
+	completed := workspace.RunEvent{Kind: "completed", SessionID: next.SessionID, Text: "Created index.csv"}
+	record(next, 2, completed, 400)
+	completed.InputReceipt = &inputreceipt.Receipt{HandledIDs: []string{"message:unknown"}}
+	record(next, 2, completed, 400)
+	completed.InputReceipt = &inputreceipt.Receipt{HandledIDs: claimed.InputIDs}
+	record(next, 2, completed, 204)
+	record(next, 2, completed, 204)
 	complete(claimDelivery("report"), "CSV ready.")
 
 	var snapshot workspace.Snapshot
@@ -231,6 +267,9 @@ func TestWorkspaceRecovery(t *testing.T) {
 	do("GET", "tasks/"+task, admin, nil, 200, &detail)
 	if len(detail.Runs) != 2 || detail.Runs[0].Status != "completed" || detail.Runs[1].SessionID != "session-test" {
 		t.Fatalf("unexpected run history %#v", detail.Runs)
+	}
+	if status := receiptStatus(detail); status != "handled" {
+		t.Fatalf("确认处理后追加输入状态为 %q", status)
 	}
 	do("GET", "events?after=99999", admin, nil, 409, nil)
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/api/v1/events?after=%d", server.URL, snapshot.Cursor-2), nil)

@@ -16,6 +16,7 @@ import (
 
 	"github.com/baiyucraft/agent-muster/internal/hub/registry"
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
+	"github.com/baiyucraft/agent-muster/internal/inputreceipt"
 )
 
 // WorkspaceOptions 配置工作区存储和中心插件令牌。
@@ -226,14 +227,14 @@ func (api workspaceAPI) claimRun(w http.ResponseWriter, r *http.Request, device 
 	controlSupported := r.Header.Get("Muster-Run-Control") == "1"
 	gitVerificationSupported := r.Header.Get("Muster-Git-Verification") == "1"
 	gitPublishSupported := r.Header.Get("Muster-Git-Publish") == "1"
+	inputReceiptSupported := r.Header.Get(inputreceipt.Header) == "1"
 	for {
-		run, err := api.store.ClaimRunWithGitPublication(ctx, device, token, controlSupported, gitVerificationSupported, gitPublishSupported)
+		run, err := api.store.ClaimRunWithInputReceipts(ctx, device, token, controlSupported, gitVerificationSupported, gitPublishSupported, inputReceiptSupported)
 		if ctx.Err() != nil {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		if err != nil || run.ID != "" {
-			run.ReviewDiagnosticsSupported = true
 			workspaceJSON(w, http.StatusOK, run, err)
 			return
 		}
@@ -254,12 +255,14 @@ func (api workspaceAPI) recordEvent(w http.ResponseWriter, r *http.Request, devi
 		return
 	}
 	var event workspace.RunEvent
-	if !readWorkspaceText(w, r, &event) {
+	if !readJSONLimit(w, r, &event, 256<<10) {
 		return
 	}
 	if !validText(event.Text, 12000, false) || (event.SessionID != "" && !sessionPattern.MatchString(event.SessionID)) ||
 		!validEventLease(event.Generation, event.Lease) || !validTransfers(event.TransferIDs) ||
-		!validIDs(event.WaitForTaskIDs, "task-") || (event.Kind != "waiting" && len(event.WaitForTaskIDs) != 0) {
+		!validIDs(event.WaitForTaskIDs, "task-") || (event.Kind != "waiting" && len(event.WaitForTaskIDs) != 0) ||
+		!event.InputReceipt.Valid() || (event.InputReceipt != nil &&
+		(event.Kind == "started" || event.Kind == "session" || event.Kind == "stopped")) {
 		writeError(w, http.StatusBadRequest, "invalid run event data")
 		return
 	}
@@ -459,6 +462,8 @@ func workspaceJSON(w http.ResponseWriter, status int, value any, err error) {
 	case errors.Is(err, workspace.ErrInvalidGitVerification):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrInvalidGitPublication):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, workspace.ErrInvalidInputReceipt):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrConflict):
 		writeError(w, http.StatusConflict, "workspace state changed or request conflicts with a saved result")

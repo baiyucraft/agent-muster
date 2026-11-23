@@ -72,6 +72,7 @@ export type Run = {
   directory_id: string
   status: RunStatus
   session_id?: string
+  generation?: number
   text?: string
   diagnostics?: RunDiagnostics
   git_verification?: GitVerification
@@ -157,10 +158,10 @@ export type Transfer = {
 
 /** 任务依赖的代次与完成状态，代次用于区分不同等待轮次。 */
 export type Dependency = { task_id: string; depends_on_task_id: string; generation: number; status: string; active?: boolean }
-/** 关联到任务的输入记录，可来自消息、子任务依赖或执行操作。 */
+/** 关联到任务的输入记录，包括按文件分开的交接材料。旧记录可能没有输入回执。 */
 export type TaskInput = {
   id: string
-  kind: 'message' | 'delegation' | 'dependency' | 'execution' | 'approval'
+  kind: 'message' | 'delegation' | 'dependency' | 'execution' | 'approval' | 'transfer'
   status: string
   created_at: string
   message_id?: string
@@ -168,6 +169,12 @@ export type TaskInput = {
   generation?: number
   claimed_at?: string
   transfer_ids?: string[]
+  /** Hub 确认的输入处理进度，独立于运行状态。 */
+  receipt_status?: 'awaiting_delivery' | 'delivered' | 'handled' | 'needs_review'
+  /** 确认当前回执状态的运行 ID。 */
+  receipt_run_id?: string
+  /** Hub 确认输入已处理的时间。 */
+  handled_at?: string
 }
 /** 某次等待代次所需的交接记录，接收后可带确认时间。 */
 export type WaitedTransfer = { transfer_id: string; generation: number; active: boolean; status: 'waiting' | 'received'; received_at?: string }

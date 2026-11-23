@@ -13,6 +13,7 @@ import (
 
 	"github.com/baiyucraft/agent-muster/internal/approval"
 	"github.com/baiyucraft/agent-muster/internal/gitdelivery"
+	"github.com/baiyucraft/agent-muster/internal/inputreceipt"
 	"github.com/baiyucraft/agent-muster/internal/runreport"
 )
 
@@ -51,6 +52,8 @@ type Run struct {
 	LeaseUntil                 string              `json:"lease_until"`
 	Attachments                []TransferReference `json:"attachments"`
 	DependencyResults          []DependencyResult  `json:"dependency_results,omitempty"`
+	InputIDs                   []string            `json:"input_ids,omitempty"`      // 本轮领取时冻结的输入标识。
+	InputMessages              map[string]string   `json:"input_messages,omitempty"` // 续接带回的未确认消息，按输入 ID 索引。
 	DelegationTargets          []DelegationTarget  `json:"delegation_targets,omitempty"`
 	ApprovalSupported          bool                `json:"approval_supported,omitempty"`
 	ControlSupported           bool                `json:"control_supported,omitempty"`            // Hub 可向该运行下发停止指令。
@@ -123,6 +126,7 @@ type RunEvent struct {
 	Approval        *approval.Question        `json:"approval,omitempty"`
 	Diagnostics     *runreport.Diagnostics    `json:"diagnostics,omitempty"`
 	GitVerification *gitdelivery.Verification `json:"git_verification,omitempty"`
+	InputReceipt    *inputreceipt.Receipt     `json:"input_receipt,omitempty"` // 本轮确认处理的输入。
 }
 
 // ReportDirectories 向 Hub 上报本设备当前可派发的工作目录清单。
@@ -139,6 +143,7 @@ func (client *Client) ClaimRun(ctx context.Context, identity Identity) (*Run, er
 		return nil, err
 	}
 	headers := http.Header{"Muster-Run-Control": []string{"1"}}
+	headers.Set(inputreceipt.Header, "1")
 	if runtime.GOOS == "windows" {
 		headers.Set("Muster-Git-Verification", "1")
 		headers.Set("Muster-Git-Publish", "1")
@@ -153,9 +158,8 @@ func (client *Client) ClaimRun(ctx context.Context, identity Identity) (*Run, er
 		return nil, nil
 	}
 	var run Run
-	const maxRunSize = 256 * 1024
-	payload, err := io.ReadAll(io.LimitReader(response.Body, maxRunSize+1))
-	if err != nil || len(payload) > maxRunSize || json.Unmarshal(payload, &run) != nil {
+	payload, err := io.ReadAll(io.LimitReader(response.Body, inputreceipt.MaxClaimBytes+1))
+	if err != nil || len(payload) > inputreceipt.MaxClaimBytes || json.Unmarshal(payload, &run) != nil {
 		return nil, errors.New("Hub 的运行响应格式无效")
 	}
 	if run.ID == "" || run.TaskID == "" || run.DirectoryID == "" || (run.Prompt == "" && run.PromptTransferID == "" && len(run.Attachments) == 0) {

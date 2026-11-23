@@ -432,6 +432,9 @@ func (worker *Worker) execute(ctx context.Context, run control.Run, peer *collab
 			event.Kind = "failed"
 		}
 	}
+	if event.Kind == "stopped" {
+		event.InputReceipt = nil
+	}
 	event.Text = trimUTF8(event.Text, 12000)
 	return worker.stageTerminalEvent(persist, run, event, control.Manifest{}, nil, pendingPush)
 }
@@ -445,7 +448,6 @@ func (worker *Worker) invoke(ctx context.Context, run control.Run, service *loca
 	if err != nil {
 		return event, err
 	}
-	defer finish()
 	sessionID := run.SessionID
 	var didStart bool
 	event.Text, err = execute(ctx, run.AgentKind, dir, prompt, sessionID, env, func() error {
@@ -469,7 +471,18 @@ func (worker *Worker) invoke(ctx context.Context, run control.Run, service *loca
 		sessionID = id
 		return nil
 	})
+	// 原执行已经退出。补写回执前撤销本轮协作能力，且补写不注入能力变量。
+	finish()
 	event.SessionID = sessionID
+	if errors.Is(err, runner.ErrProcessExitUnconfirmed) {
+		return event, err
+	}
+	invocationFailed := err != nil || ctx.Err() != nil
+	if didStart && invocationFailed && len(run.InputIDs) != 0 && event.Text != "" {
+		// CLI 已退出时仍可确认它明确处理的输入。失败轮次不会为了补写回执再次启动 CLI。
+		event.Text, event.InputReceipt = parseInputReceipt(event.Text, run.InputIDs)
+		event.Text = strings.ReplaceAll(event.Text, "\x00", "�")
+	}
 	switch {
 	case didStart && ctx.Err() != nil:
 		event.Kind = "interrupted"
@@ -482,7 +495,9 @@ func (worker *Worker) invoke(ctx context.Context, run control.Run, service *loca
 			err = waitErr
 			return event, err
 		}
-		if run.ApprovalSupported {
+		if len(run.InputIDs) != 0 {
+			err = worker.finishWithInputReceipt(ctx, run, dir, execute, &event, wait.Kind == "waiting")
+		} else if run.ApprovalSupported {
 			err = worker.finishApproval(ctx, run, dir, execute, &event, wait.Kind == "waiting")
 		}
 		if event.Kind == "completed" && wait.Kind == "waiting" {
@@ -538,6 +553,9 @@ func (worker *Worker) preparePrompt(ctx context.Context, run control.Run, direct
 	}
 	if run.ApprovalSupported {
 		prompt += approvalInstructions
+	}
+	if len(run.InputIDs) != 0 {
+		prompt += inputMessageContext(run.InputMessages) + inputReceiptPrompt(run.InputIDs)
 	}
 	return prompt, nil
 }

@@ -2,6 +2,7 @@ package work
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -54,12 +55,13 @@ func TestWorkerVerifiesGitCandidateThroughHub(t *testing.T) {
 	git(root, nil, "config", "user.email", "fixture@example.invalid")
 	git(root, nil, "config", "user.name", "Muster Fixture")
 	write(root, "example.txt", "base")
-	git(root, nil, "add", "example.txt")
+	write(root, "required.txt", "required")
+	git(root, nil, "add", "example.txt", "required.txt")
 	git(root, nil, "commit", "-m", "base")
 	write(root, "example.txt", "unrelated local changes")
 	const projectID = "10000000-0000-4000-8000-000000000021"
-	policy := &gitdelivery.Policy{BaseRef: "refs/heads/main", Remote: "origin",
-		Test: gitdelivery.Command{Program: "git", Args: []string{"diff", "--exit-code", "HEAD"}, TimeoutSeconds: 20}}
+	policy := &gitdelivery.Policy{BaseRef: "refs/heads/main", Remote: "origin", MaxRepairs: 1,
+		Test: gitdelivery.Command{Program: "git", Args: []string{"cat-file", "-e", "HEAD:required.txt"}, TimeoutSeconds: 20}}
 	if _, err := store.SaveProject(ctx, workspace.Project{ID: projectID, Name: "Git fixture",
 		DeviceID: identity.DeviceID, DirectoryID: dir.ID, GitPolicy: policy}); err != nil {
 		t.Fatal(err)
@@ -78,19 +80,50 @@ func TestWorkerVerifiesGitCandidateThroughHub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.CompleteDelivery(ctx, delivery.ID, workspace.Completion{Lease: delivery.Lease, Status: "handled"}); err != nil {
+		t.Fatal(err)
+	}
+	const nativeSession = "native-git-fixture"
+	const followupID = "10000000-0000-4000-8000-000000000023"
+	const followupText = "在原候选中补充说明"
+	inputID := "message:" + followupID
 	workerCtx, stop := context.WithCancel(ctx)
 	done := startTestWorker(t, workerCtx, worker, identity, client, "",
-		func(_ context.Context, _, checkout, _, _ string, _ []string, started func() error, announce func(string) error) (string, error) {
+		func(_ context.Context, _, checkout, prompt, session string, env []string, started func() error, announce func(string) error) (string, error) {
 			if err := started(); err != nil {
 				return "", err
 			}
-			if err := announce("native-git-fixture"); err != nil {
+			if err := announce(nativeSession); err != nil {
 				return "", err
 			}
-			write(checkout, "example.txt", "candidate")
-			git(checkout, nil, "add", "example.txt")
-			git(checkout, nil, "commit", "-m", "candidate")
-			return "样例已修复", nil
+			switch {
+			case session == "":
+				write(checkout, "example.txt", "candidate")
+				git(checkout, nil, "add", "example.txt")
+				git(checkout, nil, "commit", "-m", "candidate")
+				return "样例已修复", nil
+			case session == nativeSession && strings.HasPrefix(prompt, "上一回复的结构化回执格式无效"):
+				if len(env) != 0 || !strings.Contains(prompt, inputID) {
+					return "", errors.New("补写回执须沿用原会话且只包含本轮 ID，不应授予协作权限")
+				}
+				return strings.TrimSpace(testWorkerReply("", inputID)), nil
+			case session == nativeSession && strings.HasPrefix(prompt, "验证发现以下问题"):
+				if strings.Contains(prompt, inputReceiptMarker) {
+					return "", errors.New("返修不应要求再确认已处理输入")
+				}
+				write(checkout, "required.txt", "required")
+				git(checkout, nil, "add", "required.txt")
+				git(checkout, nil, "commit", "-m", "restore required file")
+				return "追加说明及返修完成。", nil
+			case session == nativeSession && strings.Contains(prompt, followupText) && strings.Contains(prompt, inputID):
+				write(checkout, "example.txt", "candidate with notes")
+				git(checkout, nil, "add", "example.txt")
+				git(checkout, nil, "rm", "required.txt")
+				git(checkout, nil, "commit", "-m", "follow-up candidate")
+				return "追加说明完成。", nil
+			default:
+				return "", errors.New("收到了意外的 Git 会话输入")
+			}
 		})
 	defer func() { stop(); <-done }()
 	detail := awaitWorkerTask(t, ctx, store, taskID, "completed")
@@ -104,4 +137,27 @@ func TestWorkerVerifiesGitCandidateThroughHub(t *testing.T) {
 	if body, err := os.ReadFile(filepath.Join(root, "example.txt")); err != nil || string(body) != "unrelated local changes" {
 		t.Fatalf("绑定目录中的已有改动未保留：%q，%v", body, err)
 	}
+	if _, err := store.SubmitMessage(ctx, workspace.Message{ID: followupID, TaskID: taskID, Text: followupText}); err != nil {
+		t.Fatal(err)
+	}
+	followup, err := store.ClaimDelivery(ctx)
+	if err != nil || followup.MessageID != followupID {
+		t.Fatalf("待派发追加应先于先前任务汇报：%+v，%v", followup, err)
+	}
+	if _, err := store.Dispatch(ctx, followup.ID, workspace.Dispatch{Lease: followup.Lease, TaskID: taskID, Prompt: followupText}); err != nil {
+		t.Fatal(err)
+	}
+	repaired := awaitWorkerTask(t, ctx, store, taskID, "completed")
+	if len(repaired.Runs) != 2 || repaired.Runs[1].SessionID != nativeSession || !strings.Contains(repaired.Task.Result, "追加说明及返修完成。") {
+		t.Fatalf("补写和返修应在一个续接轮次中完成：%+v", repaired)
+	}
+	if evidence := repaired.Runs[1].GitVerification; evidence == nil || evidence.RepairAttempts != 1 || evidence.TestStatus != "passed" {
+		t.Fatalf("缺少返修后的 Git 验证：%+v", evidence)
+	}
+	for _, input := range repaired.Inputs {
+		if input.MessageID == followupID && input.ReceiptStatus == "handled" && input.ReceiptRunID == repaired.Runs[1].ID {
+			return
+		}
+	}
+	t.Fatalf("返修后未保留原输入回执：%+v", repaired.Inputs)
 }

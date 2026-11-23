@@ -458,6 +458,9 @@ select {
 .task-status[data-state='waiting_reply'], .task-status[data-state='approval_requested'] { color: var(--amber); background: var(--amber-bg); }
 .task-status:is([data-state='pausing'], [data-state='stopping'], [data-state='cancelling']) { color: var(--amber); background: var(--amber-bg); }
 .task-status:is([data-state='paused'], [data-state='stopped'], [data-state='cancelled']) { color: var(--muted); background: var(--neutral); }
+.task-status[data-input-receipt='delivered'] { color: var(--blue); background: var(--blue-bg); }
+.task-status[data-input-receipt='handled'] { color: var(--green); background: var(--green-bg); }
+.task-status[data-input-receipt='needs_review'] { color: var(--amber); background: var(--amber-bg); }
 
 .task-tree-card { min-width: 0; margin-bottom: 9px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--surface); }
 .task-tree-card .task-card { margin: 0; border: 0; border-radius: calc(var(--radius-panel) - 1px); }
@@ -503,6 +506,9 @@ select {
 .detail-result { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
 .run-row { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .run-row > header { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.task-input-row > header { align-items: start; }
+.task-input-row > header strong { overflow-wrap: anywhere; }
+.task-input-row > header .task-status { flex-shrink: 0; }
 .run-row > p { margin: 7px 0 0; font-size: 13px; }
 .run-row > p span { color: var(--muted); }
 .run-row code { overflow-wrap: anywhere; }

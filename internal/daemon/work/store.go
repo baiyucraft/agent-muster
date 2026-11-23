@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS run_claims (
 	id TEXT PRIMARY KEY REFERENCES runs(id),
 	data BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS input_receipt_original_replies (
+	run_id TEXT PRIMARY KEY REFERENCES runs(id),
+	body BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS git_destinations (
 	task_id TEXT PRIMARY KEY,
 	fingerprint TEXT NOT NULL

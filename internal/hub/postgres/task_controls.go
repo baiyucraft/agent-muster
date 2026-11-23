@@ -204,15 +204,21 @@ func settleStoppedRun(ctx context.Context, tx pgx.Tx, run runState, id, sessionI
 func resumeStoppedRun(ctx context.Context, tx pgx.Tx, taskID, requestID string) error {
 	var prior, prompt, transfer, session string
 	var priority int
-	err := tx.QueryRow(ctx, `SELECT r.id,r.input,r.prompt_transfer_id,r.ready_priority,t.session_id
+	var trackedMessage bool
+	err := tx.QueryRow(ctx, `SELECT r.id,r.input,r.prompt_transfer_id,r.ready_priority,t.session_id,
+		EXISTS(SELECT 1 FROM muster_task_inputs i WHERE i.task_id=t.id AND i.origin_run_id=r.id AND i.message_id IS NOT NULL)
 		FROM muster_tasks t JOIN muster_runs r ON r.id=t.current_run_id
 		WHERE t.id=$1 AND t.status='paused' AND r.status='stopped'`, taskID).
-		Scan(&prior, &prompt, &transfer, &priority, &session)
+		Scan(&prior, &prompt, &transfer, &priority, &session, &trackedMessage)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	if trackedMessage {
+		// 追加要求由冻结输入清单重投。原提示词不得绕过已处理输入的过滤。
+		prompt = "请核对上一轮停止后的工作现场，并继续当前任务。"
 	}
 	if session != "" {
 		prompt = "上一轮已停止。请先核对当前文件、会话和已完成操作，再处理尚未完成的要求。\n\n" + prompt

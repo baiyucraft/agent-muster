@@ -23,6 +23,7 @@ import (
 	"github.com/baiyucraft/agent-muster/internal/hub/httpapi"
 	"github.com/baiyucraft/agent-muster/internal/hub/postgres"
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
+	"github.com/baiyucraft/agent-muster/internal/inputreceipt"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -99,10 +100,14 @@ func testM1WorkerHandoff(t *testing.T, dsn string, useHTTPS bool) {
 			if !strings.Contains(prompt, "result.txt") {
 				return "", errors.New("resumed parent prompt did not include the result attachment")
 			}
-			if err := checkWorkerAttachment(dir, "result.txt", childResult); err != nil {
+			inputID, err := checkWorkerAttachment(dir, "result.txt", childResult)
+			if err != nil {
 				return "", err
 			}
-			return finalResult, nil
+			if !strings.Contains(prompt, inputID) {
+				return "", errors.New("parent did not receive the frozen result input ID")
+			}
+			return testWorkerReply(finalResult, inputID), nil
 		}
 		if session != "" {
 			return "", fmt.Errorf("unexpected parent session: %q", session)
@@ -152,10 +157,14 @@ func testM1WorkerHandoff(t *testing.T, dsn string, useHTTPS bool) {
 		if !strings.HasPrefix(prompt, childPrompt) || !strings.Contains(prompt, indexName) {
 			return "", errors.New("child prompt did not include the delegated text and attachment")
 		}
-		if err := checkWorkerAttachment(dir, indexName, indexBody); err != nil {
+		inputID, err := checkWorkerAttachment(dir, indexName, indexBody)
+		if err != nil {
 			return "", err
 		}
-		return childResult, nil
+		if !strings.Contains(prompt, inputID) {
+			return "", errors.New("child did not receive the frozen file input ID")
+		}
+		return testWorkerReply(childResult, inputID), nil
 	}
 
 	workerCtx, stopWorkers := context.WithCancel(ctx)
@@ -200,6 +209,12 @@ func testM1WorkerHandoff(t *testing.T, dsn string, useHTTPS bool) {
 	if len(completed.Children) != 1 || completed.Children[0].Status != "completed" || completed.Children[0].Result != "" {
 		t.Fatalf("child handoff metadata: %+v", completed.Children)
 	}
+	childDetail, err := store.TaskDetail(ctx, completed.Children[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertWorkerAttachmentHandled(t, completed, parentDir.Path, "result.txt", childResult)
+	assertWorkerAttachmentHandled(t, childDetail, childDir.Path, indexName, indexBody)
 	if len(completed.Transfers) != 3 {
 		t.Fatalf("expected prompt, attachment and result deliveries: %+v", completed.Transfers)
 	}
@@ -345,22 +360,44 @@ func workerHelperCall(ctx context.Context, env []string, request helper.Request,
 	return json.Unmarshal(payload, output)
 }
 
-func checkWorkerAttachment(dir, name, want string) error {
+func checkWorkerAttachment(dir, name, want string) (string, error) {
 	matches, err := filepath.Glob(filepath.Join(dir, ".muster-inbox", "*", name))
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(matches) != 1 {
-		return fmt.Errorf("expected one %s attachment, found %d", name, len(matches))
+		return "", fmt.Errorf("expected one %s attachment, found %d", name, len(matches))
 	}
 	body, err := os.ReadFile(matches[0])
 	if err != nil {
-		return err
+		return "", err
 	}
 	if string(body) != want {
-		return fmt.Errorf("attachment %s contains %q, want %q", name, body, want)
+		return "", fmt.Errorf("attachment %s contains %q, want %q", name, body, want)
 	}
-	return nil
+	return "transfer:" + filepath.Base(filepath.Dir(matches[0])), nil
+}
+
+func testWorkerReply(body string, handledIDs ...string) string {
+	encoded, _ := json.Marshal(inputreceipt.Receipt{HandledIDs: handledIDs})
+	return body + "\n" + inputReceiptMarker + "\n" + string(encoded)
+}
+
+func assertWorkerAttachmentHandled(t *testing.T, detail workspace.Detail, dir, name, contents string) {
+	t.Helper()
+	id, err := checkWorkerAttachment(dir, name, contents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range detail.Inputs {
+		if input.ID == id {
+			if input.ReceiptStatus != "handled" || input.ReceiptRunID != input.RunID || input.HandledAt == nil {
+				t.Fatalf("attachment input not confirmed by the handling run: %+v", input)
+			}
+			return
+		}
+	}
+	t.Fatalf("no receipt record for attachment %s: %+v", id, detail.Inputs)
 }
 
 func awaitWorkerTask(t *testing.T, ctx context.Context, store *postgres.InventoryStore, id, status string) workspace.Detail {

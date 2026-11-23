@@ -8,6 +8,7 @@ import (
 
 	"github.com/baiyucraft/agent-muster/internal/approval"
 	"github.com/baiyucraft/agent-muster/internal/gitdelivery"
+	"github.com/baiyucraft/agent-muster/internal/inputreceipt"
 	"github.com/baiyucraft/agent-muster/internal/runreport"
 )
 
@@ -24,6 +25,9 @@ var ErrInvalidGitVerification = errors.New("invalid Git verification")
 
 // ErrInvalidGitPublication 表示推送证据或远端回读数据无效。
 var ErrInvalidGitPublication = errors.New("invalid Git publication evidence")
+
+// ErrInvalidInputReceipt 表示回执格式、输入归属或必需处理项未通过校验。
+var ErrInvalidInputReceipt = errors.New("invalid input receipt")
 
 // Directory 表示设备登记的执行目录标识与展示名称。
 type Directory struct {
@@ -133,6 +137,8 @@ type RunClaim struct {
 	PromptTransferID     string             `json:"prompt_transfer_id,omitempty"`
 	Attachments          []Transfer         `json:"attachments,omitempty"`
 	DependencyResults    []DependencyResult `json:"dependency_results,omitempty"`
+	InputIDs             []string           `json:"input_ids,omitempty"`      // 首次领取时冻结的输入。
+	InputMessages        map[string]string  `json:"input_messages,omitempty"` // 续接时带回的未处理消息，按输入 ID 索引。
 	DelegationTargets    []DelegationTarget `json:"delegation_targets,omitempty"`
 	ApprovalSupported    bool               `json:"approval_supported,omitempty"`
 	ControlSupported     bool               `json:"control_supported,omitempty"`
@@ -172,6 +178,7 @@ type RunEvent struct {
 	Approval        *approval.Question        `json:"approval,omitempty"`
 	Diagnostics     *runreport.Diagnostics    `json:"diagnostics,omitempty"`
 	GitVerification *gitdelivery.Verification `json:"git_verification,omitempty"`
+	InputReceipt    *inputreceipt.Receipt     `json:"input_receipt,omitempty"` // 本轮确认处理的输入。
 }
 
 // Approval 记录原生会话提出的请示、首个有效答复及处理时间。
@@ -216,15 +223,18 @@ type Detail struct {
 
 // TaskInput 记录任务输入的来源、消费状态与关联投递。
 type TaskInput struct {
-	ID          string     `json:"id"`
-	Kind        string     `json:"kind"`
-	Status      string     `json:"status"`
-	MessageID   string     `json:"message_id,omitempty"`
-	RunID       string     `json:"run_id,omitempty"`
-	Generation  int64      `json:"generation,omitempty"`
-	TransferIDs []string   `json:"transfer_ids,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	ClaimedAt   *time.Time `json:"claimed_at,omitempty"`
+	ID            string     `json:"id"`
+	Kind          string     `json:"kind"`
+	Status        string     `json:"status"`
+	MessageID     string     `json:"message_id,omitempty"`
+	RunID         string     `json:"run_id,omitempty"`
+	Generation    int64      `json:"generation,omitempty"`
+	TransferIDs   []string   `json:"transfer_ids,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ClaimedAt     *time.Time `json:"claimed_at,omitempty"`
+	ReceiptStatus string     `json:"receipt_status,omitempty"` // 支持回执协议的输入处理状态。
+	ReceiptRunID  string     `json:"receipt_run_id,omitempty"` // 最近一次投递或确认处理该输入的轮次。
+	HandledAt     *time.Time `json:"handled_at,omitempty"`     // 处理回执入库时间。
 }
 
 // TransferWait 记录一笔投递在指定等待代次中的签收状态。
@@ -364,7 +374,7 @@ type Store interface {
 	ClaimRun(context.Context, string, [32]byte) (RunClaim, error)
 	ClaimRunWithControl(context.Context, string, [32]byte, bool) (RunClaim, error)
 	ClaimRunWithCapabilities(context.Context, string, [32]byte, bool, bool) (RunClaim, error)
-	ClaimRunWithGitPublication(context.Context, string, [32]byte, bool, bool, bool) (RunClaim, error)
+	ClaimRunWithInputReceipts(context.Context, string, [32]byte, bool, bool, bool, bool) (RunClaim, error)
 	AuthorizeGitPush(context.Context, string, [32]byte, string, gitdelivery.PushRequest) (gitdelivery.PushIntent, error)
 	ObserveGitPush(context.Context, string, [32]byte, string, string, gitdelivery.Observation) (gitdelivery.PushIntent, error)
 	RunControl(context.Context, string, [32]byte, string, int64, string) (bool, error)

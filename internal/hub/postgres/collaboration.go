@@ -87,6 +87,9 @@ func (store *InventoryStore) Delegate(ctx context.Context, device string, token 
 				return err
 			}
 		}
+		if err := registerRunTransfers(ctx, tx, childRunID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO muster_delegations(parent_run_id,request_key,child_task_id,request_digest)
 			VALUES($1,$2,$3,$4)`, runID, input.RequestKey, input.TaskID, digest[:]); err != nil {
 			return err
@@ -329,6 +332,9 @@ func reconcileWait(ctx context.Context, tx pgx.Tx, taskID string) error {
 		SELECT $1,w.transfer_id,'input' FROM muster_wait_transfers w
 		JOIN muster_transfers tr ON tr.id=w.transfer_id AND tr.target_device_id=$4
 		WHERE w.task_id=$2 AND w.generation=$3 ON CONFLICT DO NOTHING`, runID, taskID, generation, device); err != nil {
+		return err
+	}
+	if err := registerRunTransfers(ctx, tx, runID); err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx, `UPDATE muster_tasks SET status='queued',waiting_reason='',current_run_id=$2,updated_at=clock_timestamp()

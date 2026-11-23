@@ -159,4 +159,43 @@ func TestGitPublicationRequiresVerifiedIntentAndRemoteObservation(t *testing.T) 
 			t.Fatalf("根任务汇报缺少已保存的推送证据 %q", expected)
 		}
 	}
+
+	// 旧版设备仍按原协议交付追加要求，Hub 保留实际无法确认处理的状态。
+	do(http.MethodPost, "plugin/deliveries/claim", testPlugin, nil, 200, &delivery)
+	if delivery.Kind == "report" {
+		do(http.MethodPut, "plugin/deliveries/"+delivery.ID+"/complete", testPlugin,
+			workspace.Completion{Lease: delivery.Lease, Status: "handled", Text: "已确认远端"}, 204, nil)
+		do(http.MethodPost, "plugin/deliveries/claim", testPlugin, nil, 200, &delivery)
+	}
+	if delivery.Kind != "message" || delivery.TaskID != run.TaskID {
+		t.Fatalf("未领取原任务的追加要求: %+v", delivery)
+	}
+	do(http.MethodPost, "plugin/deliveries/"+delivery.ID+"/dispatch", testPlugin,
+		workspace.Dispatch{Lease: delivery.Lease, TaskID: run.TaskID, Prompt: "使用另一个修复方案"}, 200, nil)
+	do(http.MethodPut, "plugin/deliveries/"+delivery.ID+"/complete", testPlugin,
+		workspace.Completion{Lease: delivery.Lease, Status: "handled"}, 204, nil)
+	response, err = server.Client().Do(claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var followUp workspace.RunClaim
+	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&followUp) != nil ||
+		followUp.Prompt != "使用另一个修复方案" || len(followUp.InputIDs) != 0 {
+		t.Fatalf("旧版设备无法领取追加要求，HTTP %d，运行 %+v", response.StatusCode, followUp)
+	}
+	run = followUp
+	path = prefix + "runs/" + run.ID
+	record(1, "started", nil, 204)
+	input.Generation, input.Lease = run.Generation, run.Lease
+	do(http.MethodPost, path+"/git-push", device.Token, input, 200, &intent)
+	observed.Generation, observed.Lease = run.Generation, run.Lease
+	do(http.MethodPut, path+"/git-push/"+intent.ID+"/observation", device.Token, observed, 200, nil)
+	record(2, "completed", &input.Verification, 204)
+	var receipts workspace.Detail
+	do(http.MethodGet, "tasks/"+run.TaskID, testAdmin, nil, 200, &receipts)
+	if len(receipts.Inputs) != 2 || receipts.Inputs[0].ReceiptStatus != "" || receipts.Inputs[1].ReceiptStatus != "needs_review" ||
+		receipts.Inputs[1].ReceiptRunID != followUp.ID || receipts.Inputs[1].HandledAt != nil {
+		t.Fatalf("旧协议完成后应保留待核对输入: %+v", receipts.Inputs)
+	}
 }

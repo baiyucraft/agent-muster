@@ -1,11 +1,14 @@
 package gitdelivery
 
+import "github.com/baiyucraft/agent-muster/internal/inputreceipt"
+
 // PushRequest 将设备当前轮次、已核验提交和本机解析的远端指纹绑定到同一推送意图。
 type PushRequest struct {
-	Generation             int64        `json:"generation"`
-	Lease                  string       `json:"lease"`
-	Verification           Verification `json:"verification"`
-	DestinationFingerprint string       `json:"destination_fingerprint"`
+	Generation             int64                 `json:"generation"`
+	Lease                  string                `json:"lease"`
+	Verification           Verification          `json:"verification"`
+	DestinationFingerprint string                `json:"destination_fingerprint"`
+	InputReceipt           *inputreceipt.Receipt `json:"input_receipt,omitempty"` // 推送前确认本轮输入已处理。
 }
 
 // Publication 是管理员可见的推送和回读记录。Remote 为仓库远端别名。
