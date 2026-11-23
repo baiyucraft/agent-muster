@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/baiyucraft/agent-muster/internal/daemon/control"
 	"github.com/baiyucraft/agent-muster/internal/peer"
+	"github.com/pion/turn/v5"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -120,6 +122,54 @@ func (hub *testSignedRTCHub) RTCAnswer(ctx context.Context, _ control.Identity, 
 }
 
 func TestRTCSignedTransfer(t *testing.T) {
+	t.Run("direct", func(t *testing.T) {
+		testRTCSignedTransfer(t, "direct", nil)
+	})
+	t.Run("relay", func(t *testing.T) {
+		server := startTestTURN(t)
+		testRTCSignedTransfer(t, "relay", &server)
+	})
+}
+
+const testTURNRelayAddress = "127.0.0.2"
+
+// startTestTURN 启动只接受本机流量的临时 TURN 服务器。
+func startTestTURN(t *testing.T) webrtc.ICEServer {
+	t.Helper()
+	const realm, username, password = "muster.test", "muster", "test-credential"
+	listener, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := turn.GenerateAuthKey(username, realm, password)
+	server, err := turn.NewServer(turn.ServerConfig{
+		Realm: realm,
+		AuthHandler: func(request *turn.RequestAttributes) (string, []byte, bool) {
+			return username, key, request.Username == username && request.Realm == realm
+		},
+		PacketConnConfigs: []turn.PacketConnConfig{{
+			PacketConn: listener,
+			RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{
+				RelayAddress: net.ParseIP(testTURNRelayAddress), Address: testTURNRelayAddress,
+			},
+			PermissionHandler: func(_ net.Addr, ip net.IP) bool {
+				return ip.IsLoopback()
+			},
+		}},
+	})
+	if err != nil {
+		_ = listener.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	return webrtc.ICEServer{
+		URLs: []string{"turn:" + listener.LocalAddr().String() + "?transport=udp"}, Username: username, Credential: password,
+	}
+}
+
+// testRTCSignedTransfer 检查双方选中的候选类型、发给 Hub 的回执和落盘正文。
+func testRTCSignedTransfer(t *testing.T, wantPath string, relay *webrtc.ICEServer) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	pubA, keyA, err := ed25519.GenerateKey(rand.Reader)
@@ -143,24 +193,35 @@ func TestRTCSignedTransfer(t *testing.T) {
 		Peer: &control.Peer{DeviceID: deviceB, Address: "not-used"},
 	}
 	hub.ackCalls.Store(1)
-	open := func(local, remote string, key ed25519.PrivateKey, peerKey ed25519.PublicKey) *collaboration {
+	open := func(local, remote string, key ed25519.PrivateKey, peerKey ed25519.PublicKey) (*collaboration, *string) {
 		t.Helper()
 		worker, err := Open(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = worker.Close() })
-		device, err := openPeer(ctx, worker, hub, control.Identity{DeviceID: local, HubURL: "http://127.0.0.1"}, PeerConfig{})
+		var selected string
+		device, err := openPeer(ctx, worker, hub, control.Identity{DeviceID: local, HubURL: "http://127.0.0.1"}, PeerConfig{
+			OnStatus: func(status string) { selected = status },
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		device.rtc.live = true
 		device.rtc.pinned = rtcSigningScope{transfer: transfer, local: local, remote: remote, localKey: key.Public().(ed25519.PublicKey), peerKey: peerKey}
 		device.rtc.signingKey = key
-		return device
+		if relay != nil {
+			device.rtc.ice = []webrtc.ICEServer{*relay}
+			// 只接收远端中继地址，模拟设备间无法直连。连接仍使用普通 ICE 策略。
+			settings := rtcSettings(device.identity.HubURL)
+			relayIP := net.ParseIP(testTURNRelayAddress)
+			settings.SetRemoteIPFilter(func(ip net.IP) bool { return ip.Equal(relayIP) })
+			device.rtc.api = webrtc.NewAPI(webrtc.WithSettingEngine(settings))
+		}
+		return device, &selected
 	}
-	sender := open(deviceA, deviceB, keyA, pubB)
-	receiver := open(deviceB, deviceA, keyB, pubA)
+	sender, senderPath := open(deviceA, deviceB, keyA, pubB)
+	receiver, receiverPath := open(deviceB, deviceA, keyB, pubA)
 	request := httptest.NewRequest(http.MethodPut, "/peer/v1/transfers/"+transfer, nil)
 	request.SetPathValue("id", transfer)
 	response := httptest.NewRecorder()
@@ -182,6 +243,12 @@ func TestRTCSignedTransfer(t *testing.T) {
 	}
 	if err := <-sent; err != nil {
 		t.Fatal(err)
+	}
+	if *senderPath != wantPath || *receiverPath != wantPath {
+		t.Fatalf("预期双方选择 %s 路径，发送方 %q，接收方 %q", wantPath, *senderPath, *receiverPath)
+	}
+	if !hub.received.Load() || hub.ackCalls.Load() != 2 {
+		t.Fatal("中心未收到设备对该投递的接收确认")
 	}
 	var saved string
 	if err := receiver.worker.db.QueryRowContext(ctx, "SELECT body FROM peer_inbox WHERE id=?", transfer).Scan(&saved); err != nil || saved != string(body) {
