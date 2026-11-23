@@ -338,7 +338,11 @@ func (worker *Worker) execute(ctx context.Context, run control.Run, peer *collab
 		dir, err = worker.resolveDirectory(runCtx, run.DirectoryID)
 	}
 	if err == nil {
-		event, err = worker.invoke(runCtx, run, service, dir, execute, event)
+		if run.GitPolicy != nil {
+			event, err = worker.invokeGit(runCtx, run, service, dir, execute, event)
+		} else {
+			event, err = worker.invoke(runCtx, run, service, dir, execute, event)
+		}
 	}
 	if errors.Is(err, runner.ErrProcessExitUnconfirmed) {
 		// 退出尚未确认时继续保留本地活动记录，等待设备运行恢复流程核对。

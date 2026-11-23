@@ -19,6 +19,9 @@ var ErrInvalidApproval = errors.New("invalid approval or answer")
 // ErrInvalidRunDiagnostics 表示运行诊断格式无效，或运行尚未结束。
 var ErrInvalidRunDiagnostics = errors.New("invalid run diagnostics")
 
+// ErrInvalidGitVerification 表示事件的 Git 验证回执无效，或不适用于当前运行状态。
+var ErrInvalidGitVerification = errors.New("invalid Git verification")
+
 // Directory 表示设备登记的执行目录标识与展示名称。
 type Directory struct {
 	ID       string `json:"id"`
@@ -79,6 +82,7 @@ type Task struct {
 	CurrentRunGeneration int64     `json:"current_run_generation"`
 	WaitGeneration       int64     `json:"wait_generation,omitempty"`
 	ControlActions       []string  `json:"control_actions,omitempty"`
+	GitPolicyRevision    int64     `json:"git_policy_revision,omitempty"`
 }
 
 // TaskControl 是管理员任务操作。请求 ID 在同一任务下去重，重复时返回当前状态。
@@ -89,42 +93,44 @@ type TaskControl struct {
 
 // Run 描述任务的一轮执行，保留其状态、原生会话、租约及设备上报的诊断摘要。
 type Run struct {
-	ID          string                 `json:"id"`
-	TaskID      string                 `json:"task_id"`
-	DirectoryID string                 `json:"directory_id"`
-	Status      string                 `json:"status"`
-	SessionID   string                 `json:"session_id,omitempty"`
-	Text        string                 `json:"text,omitempty"`
-	CreatedAt   time.Time              `json:"created_at"`
-	UpdatedAt   time.Time              `json:"updated_at"`
-	Generation  int64                  `json:"generation"`
-	LeaseUntil  *time.Time             `json:"lease_until,omitempty"`
-	Diagnostics *runreport.Diagnostics `json:"diagnostics,omitempty"`
+	ID              string                    `json:"id"`
+	TaskID          string                    `json:"task_id"`
+	DirectoryID     string                    `json:"directory_id"`
+	Status          string                    `json:"status"`
+	SessionID       string                    `json:"session_id,omitempty"`
+	Text            string                    `json:"text,omitempty"`
+	CreatedAt       time.Time                 `json:"created_at"`
+	UpdatedAt       time.Time                 `json:"updated_at"`
+	Generation      int64                     `json:"generation"`
+	LeaseUntil      *time.Time                `json:"lease_until,omitempty"`
+	Diagnostics     *runreport.Diagnostics    `json:"diagnostics,omitempty"`
+	GitVerification *gitdelivery.Verification `json:"git_verification,omitempty"`
 }
 
 // RunClaim 是设备领取运行后的数据，包含执行上下文、租约、输入和可委派目标。
 type RunClaim struct {
-	ID                   string             `json:"id"`
-	TaskID               string             `json:"task_id"`
-	DirectoryID          string             `json:"directory_id"`
-	Prompt               string             `json:"prompt"`
-	SessionID            string             `json:"session_id"`
-	AgentKind            string             `json:"agent_kind"`
-	ProjectID            string             `json:"project_id"`
-	Generation           int64              `json:"generation"`
-	Lease                string             `json:"lease"`
-	LeaseUntil           time.Time          `json:"lease_until"`
-	BindingID            string             `json:"binding_id"`
-	ParentTaskID         string             `json:"parent_task_id,omitempty"`
-	ParentDeviceID       string             `json:"parent_device_id,omitempty"`
-	RootTaskID           string             `json:"root_task_id"`
-	PromptTransferID     string             `json:"prompt_transfer_id,omitempty"`
-	Attachments          []Transfer         `json:"attachments,omitempty"`
-	DependencyResults    []DependencyResult `json:"dependency_results,omitempty"`
-	DelegationTargets    []DelegationTarget `json:"delegation_targets,omitempty"`
-	ApprovalSupported    bool               `json:"approval_supported,omitempty"`
-	ControlSupported     bool               `json:"control_supported,omitempty"`
-	DiagnosticsSupported bool               `json:"diagnostics_supported,omitempty"`
+	ID                   string              `json:"id"`
+	TaskID               string              `json:"task_id"`
+	DirectoryID          string              `json:"directory_id"`
+	Prompt               string              `json:"prompt"`
+	SessionID            string              `json:"session_id"`
+	AgentKind            string              `json:"agent_kind"`
+	ProjectID            string              `json:"project_id"`
+	Generation           int64               `json:"generation"`
+	Lease                string              `json:"lease"`
+	LeaseUntil           time.Time           `json:"lease_until"`
+	BindingID            string              `json:"binding_id"`
+	ParentTaskID         string              `json:"parent_task_id,omitempty"`
+	ParentDeviceID       string              `json:"parent_device_id,omitempty"`
+	RootTaskID           string              `json:"root_task_id"`
+	PromptTransferID     string              `json:"prompt_transfer_id,omitempty"`
+	Attachments          []Transfer          `json:"attachments,omitempty"`
+	DependencyResults    []DependencyResult  `json:"dependency_results,omitempty"`
+	DelegationTargets    []DelegationTarget  `json:"delegation_targets,omitempty"`
+	ApprovalSupported    bool                `json:"approval_supported,omitempty"`
+	ControlSupported     bool                `json:"control_supported,omitempty"`
+	DiagnosticsSupported bool                `json:"diagnostics_supported,omitempty"`
+	GitPolicy            *gitdelivery.Policy `json:"git_policy,omitempty"`
 }
 
 // DependencyResult 记录父任务续接时收到的子任务标识和状态。
@@ -146,15 +152,16 @@ type DelegationTarget struct {
 
 // RunEvent 是设备上报的单条运行事件，携带运行代次和租约。诊断摘要只随本轮终态上报。
 type RunEvent struct {
-	Kind           string                 `json:"kind"`
-	SessionID      string                 `json:"session_id,omitempty"`
-	Text           string                 `json:"text,omitempty"`
-	Generation     int64                  `json:"generation"`
-	Lease          string                 `json:"lease"`
-	WaitForTaskIDs []string               `json:"wait_for_task_ids,omitempty"`
-	TransferIDs    []string               `json:"transfer_ids,omitempty"`
-	Approval       *approval.Question     `json:"approval,omitempty"`
-	Diagnostics    *runreport.Diagnostics `json:"diagnostics,omitempty"`
+	Kind            string                    `json:"kind"`
+	SessionID       string                    `json:"session_id,omitempty"`
+	Text            string                    `json:"text,omitempty"`
+	Generation      int64                     `json:"generation"`
+	Lease           string                    `json:"lease"`
+	WaitForTaskIDs  []string                  `json:"wait_for_task_ids,omitempty"`
+	TransferIDs     []string                  `json:"transfer_ids,omitempty"`
+	Approval        *approval.Question        `json:"approval,omitempty"`
+	Diagnostics     *runreport.Diagnostics    `json:"diagnostics,omitempty"`
+	GitVerification *gitdelivery.Verification `json:"git_verification,omitempty"`
 }
 
 // Approval 记录原生会话提出的请示、首个有效答复及处理时间。
@@ -248,6 +255,8 @@ type Dispatch struct {
 	Title     string `json:"title,omitempty"`
 	Prompt    string `json:"prompt"`
 	BindingID string `json:"binding_id,omitempty"`
+	// GitDelivery 请求为新根任务冻结已配置的项目 Git 规则。
+	GitDelivery bool `json:"git_delivery,omitempty"`
 }
 
 // Peer 保存设备直连接收端点的地址及证书指纹。
@@ -323,6 +332,7 @@ type Store interface {
 	ReplaceDirectories(context.Context, string, [32]byte, []Directory) error
 	ClaimRun(context.Context, string, [32]byte) (RunClaim, error)
 	ClaimRunWithControl(context.Context, string, [32]byte, bool) (RunClaim, error)
+	ClaimRunWithCapabilities(context.Context, string, [32]byte, bool, bool) (RunClaim, error)
 	RunControl(context.Context, string, [32]byte, string, int64, string) (bool, error)
 	RenewRun(context.Context, string, [32]byte, string, int64, string) (time.Time, error)
 	Delegate(context.Context, string, [32]byte, string, Delegation) (Task, error)

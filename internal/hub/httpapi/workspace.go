@@ -212,8 +212,9 @@ func (api workspaceAPI) claimRun(w http.ResponseWriter, r *http.Request, device 
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	controlSupported := r.Header.Get("Muster-Run-Control") == "1"
+	gitVerificationSupported := r.Header.Get("Muster-Git-Verification") == "1"
 	for {
-		run, err := api.store.ClaimRunWithControl(ctx, device, token, controlSupported)
+		run, err := api.store.ClaimRunWithCapabilities(ctx, device, token, controlSupported, gitVerificationSupported)
 		if ctx.Err() != nil {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -355,7 +356,7 @@ func (api workspaceAPI) dispatch(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	create := input.TaskID == "" && uuidPattern.MatchString(input.ProjectID) && validText(input.Title, 240, true) &&
 		(input.BindingID == "" || uuidPattern.MatchString(input.BindingID))
-	appendToTask := input.ProjectID == "" && input.BindingID == "" && prefixedUUID(input.TaskID, "task-")
+	appendToTask := !input.GitDelivery && input.ProjectID == "" && input.BindingID == "" && prefixedUUID(input.TaskID, "task-")
 	if !prefixedUUID(id, "message-") || !leasePattern.MatchString(input.Lease) ||
 		(!create && !appendToTask) || !validText(input.Prompt, 6000, true) {
 		writeError(w, http.StatusBadRequest, "invalid task dispatch")
@@ -414,6 +415,8 @@ func workspaceJSON(w http.ResponseWriter, status int, value any, err error) {
 	case errors.Is(err, workspace.ErrInvalidApproval):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrInvalidRunDiagnostics):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, workspace.ErrInvalidGitVerification):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrConflict):
 		writeError(w, http.StatusConflict, "workspace state changed or request conflicts with a saved result")

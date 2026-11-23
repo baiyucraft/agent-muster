@@ -61,6 +61,11 @@ func (store *InventoryStore) ClaimRun(ctx context.Context, device string, token 
 
 // ClaimRunWithControl 记录 daemon 是否能确认停止，并保留已领取轮次的原协议能力。
 func (store *InventoryStore) ClaimRunWithControl(ctx context.Context, device string, token [32]byte, supported bool) (claim workspace.RunClaim, err error) {
+	return store.ClaimRunWithCapabilities(ctx, device, token, supported, false)
+}
+
+// ClaimRunWithCapabilities 为设备领取兼容的运行，托管 Git 任务只交给能验证候选的设备端。
+func (store *InventoryStore) ClaimRunWithCapabilities(ctx context.Context, device string, token [32]byte, controlSupported, gitVerificationSupported bool) (claim workspace.RunClaim, err error) {
 	err = store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		if err := authenticateDevice(ctx, tx, device, token); err != nil {
 			return err
@@ -73,6 +78,7 @@ func (store *InventoryStore) ClaimRunWithControl(ctx context.Context, device str
 				WHERE r.device_id=$1 AND r.status IN ('queued','running') AND t.status IN ('queued','running')
 				AND (r.claimed_at IS NOT NULL OR t.control_mode='')
 				AND (NOT r.control_supported OR $3)
+				AND (t.git_policy IS NULL OR $4)
 				AND NOT EXISTS (SELECT 1 FROM muster_runs active WHERE active.device_id=$1
 					AND active.id<>r.id AND active.status IN ('queued','running') AND active.claimed_at IS NOT NULL)
 				ORDER BY (r.claimed_at IS NOT NULL) DESC,
@@ -87,10 +93,11 @@ func (store *InventoryStore) ClaimRunWithControl(ctx context.Context, device str
 			WHERE r.id=choice.id AND t.id=r.task_id
 			RETURNING r.id,t.id,t.directory_id,r.input,r.input_session,t.agent_kind,t.project_id,r.generation,
 				r.lease,r.lease_until,t.binding_id,COALESCE(t.parent_id,''),COALESCE(parent.device_id,''),t.root_id,
-				r.prompt_transfer_id,r.dependency_results,choice.first_claim,r.control_supported`, device, rand.Text(), supported).
+				r.prompt_transfer_id,r.dependency_results,choice.first_claim,r.control_supported,t.git_policy`,
+			device, rand.Text(), controlSupported, gitVerificationSupported).
 			Scan(&claim.ID, &claim.TaskID, &claim.DirectoryID, &claim.Prompt, &claim.SessionID, &claim.AgentKind,
 				&claim.ProjectID, &claim.Generation, &claim.Lease, &claim.LeaseUntil, &claim.BindingID, &claim.ParentTaskID,
-				&claim.ParentDeviceID, &claim.RootTaskID, &claim.PromptTransferID, &claim.DependencyResults, &firstClaim, &claim.ControlSupported)
+				&claim.ParentDeviceID, &claim.RootTaskID, &claim.PromptTransferID, &claim.DependencyResults, &firstClaim, &claim.ControlSupported, &claim.GitPolicy)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -141,6 +148,7 @@ type runState struct {
 	LegacyEvents     bool
 	ControlMode      string
 	ControlSupported bool
+	ManagedGit       bool
 }
 
 // RenewRun 校验设备、当前运行、代次及有效租约后延长租期，返回新的到期时间。
@@ -165,12 +173,12 @@ func (store *InventoryStore) RenewRun(ctx context.Context, device string, token 
 func readRunState(ctx context.Context, tx pgx.Tx, device, id string) (value runState, err error) {
 	err = tx.QueryRow(ctx, `SELECT t.id,t.current_run_id,COALESCE(t.parent_id,''),COALESCE(p.device_id,''),t.root_id,r.status,t.waiting_reason,
 		COALESCE(NULLIF(r.session_id,''),r.input_session),r.generation,r.lease,
-		COALESCE(r.lease_until>=clock_timestamp(),false),r.legacy_events,t.control_mode,r.control_supported
+		COALESCE(r.lease_until>=clock_timestamp(),false),r.legacy_events,t.control_mode,r.control_supported,t.git_policy IS NOT NULL
 		FROM muster_runs r JOIN muster_tasks t ON t.id=r.task_id LEFT JOIN muster_tasks p ON t.parent_id=p.id
 		WHERE r.id=$1 AND r.device_id=$2 AND r.claimed_at IS NOT NULL`, id, device).
 		Scan(&value.TaskID, &value.CurrentRun, &value.ParentTaskID, &value.ParentDeviceID, &value.RootTaskID,
 			&value.Status, &value.WaitingReason, &value.SessionID, &value.Generation, &value.Lease, &value.LeaseLive,
-			&value.LegacyEvents, &value.ControlMode, &value.ControlSupported)
+			&value.LegacyEvents, &value.ControlMode, &value.ControlSupported, &value.ManagedGit)
 	return value, notFound(err)
 }
 
@@ -180,6 +188,9 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 	terminal := event.Kind != "started" && event.Kind != "session"
 	if event.Diagnostics != nil && (!terminal || !event.Diagnostics.Valid()) {
 		return workspace.ErrInvalidRunDiagnostics
+	}
+	if event.GitVerification != nil && (!terminal || !event.GitVerification.Valid()) {
+		return workspace.ErrInvalidGitVerification
 	}
 	if event.Kind == "approval_requested" {
 		if event.Approval == nil || len(event.WaitForTaskIDs)+len(event.TransferIDs) != 0 {
@@ -204,6 +215,10 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 		legacy := run.LegacyEvents && event.Generation == 0 && event.Lease == ""
 		if !legacy && (event.Lease == "" || event.Lease != run.Lease || event.Generation != run.Generation) {
 			return workspace.ErrConflict
+		}
+		if (!run.ManagedGit && event.GitVerification != nil) ||
+			(run.ManagedGit && event.Kind == "completed" && (event.GitVerification == nil || event.GitVerification.TestStatus != "passed")) {
+			return workspace.ErrInvalidGitVerification
 		}
 		if run.ParentTaskID != "" {
 			event.Text = ""
@@ -286,8 +301,8 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 		if !terminal {
 			status = "running"
 		}
-		if _, err := tx.Exec(ctx, `UPDATE muster_runs SET status=$2,session_id=$3,outcome=$4,diagnostics=$5,updated_at=clock_timestamp()
-			WHERE id=$1`, id, status, sessionID, event.Text, event.Diagnostics); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE muster_runs SET status=$2,session_id=$3,outcome=$4,diagnostics=$5,git_verification=$6,updated_at=clock_timestamp()
+			WHERE id=$1`, id, status, sessionID, event.Text, event.Diagnostics, event.GitVerification); err != nil {
 			return err
 		}
 		switch event.Kind {

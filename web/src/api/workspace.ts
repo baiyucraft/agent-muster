@@ -36,6 +36,7 @@ export type Task = {
   waiting_reason?: 'children' | 'delivery' | 'transfers'
   current_run_generation?: number
   wait_generation?: number
+  git_policy_revision?: number
   control_actions?: TaskControlAction[]
 }
 
@@ -69,8 +70,18 @@ export type Run = {
   session_id?: string
   text?: string
   diagnostics?: RunDiagnostics
+  git_verification?: GitVerification
   created_at: string
   updated_at: string
+}
+
+/** 本轮保存的 Git 验证证据。候选提交与测试结论归属同一运行。 */
+type GitVerification = {
+  base_oid?: string
+  candidate_oid?: string
+  test_exit_code?: number
+  test_log_ref?: string
+  test_status: 'passed' | 'failed' | 'unverified'
 }
 
 /** 设备为该轮运行上报的诊断摘要。缺失字段表示设备未能确认对应数据。 */

@@ -20,6 +20,10 @@ import (
 const processJobList = 0x0002000D
 
 func runInJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() error, read func(io.Reader) error) (uint32, error) {
+	return runInJobWithStderr(ctx, cmd, prompt, started, read, nil)
+}
+
+func runInJobWithStderr(ctx context.Context, cmd *exec.Cmd, prompt string, started func() error, read func(io.Reader) error, stderr io.Writer) (uint32, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -47,15 +51,23 @@ func runInJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() 
 	defer stdoutR.Close()
 	defer stdoutW.Close()
 
-	capture := diagnostics(ctx)
+	var capture *runCapture
+	if stderr == nil {
+		capture = diagnostics(ctx)
+	}
 	var stdoutLog, stderrLog *streamLog
 	var captureIncomplete bool
 	var stderrR, stderrW *os.File
 	if capture != nil {
 		capture.report.ErrorKind = "setup"
+	}
+	if capture != nil || stderr != nil {
 		stderrR, stderrW, err = os.Pipe()
 	}
-	if capture == nil || err != nil {
+	if stderr != nil && err != nil {
+		return 0, err
+	}
+	if stderrR == nil {
 		captureIncomplete = capture != nil
 		stderrW, err = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	}
@@ -85,23 +97,28 @@ func runInJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() 
 	if _, err := windows.ResumeThread(process.Thread); err != nil {
 		return 0, errors.Join(err, stopProcessTree(job))
 	}
-	var stderrDone chan error
+	processCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	if capture != nil {
 		stdoutLog, stderrLog = capture.openStreams()
 		defer func() { capture.finishStreams(stdoutLog, stderrLog, captureIncomplete) }()
-		if stderrR != nil {
-			stderrDone = make(chan error, 1)
-			go func() {
-				_, err := io.Copy(stderrLog, stderrR)
-				stderrDone <- err
-			}()
-		} else {
+		stderr = stderrLog
+		if stderrR == nil {
 			stderrLog.err = true
 		}
 	}
+	var stderrDone chan error
+	if stderrR != nil {
+		stderrDone = make(chan error, 1)
+		go func() {
+			_, err := io.Copy(stderr, stderrR)
+			if err != nil && capture == nil {
+				cancel()
+			}
+			stderrDone <- err
+		}()
+	}
 
-	processCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	input := make(chan error, 1)
 	go func() {
 		_, err := io.WriteString(stdinW, prompt)
@@ -136,8 +153,9 @@ func runInJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() 
 	}
 	outputErr := <-output
 	inputErr := <-input
+	var stderrErr error
 	if stderrDone != nil {
-		stderrErr := <-stderrDone
+		stderrErr = <-stderrDone
 		captureIncomplete = captureIncomplete || stderrErr != nil
 	}
 	if capture != nil {
@@ -161,7 +179,10 @@ func runInJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() 
 	if err := ctx.Err(); err != nil {
 		return exitCode, err
 	}
-	return exitCode, errors.Join(waitErr, exitErr, outputErr, inputErr)
+	if capture != nil {
+		stderrErr = nil
+	}
+	return exitCode, errors.Join(waitErr, exitErr, outputErr, inputErr, stderrErr)
 }
 
 func waitProcess(ctx context.Context, process windows.Handle) error {

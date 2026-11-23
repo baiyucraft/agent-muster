@@ -130,6 +130,9 @@ func TestM0WorkspaceMigration(t *testing.T) {
 	if detail.Runs[0].Diagnostics != nil {
 		t.Fatalf("legacy run has synthetic diagnostics: %+v", detail.Runs[0].Diagnostics)
 	}
+	if detail.Task.GitPolicyRevision != 0 || detail.Runs[0].GitVerification != nil {
+		t.Fatal("旧任务不能凭迁移获得 Git 规则或验证回执")
+	}
 	if detail.Task.CurrentRunGeneration != claim.Generation || len(detail.Inputs) != 1 ||
 		detail.Inputs[0].Kind != "execution" || detail.Inputs[0].RunID != claim.ID ||
 		detail.Inputs[0].Status != "completed" || detail.Inputs[0].ClaimedAt == nil {

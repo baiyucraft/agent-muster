@@ -421,6 +421,12 @@ select {
 .run-row > p { margin: 7px 0 0; font-size: 13px; }
 .run-row > p span { color: var(--muted); }
 .run-row code { overflow-wrap: anywhere; }
+.run-git-verification { display: grid; gap: 4px; margin: 8px 0 0; padding: var(--space-2); border-radius: var(--radius-control); background: var(--inset); font-size: var(--text-small); }
+.run-git-verification > div { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: var(--space-2); align-items: baseline; }
+.run-git-verification dt, .run-git-verification dd span { color: var(--muted); }
+.run-git-verification dd { margin: 0; }
+.run-git-verification dd[data-status='passed'] { color: var(--green); }
+.run-git-verification dd[data-status='failed'] { color: var(--red); }
 .run-diagnostics { display: grid; gap: 5px; margin-top: 7px; color: var(--muted); font-size: var(--text-small); }
 .run-diagnostics p, .run-diagnostic-facts, .run-diagnostic-facts dd { margin: 0; }
 .run-diagnostic-facts { display: flex; flex-wrap: wrap; gap: 4px 12px; }

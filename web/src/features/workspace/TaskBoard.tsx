@@ -218,6 +218,7 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
             <dl className="task-facts">
               <div><dt>任务编号</dt><dd><code>{task.id}</code></dd></div>
               {task.binding_id && <div><dt>执行绑定</dt><dd><code>{task.binding_id}</code></dd></div>}
+              {task.git_policy_revision != null && <div><dt>Git 策略版本</dt><dd>{task.git_policy_revision}</dd></div>}
             </dl>
           </details>
         </div>
@@ -228,6 +229,7 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
             <header><Time value={run.created_at} /><TaskStatus status={run.status} /></header>
             <p><span>运行</span> <code>{run.id}</code></p>
             {run.session_id && <p><span>会话</span> <code>{run.session_id}</code></p>}
+            {run.git_verification && <GitRunVerification verification={run.git_verification} />}
             <RunDiagnostics diagnostics={run.diagnostics} />
             {run.text && <p className="message-text">{run.text}</p>}
           </article>)}
@@ -264,6 +266,23 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
         {relatedMessages && relatedMessages.length > 0 && <section className="task-detail-panel related-messages" aria-labelledby="related-heading"><h2 id="related-heading">关联对话</h2>{relatedMessages.map((message) => <MessageItem key={message.id} message={message} task={task} />)}</section>}
       </div>}
     </section>
+  )
+}
+
+const gitTestStatus = { passed: '测试通过', failed: '测试失败', unverified: '未验证' }
+
+/** 在对应运行内展示设备已确认的 Git 提交与测试结果。 */
+function GitRunVerification({ verification }: { verification: NonNullable<Run['git_verification']> }) {
+  return (
+    <dl className="run-git-verification" aria-label="Git 验证">
+      <div><dt>Git 验证</dt><dd data-status={verification.test_status}>
+        {gitTestStatus[verification.test_status] ?? gitTestStatus.unverified}
+        {verification.test_exit_code != null && <span> · 退出码 {verification.test_exit_code}</span>}
+      </dd></div>
+      {verification.base_oid && <div><dt>基准提交</dt><dd><code>{verification.base_oid}</code></dd></div>}
+      {verification.candidate_oid && <div><dt>候选提交</dt><dd><code>{verification.candidate_oid}</code></dd></div>}
+      {verification.test_log_ref && <div><dt>测试日志</dt><dd><code>{verification.test_log_ref}</code></dd></div>}
+    </dl>
   )
 }
 

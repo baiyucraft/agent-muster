@@ -153,8 +153,8 @@ func settleStoppedRun(ctx context.Context, tx pgx.Tx, run runState, id, sessionI
 		// 已自然退出的轮次仍显示其原始退出结果，包括旧 daemon 无法处理中止指令时的回执。
 		runStatus = event.Kind
 	}
-	if _, err := tx.Exec(ctx, `UPDATE muster_runs SET status=$2,session_id=$3,outcome=$4,diagnostics=$5,updated_at=clock_timestamp()
-		WHERE id=$1`, id, runStatus, sessionID, event.Text, event.Diagnostics); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE muster_runs SET status=$2,session_id=$3,outcome=$4,diagnostics=$5,git_verification=$6,updated_at=clock_timestamp()
+		WHERE id=$1`, id, runStatus, sessionID, event.Text, event.Diagnostics, event.GitVerification); err != nil {
 		return err
 	}
 	if run.ControlMode == "cancel" {

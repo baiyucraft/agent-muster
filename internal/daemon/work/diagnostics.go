@@ -10,6 +10,7 @@ import (
 )
 
 var logRunID = regexp.MustCompile(`^run-[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$`)
+var taskStorageID = regexp.MustCompile(`^task-[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$`)
 
 func (worker *Worker) captureRun(ctx context.Context, id string) (context.Context, func() *runreport.Diagnostics) {
 	if worker.root == "" || !logRunID.MatchString(id) {

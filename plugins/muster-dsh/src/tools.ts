@@ -77,12 +77,13 @@ export function bindTools(agent: Agent, hub: Hub, active: () => ActiveDelivery |
     const names = ['muster_list_projects', 'muster_dispatch', 'muster_resume_task', 'muster_get_task']
     register(names[0], '查看项目、设备和可选 Agent 绑定，派发前找到项目及绑定 ID。', [],
       (_input, _delivery, signal) => hub.projects(signal))
-    register(names[1], '把工作派到已绑定项目，立即返回任务 ID。用 binding_id 选择指定设备和 Agent，省略时使用默认绑定。', ['project_id', 'title', 'prompt'],
+    register(names[1], '把工作派到已绑定项目，立即返回任务 ID。用 binding_id 选择指定设备和 Agent。用户明确要求 Git 候选提交及项目测试且项目有 git_policy 时，workflow 用 git_verify。git_verify 会报告受测提交，Review 和推送另有交付流程。', ['project_id', 'title', 'prompt'],
       (input, delivery, signal) => {
         requireMessage(delivery)
-        const { project_id, binding_id, title, prompt } = input as Record<string, string>
-        return hub.dispatch(delivery, { project_id, binding_id, title, prompt }, signal)
-      }, ['binding_id'])
+        const { project_id, binding_id, title, prompt, workflow } = input as Record<string, string>
+        if (workflow !== undefined && workflow !== 'git_verify') throw new Error('未知的项目工作流')
+        return hub.dispatch(delivery, { project_id, binding_id, title, prompt, git_delivery: workflow === 'git_verify' || undefined }, signal)
+      }, ['binding_id', 'workflow'])
     register(names[2], '把明确追加的要求交给该任务的原设备和原生会话。', ['task_id', 'prompt'],
       (input, delivery, signal) => {
         requireMessage(delivery)

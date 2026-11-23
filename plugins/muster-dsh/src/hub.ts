@@ -17,6 +17,7 @@ export interface Dispatch {
   task_id?: string
   title?: string
   prompt: string
+  git_delivery?: boolean
 }
 
 /** 中心会话完成投递时提交的文本和结束状态。 */

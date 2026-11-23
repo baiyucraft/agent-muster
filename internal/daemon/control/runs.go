@@ -8,9 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 
 	"github.com/baiyucraft/agent-muster/internal/approval"
+	"github.com/baiyucraft/agent-muster/internal/gitdelivery"
 	"github.com/baiyucraft/agent-muster/internal/runreport"
 )
 
@@ -53,6 +55,7 @@ type Run struct {
 	ApprovalSupported    bool                `json:"approval_supported,omitempty"`
 	ControlSupported     bool                `json:"control_supported,omitempty"`     // Hub 可向该运行下发停止指令。
 	DiagnosticsSupported bool                `json:"diagnostics_supported,omitempty"` // Hub 接受终态诊断字段。
+	GitPolicy            *gitdelivery.Policy `json:"git_policy,omitempty"`            // Git 任务首次派发时冻结的规则。
 }
 
 // DependencyResult 记录父任务续接时可见的依赖任务标识与状态。
@@ -108,15 +111,16 @@ type TransferReference struct {
 
 // RunEvent 是设备上报的运行事件。请示和停止分别在本轮退出后使用 approval_requested 和 stopped。
 type RunEvent struct {
-	Kind           string                 `json:"kind"`
-	SessionID      string                 `json:"session_id,omitempty"`
-	Text           string                 `json:"text,omitempty"`
-	Generation     int64                  `json:"generation,omitempty"`
-	Lease          string                 `json:"lease,omitempty"`
-	WaitForTaskIDs []string               `json:"wait_for_task_ids,omitempty"`
-	TransferIDs    []string               `json:"transfer_ids,omitempty"`
-	Approval       *approval.Question     `json:"approval,omitempty"`
-	Diagnostics    *runreport.Diagnostics `json:"diagnostics,omitempty"`
+	Kind            string                    `json:"kind"`
+	SessionID       string                    `json:"session_id,omitempty"`
+	Text            string                    `json:"text,omitempty"`
+	Generation      int64                     `json:"generation,omitempty"`
+	Lease           string                    `json:"lease,omitempty"`
+	WaitForTaskIDs  []string                  `json:"wait_for_task_ids,omitempty"`
+	TransferIDs     []string                  `json:"transfer_ids,omitempty"`
+	Approval        *approval.Question        `json:"approval,omitempty"`
+	Diagnostics     *runreport.Diagnostics    `json:"diagnostics,omitempty"`
+	GitVerification *gitdelivery.Verification `json:"git_verification,omitempty"`
 }
 
 // ReportDirectories 向 Hub 上报本设备当前可派发的工作目录清单。
@@ -132,8 +136,12 @@ func (client *Client) ClaimRun(ctx context.Context, identity Identity) (*Run, er
 	if err != nil {
 		return nil, err
 	}
-	response, err := client.sendWithHeaders(ctx, http.MethodPost, endpoint, identity.Token,
-		http.Header{"Muster-Run-Control": []string{"1"}}, nil, http.StatusOK, http.StatusNoContent)
+	headers := http.Header{"Muster-Run-Control": []string{"1"}}
+	if runtime.GOOS == "windows" {
+		headers.Set("Muster-Git-Verification", "1")
+	}
+	response, err := client.sendWithHeaders(ctx, http.MethodPost, endpoint, identity.Token, headers, nil,
+		http.StatusOK, http.StatusNoContent)
 	if err != nil {
 		return nil, err
 	}

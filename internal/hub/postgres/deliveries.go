@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 
+	"github.com/baiyucraft/agent-muster/internal/gitdelivery"
 	"github.com/baiyucraft/agent-muster/internal/hub/registry"
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
 	"github.com/jackc/pgx/v5"
@@ -108,6 +109,9 @@ func (store *InventoryStore) CompleteDelivery(ctx context.Context, id string, in
 // Dispatch 用持有有效租约的消息创建根任务或追加运行。
 // 同一条消息重新派发时返回首次持久化的任务 ID。
 func (store *InventoryStore) Dispatch(ctx context.Context, id string, input workspace.Dispatch) (taskID string, err error) {
+	if input.GitDelivery && input.TaskID != "" {
+		return "", workspace.ErrConflict
+	}
 	err = store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		var kind, messageID, selectedTask string
 		var done, leased bool
@@ -171,6 +175,14 @@ func createTask(ctx context.Context, tx pgx.Tx, taskID, runID string, input work
 	if err != nil {
 		return err
 	}
+	if input.GitDelivery {
+		if err := tx.QueryRow(ctx, "SELECT git_policy FROM muster_projects WHERE id=$1", route.ProjectID).Scan(&route.GitPolicy); err != nil {
+			return err
+		}
+		if route.GitPolicy == nil {
+			return workspace.ErrConflict
+		}
+	}
 	return insertTask(ctx, tx, taskID, runID, input.Title, "", taskID, route)
 }
 
@@ -181,6 +193,7 @@ type taskRoute struct {
 	DeviceID    string
 	DirectoryID string
 	AgentKind   string
+	GitPolicy   *gitdelivery.Policy
 }
 
 func resolveBinding(ctx context.Context, tx pgx.Tx, projectID, bindingID string) (route taskRoute, err error) {
@@ -203,10 +216,10 @@ func insertTask(ctx context.Context, tx pgx.Tx, taskID, runID, title, parentID, 
 	}
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO muster_tasks (id,project_id,project_name,device_id,directory_id,title,status,current_run_id,
-			parent_id,root_id,binding_id,agent_kind,waiting_reason)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,$12,$13) ON CONFLICT (id) DO NOTHING`,
+			parent_id,root_id,binding_id,agent_kind,waiting_reason,git_policy)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,$12,$13,$14) ON CONFLICT (id) DO NOTHING`,
 		taskID, route.ProjectID, route.ProjectName, route.DeviceID, route.DirectoryID, title, status, runID, parentID, rootID,
-		route.BindingID, route.AgentKind, reason)
+		route.BindingID, route.AgentKind, reason, route.GitPolicy)
 	if err == nil && tag.RowsAffected() == 0 {
 		return workspace.ErrConflict
 	}

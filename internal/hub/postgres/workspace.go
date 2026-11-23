@@ -21,7 +21,8 @@ const taskColumns = `t.id, t.project_id, t.project_name, t.device_id, t.director
 	COALESCE((SELECT generation FROM muster_runs WHERE id=t.current_run_id),0),t.input_generation,
 	t.control_mode,
 	EXISTS (SELECT 1 FROM muster_runs r WHERE r.id=t.current_run_id AND r.claimed_at IS NOT NULL AND r.status IN ('queued','running')),
-	COALESCE((SELECT r.control_supported FROM muster_runs r WHERE r.id=t.current_run_id),false)`
+	COALESCE((SELECT r.control_supported FROM muster_runs r WHERE r.id=t.current_run_id),false),
+	COALESCE((t.git_policy->>'revision')::bigint,0)`
 
 // WorkspaceEvents 按游标升序返回指定位置之后最多 128 条工作区事件。
 // 超过当前工作区位置的游标返回冲突。
@@ -88,7 +89,7 @@ func (store *InventoryStore) TaskDetail(ctx context.Context, id string) (detail 
 			return notFound(err)
 		}
 		detail.Runs, err = selectRows(ctx, tx, `
-			SELECT r.id,r.task_id,t.directory_id,r.status,r.session_id,r.outcome,r.created_at,r.updated_at,r.generation,r.lease_until,r.diagnostics
+			SELECT r.id,r.task_id,t.directory_id,r.status,r.session_id,r.outcome,r.created_at,r.updated_at,r.generation,r.lease_until,r.diagnostics,r.git_verification
 			FROM muster_runs r JOIN muster_tasks t ON t.id=r.task_id WHERE r.task_id=$1 ORDER BY r.sequence`, scanRun, id)
 		if err != nil {
 			return err
@@ -432,7 +433,7 @@ func scanTask(row pgx.Row) (value workspace.Task, err error) {
 	err = row.Scan(&value.ID, &value.ProjectID, &value.ProjectName, &value.DeviceID, &value.DirectoryID,
 		&value.Status, &value.Title, &value.Result, &value.ReportPending, &value.UpdatedAt,
 		&value.ParentTaskID, &value.RootTaskID, &value.BindingID, &value.AgentKind, &value.WaitingReason,
-		&value.CurrentRunGeneration, &value.WaitGeneration, &control.mode, &control.active, &control.supported)
+		&value.CurrentRunGeneration, &value.WaitGeneration, &control.mode, &control.active, &control.supported, &value.GitPolicyRevision)
 	control.status = value.Status
 	value.ControlActions = control.actions()
 	if value.Status == "waiting" {
@@ -449,6 +450,6 @@ func scanTask(row pgx.Row) (value workspace.Task, err error) {
 
 func scanRun(row pgx.Row) (value workspace.Run, err error) {
 	err = row.Scan(&value.ID, &value.TaskID, &value.DirectoryID, &value.Status, &value.SessionID,
-		&value.Text, &value.CreatedAt, &value.UpdatedAt, &value.Generation, &value.LeaseUntil, &value.Diagnostics)
+		&value.Text, &value.CreatedAt, &value.UpdatedAt, &value.Generation, &value.LeaseUntil, &value.Diagnostics, &value.GitVerification)
 	return
 }
