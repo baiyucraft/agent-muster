@@ -11,6 +11,8 @@ const (
 	DSHHeadless = "dsh_headless"
 	// CodexExec 表示 Codex 新线程的 turn.completed 样本。缓存输入是输入计数的子集。
 	CodexExec = "codex_exec"
+	// DSHCenterTurn 表示中心插件从完整原生轮次确认的用量，输入计数不含缓存读写。
+	DSHCenterTurn = "dsh_center_turn"
 )
 
 // Usage 保存 CLI 提供的 Token 计数。缺失的可选字段保持未知。
@@ -70,10 +72,18 @@ func (report *Diagnostics) Valid() bool {
 	if u == nil {
 		return true
 	}
-	return (u.Source == DSHHeadless || u.Source == CodexExec) &&
-		validQuantity(&u.InputTokens) && validQuantity(&u.OutputTokens) &&
-		validQuantity(u.CachedInputTokens) && validQuantity(u.CacheWriteInputTokens) &&
-		validQuantity(u.ReasoningOutputTokens) && validQuantity(u.TotalTokens)
+	return (u.Source == DSHHeadless || u.Source == CodexExec) && u.validCounts()
+}
+
+// ValidCenterUsage 校验中心轮次用量。空值表示没有可确认的样本。
+func (usage *Usage) ValidCenterUsage() bool {
+	return usage == nil || usage.Source == DSHCenterTurn && usage.TotalTokens != nil && usage.validCounts()
+}
+
+func (usage *Usage) validCounts() bool {
+	return validQuantity(&usage.InputTokens) && validQuantity(&usage.OutputTokens) &&
+		validQuantity(usage.CachedInputTokens) && validQuantity(usage.CacheWriteInputTokens) &&
+		validQuantity(usage.ReasoningOutputTokens) && validQuantity(usage.TotalTokens)
 }
 
 func validQuantity(value *int64) bool {

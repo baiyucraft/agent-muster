@@ -147,6 +147,8 @@ select {
   margin: 0;
 }
 
+.usage-source dl:only-child { grid-column: 1 / -1; }
+
 .usage-source dd {
   margin: 3px 0 0;
   font-variant-numeric: tabular-nums;

@@ -28,7 +28,8 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-llm": "0.2.1-rc.5"
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-token-meter": "0.2.1-rc.5"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5",

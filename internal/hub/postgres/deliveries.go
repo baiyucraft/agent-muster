@@ -57,17 +57,17 @@ func (store *InventoryStore) RenewDelivery(ctx context.Context, id, lease string
 func (store *InventoryStore) CompleteDelivery(ctx context.Context, id string, input workspace.Completion) error {
 	return store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		var kind, messageID, taskID, dispatched string
-		var done, leased bool
-		var previous *workspace.Completion
+		var done, leased, repeated bool
 		err := tx.QueryRow(ctx, `
 			SELECT kind,COALESCE(message_id,''),COALESCE(task_id,''),COALESCE(dispatch_task_id,''),
-				done,COALESCE(lease=$2 AND lease_until>=clock_timestamp(),false),completion
-			FROM muster_deliveries WHERE id=$1`, id, input.Lease).
-			Scan(&kind, &messageID, &taskID, &dispatched, &done, &leased, &previous)
+				done,COALESCE(lease=$2 AND lease_until>=clock_timestamp(),false),
+				COALESCE(completion=$3::jsonb,false)
+			FROM muster_deliveries WHERE id=$1`, id, input.Lease, input).
+			Scan(&kind, &messageID, &taskID, &dispatched, &done, &leased, &repeated)
 		if err != nil {
 			return notFound(err)
 		}
-		if previous != nil && *previous == input {
+		if repeated {
 			return nil
 		}
 		if done || !leased {

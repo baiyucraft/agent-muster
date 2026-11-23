@@ -3,7 +3,7 @@ import type { RunUsage } from './workspace'
 
 /** 保存同一 CLI 数据来源的用量总和与各可选字段的覆盖。Token 用十进制字符串表示。 */
 export type UsageSource = {
-  source: RunUsage['source']
+  source: RunUsage['source'] | 'dsh_center_turn'
   measured_runs: number
   input_tokens: string
   output_tokens: string
@@ -17,7 +17,7 @@ export type UsageSource = {
   total_runs: number
 }
 
-/** 汇总一个项目或设备已结束的运行与可取得的 Token 用量。 */
+/** 汇总已结束的设备运行或中心 dsh 投递，以及可取得的 Token 用量。 */
 export type UsageGroup = {
   id: string
   name: string
@@ -26,14 +26,14 @@ export type UsageGroup = {
   sources: UsageSource[]
 }
 
-/** 以项目和设备两个维度返回同一批设备运行。 */
-export type DeviceUsage = { projects: UsageGroup[]; devices: UsageGroup[] }
+/** 按项目与设备汇总设备运行，支持中心统计的 Hub 还会返回中心 dsh 投递用量。 */
+export type DeviceUsage = { projects: UsageGroup[]; devices: UsageGroup[]; center?: UsageGroup }
 
 /**
- * 读取管理员当前可查的设备 Token 用量。
+ * 读取管理员当前可查的 Token 用量。
  * @param token 当前管理员会话令牌。
  * @param signal 终止用量请求。
- * @returns 分项目与设备汇总的用量和覆盖轮数。
+ * @returns 设备运行与中心 dsh 投递的用量和覆盖轮数。旧版 Hub 可能缺少中心统计。
  */
 export async function readDeviceUsage(token: string, signal: AbortSignal): Promise<DeviceUsage> {
   const response = await request(token, '/api/v1/workspace/usage', { signal })

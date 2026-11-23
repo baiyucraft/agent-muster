@@ -109,3 +109,68 @@ func TestDeviceUsageCoverage(t *testing.T) {
 		t.Fatalf("设备用量及覆盖数不符：\n实际 %+v\n期望 %+v", usage, want)
 	}
 }
+
+func TestCenterUsageCoverage(t *testing.T) {
+	ctx, conn, schema, _, do := openWorkspaceFixture(t)
+	if _, err := conn.Exec(ctx, "SET search_path TO "+schema); err != nil {
+		t.Fatal(err)
+	}
+	submit := func(id string) workspace.Delivery {
+		t.Helper()
+		do(http.MethodPost, "conversation/messages", testAdmin, map[string]string{"id": id, "text": "查询任务"}, http.StatusAccepted, nil)
+		var delivery workspace.Delivery
+		do(http.MethodPost, "plugin/deliveries/claim", testPlugin, nil, http.StatusOK, &delivery)
+		if !delivery.UsageSupported {
+			t.Fatal("领取响应应声明支持中心用量回执")
+		}
+		return delivery
+	}
+
+	legacy := submit("00000000-0000-4000-8000-000000000051")
+	do(http.MethodPut, "plugin/deliveries/"+legacy.ID+"/complete", testPlugin,
+		workspace.Completion{Lease: legacy.Lease, Text: "历史回复", Status: "handled"}, http.StatusNoContent, nil)
+	measured := submit("00000000-0000-4000-8000-000000000052")
+	completionPath := "plugin/deliveries/" + measured.ID + "/complete"
+	var cached, total int64 = 0, 17
+	usage := &runreport.Usage{Source: runreport.DSHHeadless, InputTokens: 12, OutputTokens: 5, CachedInputTokens: &cached, TotalTokens: &total}
+	completion := workspace.Completion{Lease: measured.Lease, Text: "中心回复", Status: "handled", Usage: usage}
+	do(http.MethodPut, completionPath, testPlugin, completion, http.StatusBadRequest, nil)
+	usage.Source = runreport.DSHCenterTurn
+	usage.TotalTokens = nil
+	do(http.MethodPut, completionPath, testPlugin, completion, http.StatusBadRequest, nil)
+	usage.TotalTokens = &total
+	completion.Status = "interrupted"
+	do(http.MethodPut, completionPath, testPlugin, completion, http.StatusBadRequest, nil)
+	completion.Status = "handled"
+	do(http.MethodPut, completionPath, testAdmin, completion, http.StatusUnauthorized, nil)
+	do(http.MethodPut, completionPath, testPlugin, completion, http.StatusNoContent, nil)
+	// 相同回执跨 HTTP 反序列化仍匹配，改动任一计数则冲突。
+	do(http.MethodPut, completionPath, testPlugin, completion, http.StatusNoContent, nil)
+	usage.InputTokens++
+	do(http.MethodPut, completionPath, testPlugin, completion, http.StatusConflict, nil)
+	discarded := submit("00000000-0000-4000-8000-000000000053")
+	if _, err := conn.Exec(ctx, "UPDATE muster_deliveries SET done=true WHERE id=$1", discarded.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var summary workspace.DeviceUsage
+	do(http.MethodGet, "workspace/usage", testAdmin, nil, http.StatusOK, &summary)
+	zeroSum, totalSum := "0", "17"
+	want := &workspace.UsageGroup{ID: "center", Name: "中心 dsh", FinishedRuns: 2, MeasuredRuns: 1,
+		Sources: []workspace.UsageSource{{Source: runreport.DSHCenterTurn, MeasuredRuns: 1, InputTokens: "12", OutputTokens: "5",
+			CachedInputTokens: &zeroSum, CachedInputRuns: 1, TotalTokens: &totalSum, TotalRuns: 1}}}
+	if len(summary.Projects)+len(summary.Devices) != 0 || !reflect.DeepEqual(summary.Center, want) {
+		t.Fatalf("中心用量应独立统计已完成的投递，实际 %+v", summary.Center)
+	}
+	var snapshot workspace.Snapshot
+	do(http.MethodGet, "workspace", testAdmin, nil, http.StatusOK, &snapshot)
+	var replies int
+	for _, message := range snapshot.Messages {
+		if message.Text == completion.Text {
+			replies++
+		}
+	}
+	if replies != 1 {
+		t.Fatalf("重复完成回执生成 %d 条同一主对话回复", replies)
+	}
+}

@@ -329,6 +329,7 @@ func (api workspaceAPI) claimDelivery(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	value.UsageSupported = true
 	workspaceJSON(w, http.StatusOK, value, err)
 }
 
@@ -354,7 +355,8 @@ func (api workspaceAPI) complete(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if !deliveryID(id) || !leasePattern.MatchString(input.Lease) ||
-		(input.Status != "handled" && input.Status != "interrupted") || !validText(input.Text, 12000, false) {
+		(input.Status != "handled" && input.Status != "interrupted") || !validText(input.Text, 12000, false) ||
+		!input.Usage.ValidCenterUsage() || (input.Usage != nil && input.Status != "handled") {
 		writeError(w, http.StatusBadRequest, "invalid delivery result")
 		return
 	}

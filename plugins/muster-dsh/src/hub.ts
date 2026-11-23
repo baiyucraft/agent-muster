@@ -8,6 +8,8 @@ export interface Delivery {
   message_id?: string
   task_id?: string
   project_id?: string
+  /** Hub 声明接受完成回执中的中心轮次用量。 */
+  usage_supported?: boolean
 }
 
 /** 派发新工作或续接原任务的输入，续接时以 task_id 指定目标。 */
@@ -22,10 +24,24 @@ export interface Dispatch {
   git_publish?: boolean
 }
 
-/** 中心会话完成投递时提交的文本和结束状态。 */
+/** dsh 对本次已完成原生轮次中所有模型请求确认的 Token 计数。 */
+export interface CenterTurnUsage {
+  source: 'dsh_center_turn'
+  /** 未计入缓存读写的输入 Token 数。 */
+  input_tokens: number
+  output_tokens: number
+  cached_input_tokens?: number
+  cache_write_input_tokens?: number
+  reasoning_output_tokens?: number
+  total_tokens: number
+}
+
+/** 中心会话完成投递时提交的回复、结束状态和可确认的用量。 */
 export interface Outcome {
   text: string
   status: 'handled' | 'interrupted'
+  /** 原生会话缺少完整计量时省略。 */
+  usage?: CenterTurnUsage
 }
 
 /** 保留 Hub API 返回的 HTTP 状态以判断租约或认证是否有效。 */
@@ -92,7 +108,10 @@ export class Hub {
    * @returns Hub 确认结果后完成，请求失败时拒绝。
    */
   async complete(delivery: Delivery, outcome: Outcome, signal: AbortSignal): Promise<void> {
-    await this.request('PUT', this.route(delivery, 'complete'), signal, { lease: delivery.lease, ...outcome })
+    const { text, status, usage } = outcome
+    await this.request('PUT', this.route(delivery, 'complete'), signal, {
+      lease: delivery.lease, text, status, usage: delivery.usage_supported === true ? usage : undefined,
+    })
   }
 
   /**

@@ -5,12 +5,16 @@ import { messageFor } from '../../useWorkspace'
 
 const number = new Intl.NumberFormat('zh-CN')
 const sourceLabels = { codex_exec: 'Codex', dsh_headless: 'dsh' }
-const groupChoices = [{ id: 'projects', label: '按项目' }, { id: 'devices', label: '按设备' }] as const
+const groupChoices = [
+  { id: 'projects', label: '按项目' },
+  { id: 'devices', label: '按设备' },
+  { id: 'center', label: '中心' },
+] as const
 
 /**
- * 查看设备用量和各 CLI 来源的统计覆盖。
+ * 查看设备与中心 dsh 的 Token 用量和统计覆盖。
  * @param props 当前管理员与会话锁定操作。
- * @returns 设备用量、读取状态与分组切换界面。
+ * @returns Token 用量、读取状态与分组切换界面。
  */
 export function DeviceUsage({ token, onLock }: { token: string; onLock: (reason?: string) => void }) {
   const [dimension, setDimension] = useState<keyof UsageData>('projects')
@@ -39,11 +43,12 @@ export function DeviceUsage({ token, onLock }: { token: string; onLock: (reason?
     setRefreshCount((count) => count + 1)
   }
 
-  const groups = data?.[dimension] ?? []
+  const selectedGroup = data?.[dimension]
+  const groups = Array.isArray(selectedGroup) ? selectedGroup : selectedGroup ? [selectedGroup] : []
   return (
     <section className="usage-view" aria-labelledby="usage-heading" aria-busy={loading}>
       <div className="view-heading">
-        <h1 id="usage-heading">设备 Token 用量</h1>
+        <h1 id="usage-heading">Token 用量</h1>
         <button type="button" className="quiet-button" disabled={loading} onClick={refresh}>刷新</button>
       </div>
       <div className="usage-dimensions" role="group" aria-label="汇总维度">
@@ -52,7 +57,9 @@ export function DeviceUsage({ token, onLock }: { token: string; onLock: (reason?
       </div>
       {error && <p className="read-error" role="status">{error}{data && ' 当前显示上次读取的用量。'}</p>}
       {loading && !data && <p className="panel-placeholder" role="status">正在读取用量…</p>}
-      {data && groups.length === 0 && <p className="panel-placeholder">暂无已结束的运行</p>}
+      {data && groups.length === 0 && <p className="panel-placeholder">
+        {dimension === 'center' ? '暂无中心用量' : '暂无已结束的运行'}
+      </p>}
       <ul className="usage-groups">
         {groups.map((group) => <li key={group.id}>
           <div className="usage-group-heading">
@@ -77,7 +84,8 @@ function SourceUsage({ source }: { source: UsageSource }) {
   ]
   return (
     <div className="usage-source">
-      <h3>{sourceLabels[source.source]} <span>{number.format(source.measured_runs)} 轮</span></h3>
+      {source.source !== 'dsh_center_turn' &&
+        <h3>{sourceLabels[source.source]} <span>{number.format(source.measured_runs)} 轮</span></h3>}
       <dl>
         {quantities.map(({ label, value, runs }) => value == null ? null : <div key={label}>
           <dt>{label}{runs < source.measured_runs && <span> · {number.format(runs)} 轮</span>}</dt>

@@ -1,12 +1,13 @@
 package workspace
 
-// DeviceUsage 汇总 Hub 已收到的设备运行用量，按项目和执行设备查询同一批运行。
+// DeviceUsage 按项目和执行设备汇总同一批设备运行，并单列中心投递的用量。
 type DeviceUsage struct {
 	Projects []UsageGroup `json:"projects"`
 	Devices  []UsageGroup `json:"devices"`
+	Center   *UsageGroup  `json:"center,omitempty"`
 }
 
-// UsageGroup 保存已结束且曾领取的运行总数以及其中有用量的运行数。
+// UsageGroup 保存已结束的设备运行或中心投递的总数以及其中有用量的轮数。
 type UsageGroup struct {
 	ID           string        `json:"id"`
 	Name         string        `json:"name"`

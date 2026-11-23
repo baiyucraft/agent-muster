@@ -250,7 +250,7 @@ paths:
       security: [{ adminBearer: [] }]
       responses:
         '200':
-          description: 已领取且已结束的设备运行用量，按项目和执行设备汇总
+          description: 按项目和执行设备汇总已结束的设备运行，并单列中心 dsh 已完成投递的用量与覆盖轮数
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DeviceUsage' }
@@ -1182,6 +1182,7 @@ paths:
                 lease: { $ref: '#/components/schemas/Lease' }
                 text: { type: string, description: 不超过 12000 UTF-8 字节 }
                 status: { type: string, enum: [handled, interrupted] }
+                usage: { $ref: '#/components/schemas/CenterTurnUsage' }
       responses:
         '204': { description: 已保存结果。未完成的汇报稍后重试。 }
         '400': { description: 无效的结果 }
@@ -1585,21 +1586,22 @@ components:
       properties:
         projects: { type: array, items: { $ref: '#/components/schemas/DeviceUsageGroup' } }
         devices: { type: array, items: { $ref: '#/components/schemas/DeviceUsageGroup' } }
+        center: { $ref: '#/components/schemas/DeviceUsageGroup' }
     DeviceUsageGroup:
       type: object
       required: [id, name, finished_runs, measured_runs, sources]
       properties:
-        id: { type: string, description: 项目 ID 或执行设备 ID }
-        name: { type: string, description: 当前的项目或设备显示名 }
-        finished_runs: { type: integer, format: int64, minimum: 1, description: 已领取且已结束的运行数 }
-        measured_runs: { type: integer, format: int64, minimum: 0, description: 其中上报了输入和输出用量的运行数 }
+        id: { type: string, description: 项目 ID、执行设备 ID 或固定值 center }
+        name: { type: string, description: 项目、设备或中心 dsh 的显示名 }
+        finished_runs: { type: integer, format: int64, minimum: 1, description: 已领取且已结束的设备运行数或已完成的中心投递数 }
+        measured_runs: { type: integer, format: int64, minimum: 0, description: 其中有可确认用量的轮数 }
         sources: { type: array, items: { $ref: '#/components/schemas/DeviceUsageSource' } }
     DeviceUsageSource:
       type: object
       description: 保留各 CLI 的统计口径。Token 合计以十进制字符串表示，可选合计仅在对应样本数大于零时返回。
       required: [source, measured_runs, input_tokens, output_tokens, cached_input_runs, cache_write_input_runs, reasoning_output_runs, total_runs]
       properties:
-        source: { type: string, enum: [dsh_headless, codex_exec] }
+        source: { type: string, enum: [dsh_headless, codex_exec, dsh_center_turn] }
         measured_runs: { type: integer, format: int64, minimum: 1 }
         input_tokens: { $ref: '#/components/schemas/TokenSum' }
         output_tokens: { $ref: '#/components/schemas/TokenSum' }
@@ -1636,6 +1638,18 @@ components:
         capture_incomplete: { type: boolean, description: 设备未能完整保存输出流。 }
         error_kind: { type: string, enum: [native_exit, interrupted, output, setup] }
         usage: { $ref: '#/components/schemas/RunUsage' }
+    CenterTurnUsage:
+      type: object
+      description: 已完成的中心 dsh 原生轮次用量。只随 handled 回执提交。输入计数不含缓存读写。
+      required: [source, input_tokens, output_tokens, total_tokens]
+      properties:
+        source: { type: string, enum: [dsh_center_turn] }
+        input_tokens: { $ref: '#/components/schemas/RunDiagnosticCount' }
+        output_tokens: { $ref: '#/components/schemas/RunDiagnosticCount' }
+        cached_input_tokens: { $ref: '#/components/schemas/RunDiagnosticCount' }
+        cache_write_input_tokens: { $ref: '#/components/schemas/RunDiagnosticCount' }
+        reasoning_output_tokens: { $ref: '#/components/schemas/RunDiagnosticCount' }
+        total_tokens: { $ref: '#/components/schemas/RunDiagnosticCount' }
     RunLogRequestID:
       type: string
       pattern: '^log-[0-9a-f]{32}$'
@@ -1756,6 +1770,7 @@ components:
         task_id: { $ref: '#/components/schemas/TaskID' }
         project_id: { type: string, format: uuid }
         attempt: { type: integer, minimum: 1 }
+        usage_supported: { type: boolean, description: 为 true 时完成回执可携带中心轮次用量。 }
     DeviceID:
       type: string
       pattern: '^d-[0-9a-f]{32}$'

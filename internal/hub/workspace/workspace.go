@@ -251,6 +251,8 @@ type Delivery struct {
 	TaskID    string `json:"task_id,omitempty"`
 	ProjectID string `json:"project_id,omitempty"`
 	Attempt   int    `json:"attempt"`
+	// UsageSupported 表示当前 Hub 接受带中心轮次用量的完成回执。
+	UsageSupported bool `json:"usage_supported,omitempty"`
 }
 
 // Dispatch 表示中心插件依据消息租约创建任务或追加运行的请求。
@@ -325,6 +327,8 @@ type Completion struct {
 	Lease  string `json:"lease"`
 	Text   string `json:"text"`
 	Status string `json:"status"`
+	// Usage 保存本投递确认的中心 dsh 轮次计量，缺失时保持未知。
+	Usage *runreport.Usage `json:"usage,omitempty"`
 }
 
 // Store 定义工作区快照、任务执行、设备协作和中心插件投递的持久化操作。

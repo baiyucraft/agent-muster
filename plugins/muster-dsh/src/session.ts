@@ -1,6 +1,7 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { freezeMessage, MessageId } from '@deepseek-ai/dsh-llm'
-import type { Delivery, Outcome } from './hub.js'
+import { deriveTurnTokenUsage } from '@deepseek-ai/dsh-token-meter/client'
+import type { CenterTurnUsage, Delivery, Outcome } from './hub.js'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -13,6 +14,9 @@ type NativeEvent = ReturnType<Agent['session']['snapshotEvents']>[number]
 interface Turn {
   turn: number
   attempt: number
+  /** 原生会话快照里 turn/start 和 turn/end 的下标。 */
+  start: number
+  end?: number
   text: string
   completed: boolean
 }
@@ -30,19 +34,21 @@ export function deliveryTurns(events: readonly NativeEvent[], deliveryId: string
   const prefix = deliveryPrefix(deliveryId)
   const turns: Turn[] = []
   let turn = 0
+  let start = 0
   let current: Turn | undefined
 
-  for (const event of events) {
+  for (const [index, event] of events.entries()) {
     switch (event.type) {
       case 'turn/start':
         turn = event.data.turn
+        start = index
         current = undefined
         break
       case 'user/message': {
         if (turn === 0 || event.data.source.kind !== 'muster-dsh' || !event.data.id.startsWith(prefix)) break
         const attempt = Number(event.data.id.slice(prefix.length))
         if (Number.isSafeInteger(attempt) && attempt > 0) {
-          current = { turn, attempt, text: '', completed: false }
+          current = { turn, attempt, start, text: '', completed: false }
           turns.push(current)
         }
         break
@@ -57,7 +63,10 @@ export function deliveryTurns(events: readonly NativeEvent[], deliveryId: string
         break
       }
       case 'turn/end':
-        if (current?.turn === event.data.turn) current.completed = event.data.reason.kind === 'completed'
+        if (current?.turn === event.data.turn) {
+          current.end = index
+          current.completed = event.data.reason.kind === 'completed'
+        }
         current = undefined
         turn = 0
         break
@@ -68,22 +77,49 @@ export function deliveryTurns(events: readonly NativeEvent[], deliveryId: string
 }
 
 /**
- * 从原生会话中寻找可交回 Hub 的已完成或中断结果。
+ * 从原生会话恢复投递结果，并读取同一已完成轮次的确切 Token 用量。
  * @param agent 运行中心对话的 dsh Agent。
  * @param delivery 当前投递，携带本次尝试序号。
  * @returns 可据原生事件确认的结果，没有相关轮次证据时为 undefined。
  */
 export function nativeOutcome(agent: Agent, delivery: Delivery): Outcome | undefined {
-  const turns = deliveryTurns(agent.session.snapshotEvents(), delivery.id)
+  const events = agent.session.snapshotEvents()
+  const turns = deliveryTurns(events, delivery.id)
   const completed = turns.findLast(turn => turn.completed)
-  if (completed && (delivery.kind === 'message' || completed.text.trim())) {
-    return { text: boundedReply(completed.text), status: 'handled' }
+  if (completed?.end !== undefined && (delivery.kind === 'message' || completed.text.trim())) {
+    const usage = centerTurnUsage(events.slice(completed.start, completed.end + 1))
+    return { text: boundedReply(completed.text), status: 'handled', ...(usage && { usage }) }
   }
   if (turns.some(turn => turn.attempt === delivery.attempt)) {
     return {
       text: '中心 dsh 未完成这一轮。若已生成任务，请到看板查看它的状态。',
       status: 'interrupted',
     }
+  }
+}
+
+/**
+ * 使用 dsh 官方投影计算原生轮次的精确用量。
+ * @param events 从 turn/start 到 turn/end 的持久化事件。
+ * @returns 完整可验证的用量，无法解析历史事件或缺少样本时为 undefined。
+ */
+function centerTurnUsage(events: readonly NativeEvent[]): CenterTurnUsage | undefined {
+  try {
+    const usage = deriveTurnTokenUsage(events)
+    if (usage) {
+      return {
+        source: 'dsh_center_turn',
+        input_tokens: usage.uncachedInputTokens,
+        output_tokens: usage.outputTokens,
+        cached_input_tokens: usage.cacheReadTokens,
+        cache_write_input_tokens: usage.cacheWriteTokens,
+        reasoning_output_tokens: usage.reasoningTokens,
+        total_tokens: usage.totalTokens,
+      }
+    }
+  } catch {
+    // 历史样本缺少计量所需的结构时，原生文本仍可交付。
+    return undefined
   }
 }
 
