@@ -4,14 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/baiyucraft/agent-muster/internal/daemon/control"
 	"github.com/baiyucraft/agent-muster/internal/daemon/gitwork"
 	"github.com/baiyucraft/agent-muster/internal/gitdelivery"
 )
 
-func (worker *Worker) invokeGit(ctx context.Context, run control.Run, service *localHelper, dir string, execute agentExecutor, event control.RunEvent) (control.RunEvent, error) {
+func (worker *Worker) invokeGit(ctx context.Context, run control.Run, peer *collaboration, service *localHelper, dir string, execute agentExecutor, event control.RunEvent) (control.RunEvent, error) {
 	if !taskStorageID.MatchString(run.TaskID) {
 		return event, errors.New("Git 任务标识无效")
 	}
@@ -19,35 +21,113 @@ func (worker *Worker) invokeGit(ctx context.Context, run control.Run, service *l
 	if err != nil {
 		return event, err
 	}
+	var fingerprint string
+	if run.GitPublish {
+		if _, ok := peerGitClient(peer); !ok {
+			return event, errors.New("设备端没有可用的 Git 推送接口")
+		}
+		fingerprint, err = worker.freezeGitDestination(ctx, run, dir)
+		if err != nil {
+			return event, err
+		}
+	}
+	acceptance := run.Prompt
 	run.Prompt += "\n\n请在本轮提供的 Git 工作树内完成修改，并逐个暂存和提交修改的项目文件。.muster-inbox 是设备收件目录，请留在本机。设备会在独立检出中测试候选提交，请将推送留给交付流程。"
-	event, err = worker.invoke(ctx, run, service, checkout.FixDir, execute, event)
-	if err != nil || event.Kind != "completed" {
-		return event, err
-	}
-	evidence := &gitdelivery.Verification{BaseOID: checkout.BaseOID, TestStatus: "unverified"}
-	event.GitVerification = evidence
-	evidence.CandidateOID, err = checkout.Candidate(ctx)
-	if err != nil {
+	for repairs := 0; ; repairs++ {
+		event.GitVerification = nil
 		event.Kind = "failed"
-		return event, err
+		event, err = worker.invoke(ctx, run, service, checkout.FixDir, execute, event)
+		if err != nil || event.Kind != "completed" {
+			return event, err
+		}
+		evidence, feedback, verifyErr := verifyGitCandidate(ctx, checkout, run, acceptance, execute, repairs)
+		event.GitVerification = &evidence
+		if verifyErr != nil {
+			event.Kind = "failed"
+			return event, verifyErr
+		}
+		if feedback == "" {
+			if run.GitPublish {
+				return event, worker.publishGitCandidate(ctx, run, peer, dir, checkout, fingerprint, event)
+			}
+			event.Text = fmt.Sprintf("候选提交 %s 已通过项目验证。\n\n%s", evidence.CandidateOID, event.Text)
+			return event, nil
+		}
+		if repairs >= run.GitPolicy.MaxRepairs || event.SessionID == "" {
+			event.Kind = "failed"
+			return event, errors.New(feedback)
+		}
+		run.SessionID = event.SessionID
+		run.Prompt = gitRepairPrompt(feedback, evidence, filepath.Join(worker.root, "git", run.TaskID))
 	}
-	test, err := checkout.Test(ctx, evidence.CandidateOID, run.GitPolicy.Test)
+}
+
+func verifyGitCandidate(ctx context.Context, checkout gitwork.Workspace, run control.Run, acceptance string, execute agentExecutor, repairs int) (gitdelivery.Verification, string, error) {
+	evidence := gitdelivery.Verification{BaseOID: checkout.BaseOID, TestStatus: "unverified", RepairAttempts: repairs}
+	candidate, err := checkout.Candidate(ctx)
+	if err != nil {
+		return evidence, "", err
+	}
+	evidence.CandidateOID = candidate
+	test, err := checkout.Test(ctx, candidate, run.GitPolicy.Test)
 	evidence.TestLogRef = test.LogRef
 	if err != nil {
-		event.Kind = "failed"
-		return event, err
+		return evidence, "", err
+	}
+	if test.ExitCode == nil {
+		return evidence, "", errors.New("Git 候选测试缺少退出码")
 	}
 	evidence.TestExitCode = test.ExitCode
-	if test.ExitCode == nil {
-		event.Kind = "failed"
-		return event, errors.New("Git 候选测试缺少退出码")
-	}
 	if *test.ExitCode != 0 {
-		event.Kind = "failed"
 		evidence.TestStatus = "failed"
-		return event, fmt.Errorf("候选提交 %s 的项目测试退出码为 %d", evidence.CandidateOID, *test.ExitCode)
+		return evidence, fmt.Sprintf("候选提交 %s 的项目测试退出码为 %d", candidate, *test.ExitCode), nil
 	}
 	evidence.TestStatus = "passed"
-	event.Text = fmt.Sprintf("候选提交 %s 已通过项目测试。\n\n%s", evidence.CandidateOID, event.Text)
-	return event, nil
+	if run.GitPolicy.ReviewAgent == "" {
+		return evidence, "", nil
+	}
+	evidence.ReviewAgent = run.GitPolicy.ReviewAgent
+	evidence.ReviewStatus = "unverified"
+	var reviewStatus, feedback string
+	err = checkout.Review(ctx, candidate, func(ctx context.Context, dir, base, sha string) error {
+		prompt := fmt.Sprintf("独立审查候选提交 %s 相对基线 %s 的改动。验收要求如下。检查相关差异与风险，保持审查工作树原样。首行只使用 MUSTER_REVIEW_PASS 或 MUSTER_REVIEW_CHANGES，后者在后续行写明须修的问题。\n\n%s", sha, base, acceptance)
+		text, err := execute(ctx, evidence.ReviewAgent, dir, prompt, "", nil, func() error { return nil }, func(string) error { return nil })
+		if err != nil {
+			return err
+		}
+		line, note, _ := strings.Cut(strings.TrimSpace(text), "\n")
+		switch strings.TrimSpace(line) {
+		case "MUSTER_REVIEW_PASS":
+			reviewStatus = "passed"
+		case "MUSTER_REVIEW_CHANGES":
+			if strings.TrimSpace(note) == "" {
+				return errors.New("独立 Review 未说明需修正的问题")
+			}
+			reviewStatus, feedback = "changes_requested", trimUTF8(note, 4000)
+		default:
+			return errors.New("独立 Review 未提供可核对的结论")
+		}
+		return nil
+	})
+	if err != nil {
+		return evidence, "", err
+	}
+	evidence.ReviewStatus = reviewStatus
+	return evidence, feedback, nil
+}
+
+func gitRepairPrompt(feedback string, evidence gitdelivery.Verification, dir string) string {
+	prompt := "验证发现以下问题。请在当前修复工作树内处理并提交对应项目文件，保留设备收件目录。修改后的候选将重新测试和审查。\n\n" + feedback
+	if evidence.TestLogRef != "" {
+		log, err := os.Open(filepath.Join(dir, filepath.FromSlash(evidence.TestLogRef)))
+		if err == nil {
+			defer log.Close()
+			buf := make([]byte, 4096)
+			n, _ := log.Read(buf)
+			if n > 0 {
+				prompt += "\n\n项目测试日志片段：\n" + trimUTF8(string(buf[:n]), 4096)
+			}
+		}
+	}
+	return prompt
 }

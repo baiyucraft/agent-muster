@@ -43,6 +43,9 @@ var addGitPolicies string
 //go:embed migrations/013_git_verification.sql
 var addGitVerification string
 
+//go:embed migrations/014_git_publication.sql
+var addGitPublication string
+
 // InventoryStore 使用 PostgreSQL 保存设备与工作区记录。
 type InventoryStore struct {
 	pool      *pgxpool.Pool
@@ -97,7 +100,10 @@ func OpenInventory(ctx context.Context, databaseURL string) (*InventoryStore, er
 		if _, err := tx.Exec(ctx, addGitPolicies, pgx.QueryExecModeSimpleProtocol); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, addGitVerification, pgx.QueryExecModeSimpleProtocol)
+		if _, err := tx.Exec(ctx, addGitVerification, pgx.QueryExecModeSimpleProtocol); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, addGitPublication, pgx.QueryExecModeSimpleProtocol)
 		return err
 	})
 	if err != nil {

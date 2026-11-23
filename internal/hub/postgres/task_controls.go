@@ -121,7 +121,7 @@ func applyTaskControl(ctx context.Context, tx pgx.Tx, id string, input workspace
 	return err
 }
 
-// RunControl 返回当前轮次的停止指令，须持有该设备的有效运行租约。
+// RunControl 返回当前轮次的停止指令。已有 Git 推送意图时允许用原凭据在过期后查询，供远端回读恢复。
 func (store *InventoryStore) RunControl(ctx context.Context, device string, token [32]byte, id string, generation int64, lease string) (stop bool, err error) {
 	err = pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
 		if err := authenticateDevice(ctx, tx, device, token); err != nil {
@@ -131,9 +131,21 @@ func (store *InventoryStore) RunControl(ctx context.Context, device string, toke
 		if err != nil {
 			return err
 		}
-		if !run.ControlSupported || run.CurrentRun != id || !run.LeaseLive || run.Generation != generation ||
+		if !run.ControlSupported || run.CurrentRun != id || lease == "" || run.Generation != generation ||
 			run.Lease != lease || (run.Status != "queued" && run.Status != "running") {
 			return workspace.ErrConflict
+		}
+		if !run.LeaseLive {
+			if !run.GitPublish {
+				return workspace.ErrConflict
+			}
+			var intentExists bool
+			if err := tx.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM muster_git_push_intents WHERE run_id=$1)", id).Scan(&intentExists); err != nil {
+				return err
+			}
+			if !intentExists {
+				return workspace.ErrConflict
+			}
 		}
 		stop = run.stopping()
 		return nil

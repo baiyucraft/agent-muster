@@ -56,6 +56,7 @@ type Run struct {
 	ControlSupported     bool                `json:"control_supported,omitempty"`     // Hub 可向该运行下发停止指令。
 	DiagnosticsSupported bool                `json:"diagnostics_supported,omitempty"` // Hub 接受终态诊断字段。
 	GitPolicy            *gitdelivery.Policy `json:"git_policy,omitempty"`            // Git 任务首次派发时冻结的规则。
+	GitPublish           bool                `json:"git_publish,omitempty"`           // 创建根任务时明确启用了推送交付。
 }
 
 // DependencyResult 记录父任务续接时可见的依赖任务标识与状态。
@@ -139,6 +140,7 @@ func (client *Client) ClaimRun(ctx context.Context, identity Identity) (*Run, er
 	headers := http.Header{"Muster-Run-Control": []string{"1"}}
 	if runtime.GOOS == "windows" {
 		headers.Set("Muster-Git-Verification", "1")
+		headers.Set("Muster-Git-Publish", "1")
 	}
 	response, err := client.sendWithHeaders(ctx, http.MethodPost, endpoint, identity.Token, headers, nil,
 		http.StatusOK, http.StatusNoContent)

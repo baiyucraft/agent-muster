@@ -22,7 +22,7 @@ const taskColumns = `t.id, t.project_id, t.project_name, t.device_id, t.director
 	t.control_mode,
 	EXISTS (SELECT 1 FROM muster_runs r WHERE r.id=t.current_run_id AND r.claimed_at IS NOT NULL AND r.status IN ('queued','running')),
 	COALESCE((SELECT r.control_supported FROM muster_runs r WHERE r.id=t.current_run_id),false),
-	COALESCE((t.git_policy->>'revision')::bigint,0)`
+	COALESCE((t.git_policy->>'revision')::bigint,0),t.git_publish`
 
 // WorkspaceEvents 按游标升序返回指定位置之后最多 128 条工作区事件。
 // 超过当前工作区位置的游标返回冲突。
@@ -89,8 +89,11 @@ func (store *InventoryStore) TaskDetail(ctx context.Context, id string) (detail 
 			return notFound(err)
 		}
 		detail.Runs, err = selectRows(ctx, tx, `
-			SELECT r.id,r.task_id,t.directory_id,r.status,r.session_id,r.outcome,r.created_at,r.updated_at,r.generation,r.lease_until,r.diagnostics,r.git_verification
-			FROM muster_runs r JOIN muster_tasks t ON t.id=r.task_id WHERE r.task_id=$1 ORDER BY r.sequence`, scanRun, id)
+			SELECT r.id,r.task_id,t.directory_id,r.status,r.session_id,r.outcome,r.created_at,r.updated_at,r.generation,r.lease_until,r.diagnostics,r.git_verification,
+			CASE WHEN p.id IS NOT NULL THEN jsonb_build_object('id',p.id,'revision',p.policy_revision,'remote',p.remote,
+				'target_ref',p.target_ref,'candidate_oid',p.verification->>'candidate_oid','status',p.status,'observed_oid',p.observed_oid) END
+			FROM muster_runs r JOIN muster_tasks t ON t.id=r.task_id LEFT JOIN muster_git_push_intents p ON p.run_id=r.id
+			WHERE r.task_id=$1 ORDER BY r.sequence`, scanRun, id)
 		if err != nil {
 			return err
 		}
@@ -433,7 +436,7 @@ func scanTask(row pgx.Row) (value workspace.Task, err error) {
 	err = row.Scan(&value.ID, &value.ProjectID, &value.ProjectName, &value.DeviceID, &value.DirectoryID,
 		&value.Status, &value.Title, &value.Result, &value.ReportPending, &value.UpdatedAt,
 		&value.ParentTaskID, &value.RootTaskID, &value.BindingID, &value.AgentKind, &value.WaitingReason,
-		&value.CurrentRunGeneration, &value.WaitGeneration, &control.mode, &control.active, &control.supported, &value.GitPolicyRevision)
+		&value.CurrentRunGeneration, &value.WaitGeneration, &control.mode, &control.active, &control.supported, &value.GitPolicyRevision, &value.GitPublish)
 	control.status = value.Status
 	value.ControlActions = control.actions()
 	if value.Status == "waiting" {
@@ -450,6 +453,6 @@ func scanTask(row pgx.Row) (value workspace.Task, err error) {
 
 func scanRun(row pgx.Row) (value workspace.Run, err error) {
 	err = row.Scan(&value.ID, &value.TaskID, &value.DirectoryID, &value.Status, &value.SessionID,
-		&value.Text, &value.CreatedAt, &value.UpdatedAt, &value.Generation, &value.LeaseUntil, &value.Diagnostics, &value.GitVerification)
+		&value.Text, &value.CreatedAt, &value.UpdatedAt, &value.Generation, &value.LeaseUntil, &value.Diagnostics, &value.GitVerification, &value.GitPublication)
 	return
 }

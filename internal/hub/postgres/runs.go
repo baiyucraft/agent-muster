@@ -66,6 +66,11 @@ func (store *InventoryStore) ClaimRunWithControl(ctx context.Context, device str
 
 // ClaimRunWithCapabilities 为设备领取兼容的运行，托管 Git 任务只交给能验证候选的设备端。
 func (store *InventoryStore) ClaimRunWithCapabilities(ctx context.Context, device string, token [32]byte, controlSupported, gitVerificationSupported bool) (claim workspace.RunClaim, err error) {
+	return store.ClaimRunWithGitPublication(ctx, device, token, controlSupported, gitVerificationSupported, false)
+}
+
+// ClaimRunWithGitPublication 仅向同时支持运行控制、候选验证与推送回读的设备领取推送任务。
+func (store *InventoryStore) ClaimRunWithGitPublication(ctx context.Context, device string, token [32]byte, controlSupported, gitVerificationSupported, gitPublishSupported bool) (claim workspace.RunClaim, err error) {
 	err = store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		if err := authenticateDevice(ctx, tx, device, token); err != nil {
 			return err
@@ -79,6 +84,8 @@ func (store *InventoryStore) ClaimRunWithCapabilities(ctx context.Context, devic
 				AND (r.claimed_at IS NOT NULL OR t.control_mode='')
 				AND (NOT r.control_supported OR $3)
 				AND (t.git_policy IS NULL OR $4)
+				AND (NOT t.git_publish OR ($3 AND $4 AND $5))
+				AND (COALESCE(t.git_policy->>'review_agent','')='' OR $5 OR (r.claimed_at IS NOT NULL AND NOT r.git_review_supported))
 				AND NOT EXISTS (SELECT 1 FROM muster_runs active WHERE active.device_id=$1
 					AND active.id<>r.id AND active.status IN ('queued','running') AND active.claimed_at IS NOT NULL)
 				ORDER BY (r.claimed_at IS NOT NULL) DESC,
@@ -87,17 +94,18 @@ func (store *InventoryStore) ClaimRunWithCapabilities(ctx context.Context, devic
 			)
 			UPDATE muster_runs r SET claimed_at=COALESCE(r.claimed_at,clock_timestamp()),
 				control_supported=CASE WHEN choice.first_claim THEN $3 ELSE r.control_supported END,
+				git_review_supported=CASE WHEN choice.first_claim THEN $5 ELSE r.git_review_supported END,
 				input_session=CASE WHEN choice.first_claim THEN choice.session_id ELSE r.input_session END,
 				lease=COALESCE(NULLIF(r.lease,''),$2),lease_until=clock_timestamp()+interval '60 seconds'
 			FROM choice,muster_tasks t LEFT JOIN muster_tasks parent ON parent.id=t.parent_id
 			WHERE r.id=choice.id AND t.id=r.task_id
 			RETURNING r.id,t.id,t.directory_id,r.input,r.input_session,t.agent_kind,t.project_id,r.generation,
 				r.lease,r.lease_until,t.binding_id,COALESCE(t.parent_id,''),COALESCE(parent.device_id,''),t.root_id,
-				r.prompt_transfer_id,r.dependency_results,choice.first_claim,r.control_supported,t.git_policy`,
-			device, rand.Text(), controlSupported, gitVerificationSupported).
+				r.prompt_transfer_id,r.dependency_results,choice.first_claim,r.control_supported,t.git_policy,t.git_publish`,
+			device, rand.Text(), controlSupported, gitVerificationSupported, gitPublishSupported).
 			Scan(&claim.ID, &claim.TaskID, &claim.DirectoryID, &claim.Prompt, &claim.SessionID, &claim.AgentKind,
 				&claim.ProjectID, &claim.Generation, &claim.Lease, &claim.LeaseUntil, &claim.BindingID, &claim.ParentTaskID,
-				&claim.ParentDeviceID, &claim.RootTaskID, &claim.PromptTransferID, &claim.DependencyResults, &firstClaim, &claim.ControlSupported, &claim.GitPolicy)
+				&claim.ParentDeviceID, &claim.RootTaskID, &claim.PromptTransferID, &claim.DependencyResults, &firstClaim, &claim.ControlSupported, &claim.GitPolicy, &claim.GitPublish)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -134,21 +142,23 @@ func (store *InventoryStore) ClaimRunWithCapabilities(ctx context.Context, devic
 }
 
 type runState struct {
-	TaskID           string
-	CurrentRun       string
-	ParentTaskID     string
-	ParentDeviceID   string
-	RootTaskID       string
-	Status           string
-	WaitingReason    string
-	SessionID        string
-	Generation       int64
-	Lease            string
-	LeaseLive        bool
-	LegacyEvents     bool
-	ControlMode      string
-	ControlSupported bool
-	ManagedGit       bool
+	TaskID             string
+	CurrentRun         string
+	ParentTaskID       string
+	ParentDeviceID     string
+	RootTaskID         string
+	Status             string
+	WaitingReason      string
+	SessionID          string
+	Generation         int64
+	Lease              string
+	LeaseLive          bool
+	LegacyEvents       bool
+	ControlMode        string
+	ControlSupported   bool
+	ManagedGit         bool
+	GitPublish         bool
+	GitReviewSupported bool
 }
 
 // RenewRun 校验设备、当前运行、代次及有效租约后延长租期，返回新的到期时间。
@@ -173,12 +183,12 @@ func (store *InventoryStore) RenewRun(ctx context.Context, device string, token 
 func readRunState(ctx context.Context, tx pgx.Tx, device, id string) (value runState, err error) {
 	err = tx.QueryRow(ctx, `SELECT t.id,t.current_run_id,COALESCE(t.parent_id,''),COALESCE(p.device_id,''),t.root_id,r.status,t.waiting_reason,
 		COALESCE(NULLIF(r.session_id,''),r.input_session),r.generation,r.lease,
-		COALESCE(r.lease_until>=clock_timestamp(),false),r.legacy_events,t.control_mode,r.control_supported,t.git_policy IS NOT NULL
+		COALESCE(r.lease_until>=clock_timestamp(),false),r.legacy_events,t.control_mode,r.control_supported,t.git_policy IS NOT NULL,t.git_publish,r.git_review_supported
 		FROM muster_runs r JOIN muster_tasks t ON t.id=r.task_id LEFT JOIN muster_tasks p ON t.parent_id=p.id
 		WHERE r.id=$1 AND r.device_id=$2 AND r.claimed_at IS NOT NULL`, id, device).
 		Scan(&value.TaskID, &value.CurrentRun, &value.ParentTaskID, &value.ParentDeviceID, &value.RootTaskID,
 			&value.Status, &value.WaitingReason, &value.SessionID, &value.Generation, &value.Lease, &value.LeaseLive,
-			&value.LegacyEvents, &value.ControlMode, &value.ControlSupported, &value.ManagedGit)
+			&value.LegacyEvents, &value.ControlMode, &value.ControlSupported, &value.ManagedGit, &value.GitPublish, &value.GitReviewSupported)
 	return value, notFound(err)
 }
 
@@ -241,6 +251,25 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
+		outcome := event.Text
+		if run.GitPublish && event.Kind == "completed" {
+			confirmed, err := requireGitPublished(ctx, tx, id, event.GitVerification)
+			if err != nil {
+				return err
+			}
+			if outcome != "" {
+				outcome += "\n\n"
+			}
+			outcome += confirmed
+		} else if run.ManagedGit && run.GitReviewSupported && event.Kind == "completed" {
+			policy, err := readFrozenGitPolicy(ctx, tx, run.TaskID)
+			if err != nil {
+				return err
+			}
+			if !satisfiesGitPolicy(policy, *event.GitVerification) {
+				return workspace.ErrInvalidGitVerification
+			}
+		}
 		var last int64
 		if err := tx.QueryRow(ctx, "SELECT COALESCE(MAX(sequence),0) FROM muster_run_events WHERE run_id=$1", id).Scan(&last); err != nil {
 			return err
@@ -262,6 +291,8 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 			// Preserve evidence for a settled round without changing task state or scheduling.
 			return advanceWorkspace(ctx, tx)
 		}
+		// 事件保存原始回执以便去重，结果文本另附已持久化的 Git 回读证据。
+		event.Text = outcome
 		if event.Kind == "stopped" && (!run.ControlSupported || run.CurrentRun != id || !run.stopping()) {
 			return workspace.ErrConflict
 		}

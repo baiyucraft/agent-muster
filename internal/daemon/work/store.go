@@ -46,6 +46,15 @@ CREATE TABLE IF NOT EXISTS run_claims (
 	id TEXT PRIMARY KEY REFERENCES runs(id),
 	data BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS git_destinations (
+	task_id TEXT PRIMARY KEY,
+	fingerprint TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS git_push_attempts (
+	run_id TEXT PRIMARY KEY REFERENCES runs(id),
+	data BLOB NOT NULL,
+	next_check INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS peer_credentials (
 	id INTEGER PRIMARY KEY CHECK(id=1),
 	cert BLOB NOT NULL,
@@ -294,10 +303,14 @@ func (worker *Worker) markLaunching(ctx context.Context, runID string) error {
 }
 
 func (worker *Worker) stageEvent(ctx context.Context, runID string, event control.RunEvent) error {
-	return worker.stageEventWithResult(ctx, runID, event, control.Manifest{}, nil)
+	return worker.stageEventWithResult(ctx, runID, event, control.Manifest{}, nil, false)
 }
 
-func (worker *Worker) stageEventWithResult(ctx context.Context, runID string, event control.RunEvent, manifest control.Manifest, body []byte) error {
+func (worker *Worker) stageTerminalEvent(ctx context.Context, run control.Run, event control.RunEvent, manifest control.Manifest, body []byte, pendingPush bool) error {
+	return worker.stageEventWithResult(ctx, run.ID, event, manifest, body, run.GitPublish && !pendingPush)
+}
+
+func (worker *Worker) stageEventWithResult(ctx context.Context, runID string, event control.RunEvent, manifest control.Manifest, body []byte, clearPush bool) error {
 	data, err := json.Marshal(event)
 	if err != nil {
 		return err
@@ -330,6 +343,11 @@ func (worker *Worker) stageEventWithResult(ctx context.Context, runID string, ev
 	if _, err := tx.ExecContext(ctx, `INSERT INTO outbox (run_id,sequence,payload) VALUES (?,?,?)`, runID, sequence, string(data)); err != nil {
 		return err
 	}
+	if clearPush {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM git_push_attempts WHERE run_id=?`, runID); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -340,7 +358,8 @@ func (worker *Worker) stageEventWithResult(ctx context.Context, runID string, ev
 func (worker *Worker) recoverInterrupted(ctx context.Context) error {
 	// The Windows Job Object terminates the previous worker's process tree.
 	// Preserve the announced session and record an interrupted result once.
-	rows, err := worker.db.QueryContext(ctx, `SELECT r.id,r.session_id,c.data FROM runs r LEFT JOIN run_claims c ON c.id=r.id WHERE r.state IN ('starting','started')`)
+	rows, err := worker.db.QueryContext(ctx, `SELECT r.id,r.session_id,c.data FROM runs r LEFT JOIN run_claims c ON c.id=r.id
+		WHERE r.state IN ('starting','started') AND NOT EXISTS (SELECT 1 FROM git_push_attempts p WHERE p.run_id=r.id)`)
 	if err != nil {
 		return err
 	}

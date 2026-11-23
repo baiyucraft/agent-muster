@@ -176,9 +176,13 @@ func (worker *Worker) run(ctx context.Context, client hub, identity control.Iden
 			}
 		}
 		drain := worker.pendingDrain()
-		err := worker.exchange(ctx, client, identity, &lastDirectories, active != nil || drain != nil, peer)
-		if errors.Is(err, control.ErrUnauthorized) {
+		err := worker.exchange(ctx, client, identity, &lastDirectories, active != nil, drain != nil, peer)
+		if errors.Is(err, control.ErrUnauthorized) || errors.Is(err, runner.ErrProcessExitUnconfirmed) {
 			return err
+		}
+		if errors.Is(err, errGitPushPending) {
+			sleepContext(ctx, idleInterval)
+			continue
 		}
 		if APIUnavailable(err) {
 			if onError != nil {
@@ -240,7 +244,7 @@ func (worker *Worker) run(ctx context.Context, client hub, identity control.Iden
 	return nil
 }
 
-func (worker *Worker) exchange(ctx context.Context, client hub, identity control.Identity, lastDirectories *string, running bool, peer *collaboration) error {
+func (worker *Worker) exchange(ctx context.Context, client hub, identity control.Identity, lastDirectories *string, running, draining bool, peer *collaboration) error {
 	if peer != nil {
 		if err := peer.flushDelegations(ctx); err != nil {
 			return err
@@ -248,6 +252,18 @@ func (worker *Worker) exchange(ctx context.Context, client hub, identity control
 	}
 	if err := worker.flushOutbox(ctx, client, identity, peer); err != nil {
 		return err
+	}
+	if !running {
+		pending, err := worker.recoverGitPush(ctx, peer)
+		if err != nil {
+			return err
+		}
+		if err := worker.flushOutbox(ctx, client, identity, peer); err != nil {
+			return err
+		}
+		if pending {
+			return errGitPushPending
+		}
 	}
 	directories, err := worker.Directories(ctx)
 	if err != nil {
@@ -267,7 +283,7 @@ func (worker *Worker) exchange(ctx context.Context, client hub, identity control
 		}
 		*lastDirectories = string(payload)
 	}
-	if running {
+	if running || draining {
 		return nil
 	}
 	pending, err := worker.nextClaim(ctx)
@@ -339,7 +355,7 @@ func (worker *Worker) execute(ctx context.Context, run control.Run, peer *collab
 	}
 	if err == nil {
 		if run.GitPolicy != nil {
-			event, err = worker.invokeGit(runCtx, run, service, dir, execute, event)
+			event, err = worker.invokeGit(runCtx, run, peer, service, dir, execute, event)
 		} else {
 			event, err = worker.invoke(runCtx, run, service, dir, execute, event)
 		}
@@ -348,10 +364,20 @@ func (worker *Worker) execute(ctx context.Context, run control.Run, peer *collab
 		// 退出尚未确认时继续保留本地活动记录，等待设备运行恢复流程核对。
 		return err
 	}
+	pendingPush := errors.Is(err, errGitPushPending)
+	if pendingPush && !errors.Is(context.Cause(runCtx), errRunStopRequested) {
+		return nil
+	}
 	if errors.Is(context.Cause(runCtx), errRunStopRequested) && err != nil {
 		event.Kind = "stopped"
 		event.Text = "设备已停止本轮执行。"
+		if pendingPush {
+			event.Text += " Git 远端分支仍待核对。"
+		}
 		err = nil
+	}
+	if err != nil && event.Kind == "completed" {
+		event.Kind = "failed"
 	}
 	if err != nil {
 		if event.Text != "" {
@@ -388,14 +414,14 @@ func (worker *Worker) execute(ctx context.Context, run control.Run, peer *collab
 				return err
 			}
 			event.TransferIDs = append([]string{manifest.ID}, ids...)
-			return worker.stageEventWithResult(persist, run.ID, event, manifest, body)
+			return worker.stageTerminalEvent(persist, run, event, manifest, body, pendingPush)
 		}
 		if event.Kind == "completed" {
 			event.Kind = "failed"
 		}
 	}
 	event.Text = trimUTF8(event.Text, 12000)
-	return worker.stageEvent(persist, run.ID, event)
+	return worker.stageTerminalEvent(persist, run, event, control.Manifest{}, nil, pendingPush)
 }
 
 func (worker *Worker) invoke(ctx context.Context, run control.Run, service *localHelper, dir string, execute agentExecutor, event control.RunEvent) (control.RunEvent, error) {

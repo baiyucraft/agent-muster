@@ -229,7 +229,7 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
             <header><Time value={run.created_at} /><TaskStatus status={run.status} /></header>
             <p><span>运行</span> <code>{run.id}</code></p>
             {run.session_id && <p><span>会话</span> <code>{run.session_id}</code></p>}
-            {run.git_verification && <GitRunVerification verification={run.git_verification} />}
+            <GitRunEvidence verification={run.git_verification} publication={run.git_publication} />
             <RunDiagnostics diagnostics={run.diagnostics} />
             {run.text && <p className="message-text">{run.text}</p>}
           </article>)}
@@ -270,18 +270,41 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
 }
 
 const gitTestStatus = { passed: '测试通过', failed: '测试失败', unverified: '未验证' }
+const gitReviewStatus = { passed: '通过', changes_requested: '需返修', unverified: '未验证' }
+const gitPublicationStatus = {
+  pending: '待核对',
+  same_commit: '已确认推送',
+  contains_commit: '远端已包含',
+  missing: '远端分支不存在',
+  diverged: '远端历史分叉',
+  unavailable: '远端暂不可读',
+}
 
-/** 在对应运行内展示设备已确认的 Git 提交与测试结果。 */
-function GitRunVerification({ verification }: { verification: NonNullable<Run['git_verification']> }) {
+/** 在对应运行内展示设备报告的测试、Review 和远端读回证据。 */
+function GitRunEvidence({ verification, publication }: { verification?: Run['git_verification']; publication?: Run['git_publication'] }) {
+  if (!verification && !publication) return null
   return (
-    <dl className="run-git-verification" aria-label="Git 验证">
-      <div><dt>Git 验证</dt><dd data-status={verification.test_status}>
-        {gitTestStatus[verification.test_status] ?? gitTestStatus.unverified}
-        {verification.test_exit_code != null && <span> · 退出码 {verification.test_exit_code}</span>}
-      </dd></div>
-      {verification.base_oid && <div><dt>基准提交</dt><dd><code>{verification.base_oid}</code></dd></div>}
-      {verification.candidate_oid && <div><dt>候选提交</dt><dd><code>{verification.candidate_oid}</code></dd></div>}
-      {verification.test_log_ref && <div><dt>测试日志</dt><dd><code>{verification.test_log_ref}</code></dd></div>}
+    <dl className="run-git-verification" aria-label="Git 交付证据">
+      {verification && <>
+        <div><dt>Git 验证</dt><dd data-status={verification.test_status}>
+          {gitTestStatus[verification.test_status] ?? gitTestStatus.unverified}
+          {verification.test_exit_code != null && <span> · 退出码 {verification.test_exit_code}</span>}
+        </dd></div>
+        {verification.base_oid && <div><dt>基准提交</dt><dd><code>{verification.base_oid}</code></dd></div>}
+        {verification.candidate_oid && <div><dt>候选提交</dt><dd><code>{verification.candidate_oid}</code></dd></div>}
+        {verification.test_log_ref && <div><dt>测试日志</dt><dd><code>{verification.test_log_ref}</code></dd></div>}
+        {(verification.review_agent || verification.review_status) && <div><dt>Review</dt><dd data-status={verification.review_status}>
+          {gitReviewStatus[verification.review_status ?? 'unverified'] ?? gitReviewStatus.unverified}
+          {verification.review_agent && <span> · {agentName(verification.review_agent)}</span>}
+        </dd></div>}
+        {verification.repair_attempts != null && <div><dt>返修</dt><dd>{verification.repair_attempts} 次</dd></div>}
+      </>}
+      {publication && <>
+        <div><dt>推送</dt><dd data-status={publication.status}>{gitPublicationStatus[publication.status] ?? gitPublicationStatus.pending}</dd></div>
+        <div><dt>目标分支</dt><dd><code>{publication.remote} · {publication.target_ref}</code></dd></div>
+        {publication.candidate_oid !== verification?.candidate_oid && <div><dt>推送提交</dt><dd><code>{publication.candidate_oid}</code></dd></div>}
+        {publication.observed_oid && <div><dt>远端提交</dt><dd><code>{publication.observed_oid}</code></dd></div>}
+      </>}
     </dl>
   )
 }

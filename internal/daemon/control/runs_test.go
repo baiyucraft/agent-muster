@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 )
 
@@ -27,6 +28,9 @@ func TestRunProtocolAuthenticatesAndParsesNoWork(t *testing.T) {
 		case "/api/v1/devices/d-0123456789abcdef0123456789abcdef/runs/claim":
 			if r.Header.Get("Muster-Run-Control") != "1" || r.ContentLength != 0 {
 				t.Error("运行领取须使用请求头协商控制能力，并保留空请求体")
+			}
+			if enabled := r.Header.Get("Muster-Git-Publish") == "1"; enabled != (runtime.GOOS == "windows") {
+				t.Errorf("Git 推送协商能力不符当前设备平台：%t", enabled)
 			}
 			w.WriteHeader(http.StatusNoContent)
 		default:

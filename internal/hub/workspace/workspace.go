@@ -22,6 +22,9 @@ var ErrInvalidRunDiagnostics = errors.New("invalid run diagnostics")
 // ErrInvalidGitVerification 表示事件的 Git 验证回执无效，或不适用于当前运行状态。
 var ErrInvalidGitVerification = errors.New("invalid Git verification")
 
+// ErrInvalidGitPublication 表示推送证据或远端回读数据无效。
+var ErrInvalidGitPublication = errors.New("invalid Git publication evidence")
+
 // Directory 表示设备登记的执行目录标识与展示名称。
 type Directory struct {
 	ID       string `json:"id"`
@@ -83,6 +86,7 @@ type Task struct {
 	WaitGeneration       int64     `json:"wait_generation,omitempty"`
 	ControlActions       []string  `json:"control_actions,omitempty"`
 	GitPolicyRevision    int64     `json:"git_policy_revision,omitempty"`
+	GitPublish           bool      `json:"git_publish,omitempty"`
 }
 
 // TaskControl 是管理员任务操作。请求 ID 在同一任务下去重，重复时返回当前状态。
@@ -105,6 +109,7 @@ type Run struct {
 	LeaseUntil      *time.Time                `json:"lease_until,omitempty"`
 	Diagnostics     *runreport.Diagnostics    `json:"diagnostics,omitempty"`
 	GitVerification *gitdelivery.Verification `json:"git_verification,omitempty"`
+	GitPublication  *gitdelivery.Publication  `json:"git_publication,omitempty"`
 }
 
 // RunClaim 是设备领取运行后的数据，包含执行上下文、租约、输入和可委派目标。
@@ -131,6 +136,7 @@ type RunClaim struct {
 	ControlSupported     bool                `json:"control_supported,omitempty"`
 	DiagnosticsSupported bool                `json:"diagnostics_supported,omitempty"`
 	GitPolicy            *gitdelivery.Policy `json:"git_policy,omitempty"`
+	GitPublish           bool                `json:"git_publish,omitempty"`
 }
 
 // DependencyResult 记录父任务续接时收到的子任务标识和状态。
@@ -257,6 +263,8 @@ type Dispatch struct {
 	BindingID string `json:"binding_id,omitempty"`
 	// GitDelivery 请求为新根任务冻结已配置的项目 Git 规则。
 	GitDelivery bool `json:"git_delivery,omitempty"`
+	// GitPublish 明确请求向冻结规则中的目标分支推送。
+	GitPublish bool `json:"git_publish,omitempty"`
 }
 
 // Peer 保存设备直连接收端点的地址及证书指纹。
@@ -333,6 +341,9 @@ type Store interface {
 	ClaimRun(context.Context, string, [32]byte) (RunClaim, error)
 	ClaimRunWithControl(context.Context, string, [32]byte, bool) (RunClaim, error)
 	ClaimRunWithCapabilities(context.Context, string, [32]byte, bool, bool) (RunClaim, error)
+	ClaimRunWithGitPublication(context.Context, string, [32]byte, bool, bool, bool) (RunClaim, error)
+	AuthorizeGitPush(context.Context, string, [32]byte, string, gitdelivery.PushRequest) (gitdelivery.PushIntent, error)
+	ObserveGitPush(context.Context, string, [32]byte, string, string, gitdelivery.Observation) (gitdelivery.PushIntent, error)
 	RunControl(context.Context, string, [32]byte, string, int64, string) (bool, error)
 	RenewRun(context.Context, string, [32]byte, string, int64, string) (time.Time, error)
 	Delegate(context.Context, string, [32]byte, string, Delegation) (Task, error)

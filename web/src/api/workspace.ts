@@ -71,6 +71,7 @@ export type Run = {
   text?: string
   diagnostics?: RunDiagnostics
   git_verification?: GitVerification
+  git_publication?: GitPublication
   created_at: string
   updated_at: string
 }
@@ -82,6 +83,20 @@ type GitVerification = {
   test_exit_code?: number
   test_log_ref?: string
   test_status: 'passed' | 'failed' | 'unverified'
+  review_agent?: 'dsh' | 'codex'
+  review_status?: 'passed' | 'changes_requested' | 'unverified'
+  repair_attempts?: number
+}
+
+/** 对本轮候选提交的发布记录，observed_oid 来自实际目标分支的读回。 */
+type GitPublication = {
+  id: string
+  revision: number
+  remote: string
+  target_ref: string
+  candidate_oid: string
+  status: 'pending' | 'same_commit' | 'contains_commit' | 'missing' | 'diverged' | 'unavailable'
+  observed_oid?: string
 }
 
 /** 设备为该轮运行上报的诊断摘要。缺失字段表示设备未能确认对应数据。 */

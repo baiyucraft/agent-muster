@@ -18,6 +18,8 @@ export interface Dispatch {
   title?: string
   prompt: string
   git_delivery?: boolean
+  /** 用户明确要求交付到项目预设远端时设为 true，仅用于新建根任务。 */
+  git_publish?: boolean
 }
 
 /** 中心会话完成投递时提交的文本和结束状态。 */

@@ -84,6 +84,8 @@ func (s server) registerWorkspace(mux *http.ServeMux, options WorkspaceOptions, 
 	device("POST /api/v1/devices/{device_id}/runs/{id}/control", api.runControl)
 	device("PUT /api/v1/devices/{device_id}/runs/{id}/lease", api.renewRun)
 	device("POST /api/v1/devices/{device_id}/runs/{id}/wait/validate", api.validateWait)
+	device("POST /api/v1/devices/{device_id}/runs/{id}/git-push", api.authorizeGitPush)
+	device("PUT /api/v1/devices/{device_id}/runs/{id}/git-push/{intent_id}/observation", api.observeGitPush)
 	device("PUT /api/v1/devices/{device_id}/runs/{id}/events/{sequence}", api.recordEvent)
 	device("POST /api/v1/devices/{device_id}/runs/{id}/children", api.delegate)
 	device("POST /api/v1/devices/{device_id}/runs/{id}/transfers", api.createTransfer)
@@ -213,8 +215,9 @@ func (api workspaceAPI) claimRun(w http.ResponseWriter, r *http.Request, device 
 	defer ticker.Stop()
 	controlSupported := r.Header.Get("Muster-Run-Control") == "1"
 	gitVerificationSupported := r.Header.Get("Muster-Git-Verification") == "1"
+	gitPublishSupported := r.Header.Get("Muster-Git-Publish") == "1"
 	for {
-		run, err := api.store.ClaimRunWithCapabilities(ctx, device, token, controlSupported, gitVerificationSupported)
+		run, err := api.store.ClaimRunWithGitPublication(ctx, device, token, controlSupported, gitVerificationSupported, gitPublishSupported)
 		if ctx.Err() != nil {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -354,9 +357,9 @@ func (api workspaceAPI) dispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	create := input.TaskID == "" && uuidPattern.MatchString(input.ProjectID) && validText(input.Title, 240, true) &&
+	create := input.TaskID == "" && (!input.GitPublish || input.GitDelivery) && uuidPattern.MatchString(input.ProjectID) && validText(input.Title, 240, true) &&
 		(input.BindingID == "" || uuidPattern.MatchString(input.BindingID))
-	appendToTask := !input.GitDelivery && input.ProjectID == "" && input.BindingID == "" && prefixedUUID(input.TaskID, "task-")
+	appendToTask := !input.GitDelivery && !input.GitPublish && input.ProjectID == "" && input.BindingID == "" && prefixedUUID(input.TaskID, "task-")
 	if !prefixedUUID(id, "message-") || !leasePattern.MatchString(input.Lease) ||
 		(!create && !appendToTask) || !validText(input.Prompt, 6000, true) {
 		writeError(w, http.StatusBadRequest, "invalid task dispatch")
@@ -417,6 +420,8 @@ func workspaceJSON(w http.ResponseWriter, status int, value any, err error) {
 	case errors.Is(err, workspace.ErrInvalidRunDiagnostics):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrInvalidGitVerification):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, workspace.ErrInvalidGitPublication):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrConflict):
 		writeError(w, http.StatusConflict, "workspace state changed or request conflicts with a saved result")

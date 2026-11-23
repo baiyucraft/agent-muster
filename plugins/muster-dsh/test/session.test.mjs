@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { boundedReply, deliver, nativeOutcome } from '../dist/session.js'
-import { toolAllowed } from '../dist/tools.js'
+import { bindTools, toolAllowed } from '../dist/tools.js'
 
 const delivery = { id: 'test', attempt: 1, kind: 'message', text: '用户任务' }
 const start = turn => ({ type: 'turn/start', data: { turn } })
@@ -48,6 +48,31 @@ test('the center exposes only its four registered Muster tools to execution', ()
   }
   assert.equal(toolAllowed('subagent'), false)
   assert.equal(toolAllowed('bash'), false)
+})
+
+test('dispatch only opts in to Git publication with the dedicated workflow', async () => {
+  const tools = new Map()
+  const agent = { ctx: { tools: {
+    register(tool) { tools.set(tool.name, tool); return () => tools.delete(tool.name) },
+    restrict: () => () => {},
+    guard: () => () => {},
+  } } }
+  const signal = new AbortController().signal
+  let current = delivery
+  const hub = { dispatch: async (_delivery, input) => JSON.parse(JSON.stringify(input)) }
+  const dispose = bindTools(agent, hub, () => ({ delivery: current, signal }))
+  try {
+    const input = { project_id: 'project-1', title: '修复问题', prompt: '运行测试' }
+    const execute = tools.get('muster_dispatch').execute
+    assert.deepEqual(await execute(input, { agent, signal }), input)
+    assert.deepEqual(await execute({ ...input, workflow: 'git_verify' }, { agent, signal }), { ...input, git_delivery: true })
+    assert.deepEqual(await execute({ ...input, workflow: 'git_publish' }, { agent, signal }), { ...input, git_delivery: true, git_publish: true })
+    await assert.rejects(() => execute({ ...input, workflow: 'unknown' }, { agent, signal }), /未知的项目工作流/)
+    current = { ...delivery, task_id: 'existing-task' }
+    await assert.rejects(() => execute({ ...input, workflow: 'git_publish' }, { agent, signal }), /只能在创建新任务时启用/)
+  } finally {
+    dispose()
+  }
 })
 
 test('an interrupted report can be generated after re-claim', () => {

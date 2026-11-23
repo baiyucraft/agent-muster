@@ -415,6 +415,10 @@ paths:
           in: header
           description: 支持候选验证的设备发送值 1。托管 Git 任务只派给声明支持的设备。
           schema: { type: string, enum: ['1'] }
+        - name: Muster-Git-Publish
+          in: header
+          description: 支持独立审查、推送和回读的设备发送值 1，并同时声明支持停止指令和候选验证。
+          schema: { type: string, enum: ['1'] }
       responses:
         '200':
           description: 已领取运行。重复领取未结束的运行会返回原指令。
@@ -441,6 +445,7 @@ paths:
                   git_policy:
                     description: 托管 Git 任务首次派发时保存的交付规则快照。
                     $ref: '#/components/schemas/GitDeliveryPolicy'
+                  git_publish: { type: boolean, description: 任务要求向冻结规则的目标推送并回读远端。 }
                   agent_kind: { $ref: '#/components/schemas/AgentKind' }
                   generation: { type: integer, format: int64, minimum: 1 }
                   lease: { $ref: '#/components/schemas/Lease' }
@@ -808,6 +813,72 @@ paths:
         '404': { description: 未找到当前设备的轮次 }
         '409': { description: 租约过期，或依赖超出当前轮次的范围 }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/runs/{id}/git-push:
+    parameters:
+      - $ref: '#/components/parameters/DeviceID'
+      - $ref: '#/components/parameters/RunID'
+    post:
+      operationId: authorizeGitPush
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [generation, lease, verification, destination_fingerprint]
+              properties:
+                generation: { type: integer, format: int64, minimum: 1 }
+                lease: { $ref: '#/components/schemas/Lease' }
+                verification: { $ref: '#/components/schemas/GitVerification' }
+                destination_fingerprint: { type: string, pattern: '^[a-f0-9]{64}$', description: 设备为实际推送地址计算的指纹。 }
+      responses:
+        '200':
+          description: 已保存或重放同一推送意图。仅 push_allowed 为 true 时可发起推送。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GitPushIntent' }
+        '400': { description: 推送请求或验证证据无效 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 设备未领取该运行 }
+        '409': { description: 运行状态、控制指令、追加输入或意图内容冲突 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/runs/{id}/git-push/{intent_id}/observation:
+    parameters:
+      - $ref: '#/components/parameters/DeviceID'
+      - $ref: '#/components/parameters/RunID'
+      - name: intent_id
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/GitPushIntentID' }
+    put:
+      operationId: observeGitPush
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [generation, lease, status]
+              properties:
+                generation: { type: integer, format: int64, minimum: 1 }
+                lease: { $ref: '#/components/schemas/Lease' }
+                status: { type: string, enum: [same_commit, contains_commit, missing, diverged, unavailable] }
+                observed_oid: { $ref: '#/components/schemas/GitCommitOID' }
+      responses:
+        '200':
+          description: 已保存或重放该意图的回读结果，push_allowed 恒为 false。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GitPushIntent' }
+        '400': { description: 无效的回读结果 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 设备未领取该运行或推送意图不存在 }
+        '409': { description: 意图或运行凭据不匹配 }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/devices/{device_id}/runs/{id}/children:
     parameters:
       - { $ref: '#/components/parameters/DeviceID' }
@@ -1065,6 +1136,9 @@ paths:
                 git_delivery:
                   type: boolean
                   description: 仅在新建任务时生效。为 true 时冻结项目配置的 Git 交付规则。
+                git_publish:
+                  type: boolean
+                  description: 新建任务明确要求推送时使用。为 true 时 git_delivery 也须为 true。
                 task_id: { $ref: '#/components/schemas/TaskID' }
                 title: { type: string, description: 不超过 240 UTF-8 字节 }
                 prompt: { type: string, description: 不超过 6000 UTF-8 字节 }
@@ -1409,6 +1483,7 @@ components:
         waiting_reason: { type: string, enum: [children, delivery, transfers] }
         current_run_generation: { type: integer, format: int64, minimum: 1 }
         git_policy_revision: { type: integer, format: int64, minimum: 1, description: 托管 Git 任务冻结的规则版本 }
+        git_publish: { type: boolean, description: 任务要求确认远端目标包含候选提交。 }
         wait_generation: { type: integer, format: int64, minimum: 1 }
         status: { $ref: '#/components/schemas/TaskState' }
         control_actions:
@@ -1453,11 +1528,35 @@ components:
       description: 设备上报的候选测试回执。通过须有候选提交、测试退出码 0 和本机日志引用。
       required: [test_status]
       properties:
-        base_oid: { type: string, pattern: '^(?:[a-f0-9]{40}|[a-f0-9]{64})$' }
-        candidate_oid: { type: string, pattern: '^(?:[a-f0-9]{40}|[a-f0-9]{64})$' }
+        base_oid: { $ref: '#/components/schemas/GitCommitOID' }
+        candidate_oid: { $ref: '#/components/schemas/GitCommitOID' }
         test_exit_code: { type: integer, format: int64, minimum: 0, maximum: 4294967295 }
         test_log_ref: { type: string, pattern: '^test-[0-9]+/output\.log$', description: 相对于设备任务目录的日志引用 }
         test_status: { type: string, enum: [passed, failed, unverified] }
+        review_agent: { $ref: '#/components/schemas/AgentKind' }
+        review_status: { type: string, enum: [passed, changes_requested, unverified] }
+        repair_attempts: { type: integer, minimum: 0, maximum: 5 }
+    GitCommitOID: { type: string, pattern: '^(?:[a-f0-9]{40}|[a-f0-9]{64})$' }
+    GitPushIntentID: { type: string, pattern: '^push-[0-9a-f-]{36}$' }
+    GitPublication:
+      type: object
+      required: [id, revision, remote, target_ref, candidate_oid, status]
+      properties:
+        id: { $ref: '#/components/schemas/GitPushIntentID' }
+        revision: { type: integer, format: int64, minimum: 1 }
+        remote: { type: string, description: 设备仓库的远端别名。 }
+        target_ref: { type: string, description: 完整的 refs/heads 分支引用。 }
+        candidate_oid: { $ref: '#/components/schemas/GitCommitOID' }
+        status: { type: string, enum: [pending, same_commit, contains_commit, missing, diverged, unavailable] }
+        observed_oid: { $ref: '#/components/schemas/GitCommitOID' }
+    GitPushIntent:
+      allOf:
+        - $ref: '#/components/schemas/GitPublication'
+        - type: object
+          required: [destination_fingerprint, push_allowed]
+          properties:
+            destination_fingerprint: { type: string, pattern: '^[a-f0-9]{64}$' }
+            push_allowed: { type: boolean }
     Run:
       type: object
       required: [id, task_id, directory_id, status, created_at, updated_at]
@@ -1471,6 +1570,7 @@ components:
         lease_until: { type: string, format: date-time }
         diagnostics: { $ref: '#/components/schemas/RunDiagnostics' }
         git_verification: { $ref: '#/components/schemas/GitVerification' }
+        git_publication: { $ref: '#/components/schemas/GitPublication' }
         text: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
