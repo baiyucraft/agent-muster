@@ -64,7 +64,7 @@ func readLocalRunLogs(root, runID string) (runreport.LogResponse, error) {
 }
 
 func readLogInvocation(directory *os.File, name string, remaining int) ([]runreport.LogFile, error) {
-	invocation, err := openLogChild(directory, name, true)
+	invocation, err := openLogChild(directory, name, true, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -77,7 +77,7 @@ func readLogInvocation(directory *os.File, name string, remaining int) ([]runrep
 		if len(files) == remaining {
 			break
 		}
-		file, err := openLogChild(invocation, stream+".log", false)
+		file, err := openLogChild(invocation, stream+".log", false, 0)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -142,7 +142,7 @@ func openRunLogDirectory(path string) (*os.File, error) {
 	}
 	directory := os.NewFile(uintptr(handle), root)
 	for part := range strings.SplitSeq(absolute[len(root):], `\`) {
-		next, err := openLogChild(directory, part, true)
+		next, err := openLogChild(directory, part, true, 0)
 		_ = directory.Close()
 		if err != nil {
 			return nil, err
@@ -152,7 +152,7 @@ func openRunLogDirectory(path string) (*os.File, error) {
 	return directory, nil
 }
 
-func openLogChild(parent *os.File, name string, directory bool) (*os.File, error) {
+func openLogChild(parent *os.File, name string, directory bool, extraAccess uint32) (*os.File, error) {
 	if !filepath.IsLocal(name) || filepath.Base(name) != name || name == "." || strings.ContainsAny(name, `:/\`) {
 		return nil, fs.ErrInvalid
 	}
@@ -166,7 +166,7 @@ func openLogChild(parent *os.File, name string, directory bool) (*os.File, error
 	}
 	attributes.Length = uint32(unsafe.Sizeof(attributes))
 	options := uint32(windows.FILE_NON_DIRECTORY_FILE)
-	access := uint32(windows.FILE_READ_DATA | windows.FILE_READ_ATTRIBUTES | windows.SYNCHRONIZE)
+	access := uint32(windows.FILE_READ_DATA|windows.FILE_READ_ATTRIBUTES|windows.SYNCHRONIZE) | extraAccess
 	if directory {
 		options = windows.FILE_DIRECTORY_FILE
 		access |= windows.FILE_TRAVERSE

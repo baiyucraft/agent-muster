@@ -31,6 +31,8 @@ type Worker struct {
 	root string
 	wake chan struct{}
 
+	logMu sync.Mutex
+
 	drainMu sync.Mutex
 	drain   *drainRequest
 }
@@ -152,26 +154,24 @@ func executeAgent(ctx context.Context, kind, directory, prompt, sessionID string
 func (worker *Worker) run(ctx context.Context, client hub, identity control.Identity, onError func(error), peer *collaboration, service *localHelper, execute agentExecutor) error {
 	ctx, cancel := context.WithCancel(ctx)
 	var active <-chan error
-	var logsDone <-chan struct{}
+	var background sync.WaitGroup
 	defer func() {
 		cancel()
 		if active != nil {
 			<-active
 		}
-		if logsDone != nil {
-			<-logsDone
-		}
+		background.Wait()
 	}()
 	if err := worker.recoverInterrupted(ctx); err != nil {
 		return err
 	}
-	if logClient, ok := client.(runLogClient); ok && runLogPlatformSupported {
-		done := make(chan struct{})
-		logsDone = done
-		go func() {
-			defer close(done)
-			worker.runLogLoop(ctx, logClient, identity)
-		}()
+	if runLogPlatformSupported {
+		if logClient, ok := client.(runLogClient); ok {
+			background.Go(func() { worker.runLogLoop(ctx, logClient, identity) })
+		}
+		if retention := configuredLogRetention(); retention > 0 {
+			background.Go(func() { worker.runLogRetentionLoop(ctx, retention) })
+		}
 	}
 
 	var lastDirectories string
