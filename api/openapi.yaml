@@ -282,6 +282,26 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { description: 任务不存在 }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/tasks/{id}/runs/{run_id}/logs:
+    parameters: [{ $ref: '#/components/parameters/TaskID' }, { $ref: '#/components/parameters/RunLogRunID' }]
+    get:
+      operationId: getRunLogs
+      security: [{ adminBearer: [] }]
+      description: 读取已领取且已退出运行的设备本地日志。Hub 等待回执最多 12 秒，正文仅转发给本次请求。
+      responses:
+        '200':
+          description: 执行设备返回的读取状态或日志片段
+          headers:
+            Cache-Control: { schema: { type: string, enum: [no-store] } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunLogResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 此任务下没有指定运行 }
+        '409': { description: 运行未领取或未退出，或执行设备已撤销 }
+        '429': { description: Hub 已达到全局 32 条或单设备 4 条待处理读取请求 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+        '504': { description: 执行设备离线或未在时限内响应，包括尚未支持日志读取的设备 }
   /api/v1/tasks/{id}/control:
     parameters: [{ $ref: '#/components/parameters/TaskID' }]
     post:
@@ -412,6 +432,48 @@ paths:
         '204': { description: 已替换设备目录清单 }
         '400': { description: 无效目录清单 }
         '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/run-log-requests:
+    parameters: [{ $ref: '#/components/parameters/DeviceID' }]
+    get:
+      operationId: listRunLogRequests
+      security: [{ deviceBearer: [] }]
+      responses:
+        '200':
+          description: 当前设备待处理的读取请求。设备可以重复读取同一个请求，直到上传成功或管理员请求结束。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requests]
+                properties:
+                  requests: { type: array, maxItems: 4, items: { $ref: '#/components/schemas/RunLogRequest' } }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/run-log-requests/{request_id}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceID'
+      - name: request_id
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/RunLogRequestID' }
+    put:
+      operationId: submitRunLogResponse
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        description: JSON 请求体上限 400 KiB，UTF-8 日志正文合计不超过 64 KiB。
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RunLogResponse' }
+      responses:
+        '204': { description: Hub 已将回执交给等待读取的管理员请求 }
+        '400': { description: 读取状态或日志片段无效 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 请求未知、已结束或属于其他设备。设备无需重试。 }
+        '413': { description: JSON 请求体超过上限 }
+        '415': { description: 请求类型须为 application/json }
+        '429': { description: 同一请求已有回执上传在处理 }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/devices/{device_id}/runs/claim:
     parameters: [{ $ref: '#/components/parameters/DeviceID' }]
@@ -1184,6 +1246,11 @@ components:
       scheme: bearer
       description: Go Hub 和中心 dsh 共用的独立插件令牌
   parameters:
+    RunLogRunID:
+      name: run_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/RunLogRunID' }
     DeviceID:
       name: device_id
       in: path
@@ -1569,6 +1636,39 @@ components:
         capture_incomplete: { type: boolean, description: 设备未能完整保存输出流。 }
         error_kind: { type: string, enum: [native_exit, interrupted, output, setup] }
         usage: { $ref: '#/components/schemas/RunUsage' }
+    RunLogRequestID:
+      type: string
+      pattern: '^log-[0-9a-f]{32}$'
+    RunLogRunID:
+      type: string
+      pattern: '^run-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    RunLogRequest:
+      type: object
+      additionalProperties: false
+      required: [id, run_id]
+      properties:
+        id: { $ref: '#/components/schemas/RunLogRequestID' }
+        run_id: { $ref: '#/components/schemas/RunLogRunID' }
+    RunLogResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      description: available 附带 1 至 8 个文件，missing 和 failed 不附带文件。同一调用及输出流只能出现一次。
+      properties:
+        status: { type: string, enum: [available, missing, failed] }
+        files:
+          type: array
+          maxItems: 8
+          items:
+            type: object
+            additionalProperties: false
+            required: [invocation, stream, text, truncated]
+            properties:
+              invocation: { type: string, pattern: '^cli-[0-9]{1,10}$' }
+              stream: { type: string, enum: [stdout, stderr] }
+              text: { type: string, description: 日志文件末尾的 UTF-8 文本。所有文件正文合计不超过 64 KiB。 }
+              truncated: { type: boolean }
+              updated_at: { type: string, format: date-time, description: 设备打开文件时读取的修改时间 }
     GitVerification:
       type: object
       additionalProperties: false

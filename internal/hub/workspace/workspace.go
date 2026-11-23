@@ -333,6 +333,8 @@ type Store interface {
 	DeviceUsage(context.Context) (DeviceUsage, error)
 	WorkspaceEvents(context.Context, int64) ([]int64, error)
 	TaskDetail(context.Context, string) (Detail, error)
+	RunLogDevice(context.Context, string, string) (string, error)
+	AuthenticateRunLogDevice(context.Context, string, [32]byte) error
 	ControlTask(context.Context, string, TaskControl) (Task, error)
 	SaveProject(context.Context, Project) (Project, error)
 	Projects(context.Context) ([]Project, error)

@@ -4,6 +4,7 @@ import { latestApproval, readTask, type Approval, type Run, type Task, type Task
 import { messageFor } from '../../useWorkspace'
 import { ApprovalCard, type ApprovalActions } from './ApprovalCard'
 import { MessageItem, Time } from './Conversation'
+import { RunLogs } from './RunLogs'
 import { TaskControls, type TaskControlActions } from './TaskControls'
 
 const statusText: Record<Task['status'] | Run['status'], string> = {
@@ -148,6 +149,7 @@ type TaskDetailsProps = Required<Pick<TaskBoardProps, 'token' | 'taskID' | 'onFo
 
 function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskControlActions, taskID, deviceNames, onFollow, onLock }: TaskDetailsProps) {
   const [detail, setDetail] = useState<TaskDetail>()
+  const [runsOpen, setRunsOpen] = useState(false)
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
 
@@ -222,7 +224,7 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
             </dl>
           </details>
         </div>
-        <details className="task-detail-panel">
+        <details className="task-detail-panel" onToggle={(event) => setRunsOpen(event.currentTarget.open)}>
           <summary className="task-section-title">运行记录<span>{detail.runs.length}</span></summary>
           {detail.runs.length === 0 && <p className="standalone-note">等待首次运行。</p>}
           {detail.runs.map((run) => <article className="run-row" key={run.id}>
@@ -231,6 +233,8 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
             {run.session_id && <p><span>会话</span> <code>{run.session_id}</code></p>}
             <GitRunEvidence verification={run.git_verification} publication={run.git_publication} />
             <RunDiagnostics diagnostics={run.diagnostics} />
+            {runsOpen && run.status !== 'queued' && run.status !== 'running' &&
+              <RunLogs token={token} taskID={taskID} runID={run.id} onLock={onLock} />}
             {run.text && <p className="message-text">{run.text}</p>}
           </article>)}
         </details>

@@ -87,6 +87,9 @@ func NewHandler(store registry.Store, adminToken string, web http.Handler, optio
 			timeout = 12 * time.Second
 		} else if strings.HasSuffix(r.URL.Path, "/runs/claim") {
 			timeout = 8 * time.Second
+		} else if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/tasks/") &&
+			strings.HasSuffix(r.URL.Path, "/logs") {
+			timeout = runLogTimeout
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()

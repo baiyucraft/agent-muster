@@ -39,6 +39,7 @@ var (
 
 func (s server) registerWorkspace(mux *http.ServeMux, options WorkspaceOptions, adminToken string) {
 	api := workspaceAPI{store: options.Store, token: sha256.Sum256([]byte(options.PluginToken))}
+	logs := runLogAPI{store: options.Store, requests: make(map[string]*pendingRunLog)}
 	enabled := options.Store != nil && ValidAdminToken(options.PluginToken) && options.PluginToken != adminToken
 	available := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +62,7 @@ func (s server) registerWorkspace(mux *http.ServeMux, options WorkspaceOptions, 
 	admin("GET /api/v1/workspace", api.snapshot)
 	admin("GET /api/v1/workspace/usage", api.deviceUsage)
 	admin("GET /api/v1/tasks/{id}", api.task)
+	admin("GET /api/v1/tasks/{id}/runs/{run_id}/logs", logs.read)
 	admin("POST /api/v1/tasks/{id}/control", api.controlTask)
 	admin("GET /api/v1/events", api.events)
 	admin("POST /api/v1/approvals/{id}/answer", api.answerApproval)
@@ -73,6 +75,8 @@ func (s server) registerWorkspace(mux *http.ServeMux, options WorkspaceOptions, 
 	plugin("PUT /api/v1/plugin/deliveries/{id}/complete", api.complete)
 	plugin("POST /api/v1/plugin/deliveries/{id}/dispatch", api.dispatch)
 	device("PUT /api/v1/devices/{device_id}/directories", api.directories)
+	device("GET /api/v1/devices/{device_id}/run-log-requests", logs.list)
+	device("PUT /api/v1/devices/{device_id}/run-log-requests/{request_id}", logs.submit)
 	device("PUT /api/v1/devices/{device_id}/peer", api.registerPeer)
 	device("PUT /api/v1/devices/{device_id}/rtc", api.registerRTC)
 	device("PUT /api/v1/devices/{device_id}/rtc/public-key", api.reportRTCPublicKey)
