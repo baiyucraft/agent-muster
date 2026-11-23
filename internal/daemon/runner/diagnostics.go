@@ -1,0 +1,113 @@
+package runner
+
+import (
+	"context"
+	"io"
+	"os"
+	"path/filepath"
+
+	"github.com/baiyucraft/agent-muster/internal/runreport"
+)
+
+type captureKey struct{}
+
+type runCapture struct {
+	directory   string
+	invocations int
+	report      runreport.Diagnostics
+}
+
+// WithDiagnostics 让本轮 CLI 将原始输出保存在设备目录，并收集可上报的诊断。
+// 调用方须在本轮全部调用退出后再读取结果。
+func WithDiagnostics(ctx context.Context, directory string) (context.Context, func() *runreport.Diagnostics) {
+	capture := &runCapture{directory: directory}
+	return context.WithValue(ctx, captureKey{}, capture), func() *runreport.Diagnostics {
+		if capture.report == (runreport.Diagnostics{}) {
+			return nil
+		}
+		return &capture.report
+	}
+}
+
+func diagnostics(ctx context.Context) *runCapture {
+	capture, _ := ctx.Value(captureKey{}).(*runCapture)
+	return capture
+}
+
+func recordUsage(ctx context.Context, usage *runreport.Usage) {
+	if capture := diagnostics(ctx); capture != nil && capture.invocations == 1 {
+		capture.report.Usage = usage
+	}
+}
+
+type streamLog struct {
+	file  *os.File
+	bytes int64
+	err   bool
+}
+
+// Write 保留与 CLI 解析独立的输出副本。写满后继续排空管道。
+func (log *streamLog) Write(p []byte) (int, error) {
+	if log.file != nil && !log.err {
+		n, err := log.file.Write(p)
+		log.bytes += int64(n)
+		log.err = err != nil || n != len(p)
+	}
+	return len(p), nil
+}
+
+func (log *streamLog) finish() (*int64, bool) {
+	if log.file == nil {
+		return nil, true
+	}
+	syncErr := log.file.Sync()
+	closeErr := log.file.Close()
+	incomplete := log.err || syncErr != nil || closeErr != nil
+	if incomplete && log.bytes == 0 {
+		return nil, true
+	}
+	return &log.bytes, incomplete
+}
+
+func (capture *runCapture) openStreams() (*streamLog, *streamLog) {
+	capture.invocations++
+	capture.report.Usage = nil
+	capture.report.ExitCode = nil
+	stdout, stderr := &streamLog{}, &streamLog{}
+	if err := os.MkdirAll(capture.directory, 0700); err != nil {
+		return stdout, stderr
+	}
+	// 目录按运行 ID 隔离，补写或恢复调用使用新目录，避免覆盖先前日志。
+	path, err := os.MkdirTemp(capture.directory, "cli-")
+	if err == nil {
+		stdout.file, _ = os.OpenFile(filepath.Join(path, "stdout.log"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		stderr.file, _ = os.OpenFile(filepath.Join(path, "stderr.log"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	}
+	return stdout, stderr
+}
+
+func (capture *runCapture) finishStreams(stdout, stderr *streamLog, incomplete bool) {
+	out, outErr := stdout.finish()
+	errOut, errErr := stderr.finish()
+	addCapturedBytes(&capture.report.StdoutBytes, out)
+	addCapturedBytes(&capture.report.StderrBytes, errOut)
+	capture.report.CaptureIncomplete = capture.report.CaptureIncomplete || incomplete || outErr || errErr
+}
+
+func addCapturedBytes(total **int64, value *int64) {
+	if value == nil {
+		return
+	}
+	if *total == nil {
+		*total = value
+		return
+	}
+	**total += *value
+}
+
+func capturedReader(reader io.Reader, log *streamLog) io.Reader {
+	if log == nil {
+		return reader
+	}
+	return io.TeeReader(reader, log)
+}

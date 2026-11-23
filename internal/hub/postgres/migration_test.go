@@ -127,6 +127,9 @@ func TestM0WorkspaceMigration(t *testing.T) {
 	if err != nil || detail.Task.Status != "completed" || !detail.Task.ReportPending || len(detail.Runs) != 1 {
 		t.Fatalf("migrated completion did not persist: %+v, %v", detail, err)
 	}
+	if detail.Runs[0].Diagnostics != nil {
+		t.Fatalf("legacy run has synthetic diagnostics: %+v", detail.Runs[0].Diagnostics)
+	}
 	if detail.Task.CurrentRunGeneration != claim.Generation || len(detail.Inputs) != 1 ||
 		detail.Inputs[0].Kind != "execution" || detail.Inputs[0].RunID != claim.ID ||
 		detail.Inputs[0].Status != "completed" || detail.Inputs[0].ClaimedAt == nil {

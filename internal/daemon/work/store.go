@@ -137,7 +137,7 @@ func Open(root string) (*Worker, error) {
 		lock.Close()
 		return nil, err
 	}
-	return &Worker{db: db, lock: lock, wake: make(chan struct{}, 1)}, nil
+	return &Worker{db: db, lock: lock, root: root, wake: make(chan struct{}, 1)}, nil
 }
 
 // Close 关闭本机数据库并释放工作区独占锁。

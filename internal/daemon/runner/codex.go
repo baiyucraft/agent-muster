@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"github.com/baiyucraft/agent-muster/internal/runreport"
 )
 
 var codexThreadID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -80,6 +82,7 @@ func RunCodex(ctx context.Context, directory, prompt, threadID string, env []str
 		}
 		return final, errors.New("Codex 没有提供最终回复")
 	}
+	recordUsage(ctx, result.Usage)
 	return final, nil
 }
 
@@ -88,6 +91,7 @@ type codexResult struct {
 	Final     string
 	Completed bool
 	Failure   string
+	Usage     *runreport.Usage
 }
 
 func readCodex(stdout io.Reader, expectedThreadID string, persist func(string) error) (codexResult, error) {
@@ -97,9 +101,10 @@ func readCodex(stdout io.Reader, expectedThreadID string, persist func(string) e
 	var sawTurnStarted bool
 	for scanner.Scan() {
 		var event struct {
-			Type     string `json:"type"`
-			ThreadID string `json:"thread_id"`
-			Message  string `json:"message"`
+			Type     string          `json:"type"`
+			ThreadID string          `json:"thread_id"`
+			Message  string          `json:"message"`
+			Usage    json.RawMessage `json:"usage"`
 			Error    struct {
 				Message string `json:"message"`
 			} `json:"error"`
@@ -132,6 +137,11 @@ func readCodex(stdout io.Reader, expectedThreadID string, persist func(string) e
 				result.Final = event.Item.Text
 			}
 		case "turn.completed":
+			if !result.Completed && result.SessionID != "" && sawTurnStarted {
+				result.Usage = codexUsage(event.Usage, expectedThreadID != "")
+			} else {
+				result.Usage = nil
+			}
 			result.Completed = true
 		case "turn.failed":
 			result.Failure = event.Error.Message

@@ -15,6 +15,7 @@ import (
 
 	"github.com/baiyucraft/agent-muster/internal/daemon/control"
 	"github.com/baiyucraft/agent-muster/internal/daemon/runner"
+	"github.com/baiyucraft/agent-muster/internal/runreport"
 )
 
 type hub interface {
@@ -27,6 +28,7 @@ type hub interface {
 type Worker struct {
 	db   *sql.DB
 	lock *os.File
+	root string
 	wake chan struct{}
 
 	drainMu sync.Mutex
@@ -320,6 +322,7 @@ func (worker *Worker) execute(ctx context.Context, run control.Run, peer *collab
 	}
 	runCtx, abandon := context.WithCancelCause(ctx)
 	defer abandon(nil)
+	runCtx, readDiagnostics := worker.captureRun(runCtx, run.ID)
 	var leaseErr error
 	if run.Lease != "" {
 		leaseErr = startLease(runCtx, run, peer, abandon)
@@ -351,6 +354,21 @@ func (worker *Worker) execute(ctx context.Context, run control.Run, peer *collab
 			event.Text = err.Error() + "\n\n" + event.Text
 		} else {
 			event.Text = err.Error()
+		}
+	}
+	if run.DiagnosticsSupported {
+		event.Diagnostics = readDiagnostics()
+		if event.Diagnostics != nil && (event.Kind == "stopped" || event.Kind == "interrupted" && runCtx.Err() != nil) {
+			event.Diagnostics.ErrorKind = "interrupted"
+		}
+		if event.Diagnostics == nil && err != nil {
+			event.Diagnostics = &runreport.Diagnostics{ErrorKind: "setup"}
+		}
+		if event.Diagnostics != nil && event.Diagnostics.ErrorKind == "" && err != nil {
+			event.Diagnostics.ErrorKind = "output"
+		}
+		if !event.Diagnostics.Valid() {
+			event.Diagnostics = nil
 		}
 	}
 	// Persist terminal state and result body together, including on shutdown.

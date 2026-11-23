@@ -42,9 +42,10 @@ func RunDSHWithEnvironment(ctx context.Context, directory, prompt, sessionID str
 	cmd.Dir = directory
 	cmd.Env = filteredAgentEnvironment(cmd.Environ(), env)
 	var final string
+	var usage dshUsage
 	exitCode, err := runInJob(ctx, cmd, prompt, started, func(stdout io.Reader) error {
 		var parseErr error
-		final, parseErr = readDSH(stdout, sessionID, session)
+		final, parseErr = readDSH(stdout, sessionID, session, &usage)
 		return parseErr
 	})
 	if err != nil {
@@ -56,22 +57,29 @@ func RunDSHWithEnvironment(ctx context.Context, directory, prompt, sessionID str
 	if strings.TrimSpace(final) == "" {
 		return "", errors.New("dsh 未提供最终回复")
 	}
+	recordUsage(ctx, usage.result())
 	return final, nil
 }
 
-func readDSH(stdout io.Reader, expectedSession string, session func(string) error) (string, error) {
+func readDSH(stdout io.Reader, expectedSession string, session func(string) error, usage *dshUsage) (string, error) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 8192), 4<<20)
 	var actualSession, final string
 	for scanner.Scan() {
 		var event struct {
-			Type      string `json:"type"`
-			SessionID string `json:"sessionId"`
-			Text      string `json:"text"`
+			Type      string          `json:"type"`
+			SessionID string          `json:"sessionId"`
+			Text      string          `json:"text"`
+			Phase     string          `json:"phase"`
+			Turn      *int            `json:"turn"`
+			Step      *int            `json:"step"`
+			Usage     json.RawMessage `json:"usage"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			// The stream may include local startup diagnostics. Only typed
-			// session and final packets can change the execution result.
+			// CLI 可能混入启动诊断。带类型的终态事件才参与结果解析。
+			if event.Type == "status" && event.Phase == "step_end" {
+				usage.invalid = true
+			}
 			continue
 		}
 		switch event.Type {
@@ -89,6 +97,15 @@ func readDSH(stdout io.Reader, expectedSession string, session func(string) erro
 				return final, fmt.Errorf("无法保存 dsh 会话: %w", err)
 			}
 			actualSession = event.SessionID
+		case "status":
+			if event.Phase != "step_end" {
+				continue
+			}
+			if actualSession == "" || event.Turn == nil || event.Step == nil {
+				usage.invalid = true
+				continue
+			}
+			usage.add(*event.Turn, *event.Step, event.Usage)
 		case "final":
 			final = event.Text
 		}

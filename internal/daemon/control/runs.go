@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/baiyucraft/agent-muster/internal/approval"
+	"github.com/baiyucraft/agent-muster/internal/runreport"
 )
 
 // HTTPError 记录 Hub 返回的非预期 HTTP 状态码。
@@ -31,26 +32,27 @@ type Directory struct {
 
 // Run 携带 Hub 领取结果中的任务关系、冻结绑定、输入和执行租约。
 type Run struct {
-	ID                string              `json:"id"`
-	TaskID            string              `json:"task_id"`
-	RootTaskID        string              `json:"root_task_id"`
-	ParentTaskID      string              `json:"parent_task_id"`
-	ParentDeviceID    string              `json:"parent_device_id"`
-	ProjectID         string              `json:"project_id"`
-	BindingID         string              `json:"binding_id"`
-	AgentKind         string              `json:"agent_kind"`
-	DirectoryID       string              `json:"directory_id"`
-	Prompt            string              `json:"prompt"`
-	SessionID         string              `json:"session_id"`
-	PromptTransferID  string              `json:"prompt_transfer_id"`
-	Generation        int64               `json:"generation"`
-	Lease             string              `json:"lease"`
-	LeaseUntil        string              `json:"lease_until"`
-	Attachments       []TransferReference `json:"attachments"`
-	DependencyResults []DependencyResult  `json:"dependency_results,omitempty"`
-	DelegationTargets []DelegationTarget  `json:"delegation_targets,omitempty"`
-	ApprovalSupported bool                `json:"approval_supported,omitempty"`
-	ControlSupported  bool                `json:"control_supported,omitempty"` // Hub 可向该运行下发停止指令。
+	ID                   string              `json:"id"`
+	TaskID               string              `json:"task_id"`
+	RootTaskID           string              `json:"root_task_id"`
+	ParentTaskID         string              `json:"parent_task_id"`
+	ParentDeviceID       string              `json:"parent_device_id"`
+	ProjectID            string              `json:"project_id"`
+	BindingID            string              `json:"binding_id"`
+	AgentKind            string              `json:"agent_kind"`
+	DirectoryID          string              `json:"directory_id"`
+	Prompt               string              `json:"prompt"`
+	SessionID            string              `json:"session_id"`
+	PromptTransferID     string              `json:"prompt_transfer_id"`
+	Generation           int64               `json:"generation"`
+	Lease                string              `json:"lease"`
+	LeaseUntil           string              `json:"lease_until"`
+	Attachments          []TransferReference `json:"attachments"`
+	DependencyResults    []DependencyResult  `json:"dependency_results,omitempty"`
+	DelegationTargets    []DelegationTarget  `json:"delegation_targets,omitempty"`
+	ApprovalSupported    bool                `json:"approval_supported,omitempty"`
+	ControlSupported     bool                `json:"control_supported,omitempty"`     // Hub 可向该运行下发停止指令。
+	DiagnosticsSupported bool                `json:"diagnostics_supported,omitempty"` // Hub 接受终态诊断字段。
 }
 
 // DependencyResult 记录父任务续接时可见的依赖任务标识与状态。
@@ -106,14 +108,15 @@ type TransferReference struct {
 
 // RunEvent 是设备上报的运行事件。请示和停止分别在本轮退出后使用 approval_requested 和 stopped。
 type RunEvent struct {
-	Kind           string             `json:"kind"`
-	SessionID      string             `json:"session_id,omitempty"`
-	Text           string             `json:"text,omitempty"`
-	Generation     int64              `json:"generation,omitempty"`
-	Lease          string             `json:"lease,omitempty"`
-	WaitForTaskIDs []string           `json:"wait_for_task_ids,omitempty"`
-	TransferIDs    []string           `json:"transfer_ids,omitempty"`
-	Approval       *approval.Question `json:"approval,omitempty"`
+	Kind           string                 `json:"kind"`
+	SessionID      string                 `json:"session_id,omitempty"`
+	Text           string                 `json:"text,omitempty"`
+	Generation     int64                  `json:"generation,omitempty"`
+	Lease          string                 `json:"lease,omitempty"`
+	WaitForTaskIDs []string               `json:"wait_for_task_ids,omitempty"`
+	TransferIDs    []string               `json:"transfer_ids,omitempty"`
+	Approval       *approval.Question     `json:"approval,omitempty"`
+	Diagnostics    *runreport.Diagnostics `json:"diagnostics,omitempty"`
 }
 
 // ReportDirectories 向 Hub 上报本设备当前可派发的工作目录清单。

@@ -228,6 +228,7 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
             <header><Time value={run.created_at} /><TaskStatus status={run.status} /></header>
             <p><span>运行</span> <code>{run.id}</code></p>
             {run.session_id && <p><span>会话</span> <code>{run.session_id}</code></p>}
+            <RunDiagnostics diagnostics={run.diagnostics} />
             {run.text && <p className="message-text">{run.text}</p>}
           </article>)}
         </details>
@@ -263,6 +264,46 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
         {relatedMessages && relatedMessages.length > 0 && <section className="task-detail-panel related-messages" aria-labelledby="related-heading"><h2 id="related-heading">关联对话</h2>{relatedMessages.map((message) => <MessageItem key={message.id} message={message} task={task} />)}</section>}
       </div>}
     </section>
+  )
+}
+
+const tokenCount = new Intl.NumberFormat('zh-CN')
+const runErrorText = {
+  native_exit: 'CLI 执行失败', interrupted: '运行中断', output: '输出处理失败', setup: '启动准备失败',
+}
+const usageSourceText = { dsh_headless: 'dsh', codex_exec: 'Codex' }
+
+/** 展示 CLI 已确认的本轮诊断。缺失用量单独标记，已知零值照常显示。 */
+function RunDiagnostics({ diagnostics }: { diagnostics?: Run['diagnostics'] }) {
+  const usage = diagnostics?.usage
+  const executionFacts = [
+    ['退出码', diagnostics?.exit_code],
+    ['标准输出', diagnostics?.stdout_bytes == null ? undefined : formatBytes(diagnostics.stdout_bytes)],
+    ['标准错误', diagnostics?.stderr_bytes == null ? undefined : formatBytes(diagnostics.stderr_bytes)],
+  ] as const
+  const usageFacts = usage ? [
+    ['输入', usage.input_tokens],
+    ['输出', usage.output_tokens],
+    ['缓存读取', usage.cached_input_tokens],
+    ['缓存写入', usage.cache_write_input_tokens],
+    ['推理输出', usage.reasoning_output_tokens],
+    ['总计', usage.total_tokens],
+  ] as const : []
+  const error = diagnostics?.error_kind && runErrorText[diagnostics.error_kind]
+
+  return (
+    <div className="run-diagnostics">
+      {executionFacts.some(([, value]) => value != null) && <dl className="run-diagnostic-facts" aria-label="进程状态">
+        {executionFacts.map(([label, value]) => value == null ? null : <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+      </dl>}
+      {(error || diagnostics?.capture_incomplete) && <p className="run-diagnostic-warning">
+        {[error, diagnostics?.capture_incomplete && '输出采集不完整'].filter(Boolean).join(' · ')}
+      </p>}
+      {usage ? <dl className="run-diagnostic-facts" aria-label="Token 用量">
+        <div><dt>Token 用量</dt><dd>{usageSourceText[usage.source]}</dd></div>
+        {usageFacts.map(([label, value]) => value == null ? null : <div key={label}><dt>{label}</dt><dd>{tokenCount.format(value)}</dd></div>)}
+      </dl> : <p>Token 用量未知</p>}
+    </div>
   )
 }
 

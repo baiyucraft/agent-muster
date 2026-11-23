@@ -99,6 +99,7 @@ func (store *InventoryStore) ClaimRunWithControl(ctx context.Context, device str
 		}
 		claim.LeaseUntil = claim.LeaseUntil.UTC()
 		claim.ApprovalSupported = true
+		claim.DiagnosticsSupported = true
 		claim.Attachments, err = selectRows(ctx, tx, "SELECT "+transferColumns+` FROM muster_run_transfers rt
 			JOIN muster_transfers tr ON tr.id=rt.transfer_id WHERE rt.run_id=$1 AND rt.direction='input'
 			ORDER BY tr.kind,tr.id`, scanTransfer, claim.ID)
@@ -174,8 +175,12 @@ func readRunState(ctx context.Context, tx pgx.Tx, device, id string) (value runS
 }
 
 // RecordRunEvent 按运行 ID 和递增序号记账，并对规范化后的相同事件去重。
-// 已结束运行收到的有效事件只保留审计记录。
+// 诊断摘要随首个有效终态一同保存。已结束运行收到的有效事件只保留审计记录。
 func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, token [32]byte, id string, sequence int64, event workspace.RunEvent) error {
+	terminal := event.Kind != "started" && event.Kind != "session"
+	if event.Diagnostics != nil && (!terminal || !event.Diagnostics.Valid()) {
+		return workspace.ErrInvalidRunDiagnostics
+	}
 	if event.Kind == "approval_requested" {
 		if event.Approval == nil || len(event.WaitForTaskIDs)+len(event.TransferIDs) != 0 {
 			return workspace.ErrInvalidApproval
@@ -278,12 +283,11 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 			}
 		}
 		status := event.Kind
-		terminal := status != "started" && status != "session"
 		if !terminal {
 			status = "running"
 		}
-		if _, err := tx.Exec(ctx, `UPDATE muster_runs SET status=$2,session_id=$3,outcome=$4,updated_at=clock_timestamp()
-			WHERE id=$1`, id, status, sessionID, event.Text); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE muster_runs SET status=$2,session_id=$3,outcome=$4,diagnostics=$5,updated_at=clock_timestamp()
+			WHERE id=$1`, id, status, sessionID, event.Text, event.Diagnostics); err != nil {
 			return err
 		}
 		switch event.Kind {

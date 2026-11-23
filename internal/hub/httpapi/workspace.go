@@ -391,6 +391,8 @@ func workspaceJSON(w http.ResponseWriter, status int, value any, err error) {
 	switch {
 	case errors.Is(err, workspace.ErrInvalidApproval):
 		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, workspace.ErrInvalidRunDiagnostics):
+		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrConflict):
 		writeError(w, http.StatusConflict, "workspace state changed or request conflicts with a saved result")
 	case err != nil:

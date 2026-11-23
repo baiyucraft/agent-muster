@@ -85,8 +85,50 @@ func TestJobCancellationWaitsForNativeProcessTree(t *testing.T) {
 	}
 }
 
+func TestJobCapturesNativeStreamsWhenParserStopsEarly(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(executable, "-test.run=^TestJobProcessFixture$")
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(cmd.Environ(), "MUSTER_JOB_FIXTURE=diagnostics")
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	dir := t.TempDir()
+	ctx, report := WithDiagnostics(ctx, dir)
+	code, err := runInJob(ctx, cmd, "", func() error { return nil }, func(r io.Reader) error {
+		_, err := io.ReadFull(r, make([]byte, 3))
+		return err
+	})
+	if code != 7 || err != nil {
+		t.Fatalf("进程退出码 %d，错误 %v", code, err)
+	}
+	out, errOut := os.ReadDir(dir)
+	if errOut != nil || len(out) != 1 {
+		t.Fatalf("运行日志目录 %v，错误 %v", out, errOut)
+	}
+	const stderr = "设备本机 stderr\n"
+	stdout := strings.Repeat("本机 stdout\n", 1024)
+	for name, want := range map[string]string{"stdout.log": stdout, "stderr.log": stderr} {
+		body, err := os.ReadFile(filepath.Join(dir, out[0].Name(), name))
+		if err != nil || string(body) != want {
+			t.Fatalf("%s 保存了 %d 字节，预期 %d，错误 %v", name, len(body), len(want), err)
+		}
+	}
+	if got := report(); got == nil || got.ExitCode == nil || *got.ExitCode != 7 ||
+		got.CaptureIncomplete || got.StdoutBytes == nil || *got.StdoutBytes != int64(len(stdout)) ||
+		got.StderrBytes == nil || *got.StderrBytes != int64(len(stderr)) || got.ErrorKind != "native_exit" {
+		t.Fatalf("运行诊断不完整：%+v", got)
+	}
+}
+
 func TestJobProcessFixture(t *testing.T) {
 	switch os.Getenv("MUSTER_JOB_FIXTURE") {
+	case "diagnostics":
+		fmt.Fprint(os.Stderr, "设备本机 stderr\n")
+		fmt.Fprint(os.Stdout, strings.Repeat("本机 stdout\n", 1024))
+		os.Exit(7)
 	case "parent":
 		// 子进程不继承本轮的标准流，单凭管道 EOF 无法证明它已退出。
 		child := exec.Command(os.Args[0], "-test.run=^TestJobProcessFixture$")

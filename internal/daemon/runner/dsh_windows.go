@@ -46,13 +46,28 @@ func runInJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() 
 	}
 	defer stdoutR.Close()
 	defer stdoutW.Close()
-	stderr, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+
+	capture := diagnostics(ctx)
+	var stdoutLog, stderrLog *streamLog
+	var captureIncomplete bool
+	var stderrR, stderrW *os.File
+	if capture != nil {
+		capture.report.ErrorKind = "setup"
+		stderrR, stderrW, err = os.Pipe()
+	}
+	if capture == nil || err != nil {
+		captureIncomplete = capture != nil
+		stderrW, err = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	}
 	if err != nil {
 		return 0, err
 	}
-	defer stderr.Close()
+	defer stderrW.Close()
+	if stderrR != nil {
+		defer stderrR.Close()
+	}
 
-	process, err := startSuspended(cmd, job, stdinR, stdoutW, stderr)
+	process, err := startSuspended(cmd, job, stdinR, stdoutW, stderrW)
 	if err != nil {
 		return 0, fmt.Errorf("无法启动 Agent 进程: %w", err)
 	}
@@ -60,6 +75,7 @@ func runInJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() 
 	defer windows.CloseHandle(process.Thread)
 	stdinR.Close()
 	stdoutW.Close()
+	stderrW.Close()
 	if err := started(); err != nil {
 		return 0, errors.Join(err, stopProcessTree(job))
 	}
@@ -68,6 +84,20 @@ func runInJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() 
 	}
 	if _, err := windows.ResumeThread(process.Thread); err != nil {
 		return 0, errors.Join(err, stopProcessTree(job))
+	}
+	var stderrDone chan error
+	if capture != nil {
+		stdoutLog, stderrLog = capture.openStreams()
+		defer func() { capture.finishStreams(stdoutLog, stderrLog, captureIncomplete) }()
+		if stderrR != nil {
+			stderrDone = make(chan error, 1)
+			go func() {
+				_, err := io.Copy(stderrLog, stderrR)
+				stderrDone <- err
+			}()
+		} else {
+			stderrLog.err = true
+		}
 	}
 
 	processCtx, cancel := context.WithCancel(ctx)
@@ -80,11 +110,16 @@ func runInJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() 
 	}()
 	output := make(chan error, 1)
 	go func() {
-		err := read(stdoutR)
-		output <- err
+		reader := capturedReader(stdoutR, stdoutLog)
+		err := read(reader)
 		if err != nil {
 			cancel()
 		}
+		if stdoutLog != nil {
+			_, drainErr := io.Copy(io.Discard, reader)
+			stdoutLog.err = stdoutLog.err || drainErr != nil
+		}
+		output <- err
 	}()
 	waitErr := waitProcess(processCtx, process.Process)
 	// 主进程退出或被取消时，先处理仍持有本轮资源的子进程，再收回管道。
@@ -95,9 +130,31 @@ func runInJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() 
 		// 无法确认子进程退出时关闭本端管道，避免遗留进程占用管道阻塞设备。
 		_ = stdoutR.Close()
 		_ = stdinW.Close()
+		if stderrR != nil {
+			_ = stderrR.Close()
+		}
 	}
 	outputErr := <-output
 	inputErr := <-input
+	if stderrDone != nil {
+		stderrErr := <-stderrDone
+		captureIncomplete = captureIncomplete || stderrErr != nil
+	}
+	if capture != nil {
+		capture.report.ErrorKind = ""
+		if exitErr == nil && treeErr == nil {
+			capture.report.ExitCode = &exitCode
+		}
+		switch {
+		case treeErr != nil || ctx.Err() != nil:
+			capture.report.ErrorKind = "interrupted"
+		case waitErr != nil || exitErr != nil || outputErr != nil || inputErr != nil:
+			capture.report.ErrorKind = "output"
+		case exitCode != 0:
+			capture.report.ErrorKind = "native_exit"
+		}
+		captureIncomplete = captureIncomplete || treeErr != nil
+	}
 	if treeErr != nil {
 		return exitCode, treeErr
 	}

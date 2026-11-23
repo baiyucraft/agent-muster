@@ -86,7 +86,7 @@ func (store *InventoryStore) TaskDetail(ctx context.Context, id string) (detail 
 			return notFound(err)
 		}
 		detail.Runs, err = selectRows(ctx, tx, `
-			SELECT r.id,r.task_id,t.directory_id,r.status,r.session_id,r.outcome,r.created_at,r.updated_at,r.generation,r.lease_until
+			SELECT r.id,r.task_id,t.directory_id,r.status,r.session_id,r.outcome,r.created_at,r.updated_at,r.generation,r.lease_until,r.diagnostics
 			FROM muster_runs r JOIN muster_tasks t ON t.id=r.task_id WHERE r.task_id=$1 ORDER BY r.sequence`, scanRun, id)
 		if err != nil {
 			return err
@@ -408,6 +408,6 @@ func scanTask(row pgx.Row) (value workspace.Task, err error) {
 
 func scanRun(row pgx.Row) (value workspace.Run, err error) {
 	err = row.Scan(&value.ID, &value.TaskID, &value.DirectoryID, &value.Status, &value.SessionID,
-		&value.Text, &value.CreatedAt, &value.UpdatedAt, &value.Generation, &value.LeaseUntil)
+		&value.Text, &value.CreatedAt, &value.UpdatedAt, &value.Generation, &value.LeaseUntil, &value.Diagnostics)
 	return
 }

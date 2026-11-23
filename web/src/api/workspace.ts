@@ -56,8 +56,30 @@ export type Run = {
   status: RunStatus
   session_id?: string
   text?: string
+  diagnostics?: RunDiagnostics
   created_at: string
   updated_at: string
+}
+
+/** 设备为该轮运行上报的诊断摘要。缺失字段表示设备未能确认对应数据。 */
+type RunDiagnostics = {
+  stdout_bytes?: number
+  stderr_bytes?: number
+  exit_code?: number
+  capture_incomplete?: boolean
+  error_kind?: 'native_exit' | 'interrupted' | 'output' | 'setup'
+  usage?: RunUsage
+}
+
+/** CLI 为本轮执行报告的 Token 计数。可选字段的统计口径由来源决定。 */
+type RunUsage = {
+  source: 'dsh_headless' | 'codex_exec'
+  input_tokens: number
+  output_tokens: number
+  cached_input_tokens?: number
+  cache_write_input_tokens?: number
+  reasoning_output_tokens?: number
+  total_tokens?: number
 }
 
 /** 设备交接的 Hub 元数据，size 为内容字节数，sha256 为内容摘要。 */

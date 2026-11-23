@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
+	"github.com/baiyucraft/agent-muster/internal/runreport"
 )
 
 func TestTaskControlStopsAndResumesClaimedRun(t *testing.T) {
@@ -66,6 +67,9 @@ func TestTaskControlStopsAndResumesClaimedRun(t *testing.T) {
 		}
 		if !run.ControlSupported {
 			t.Fatal("Control capability missing from claimed run")
+		}
+		if !run.DiagnosticsSupported {
+			t.Fatal("Diagnostics capability missing from claimed run")
 		}
 		return run
 	}
@@ -144,10 +148,22 @@ func TestTaskControlStopsAndResumesClaimedRun(t *testing.T) {
 		}
 	}
 	do("PUT", runPath+"/events/2", device.Token, workspace.RunEvent{Kind: "stopped"}, 400, nil)
+	do("PUT", runPath+"/events/2", device.Token, map[string]any{
+		"kind": "stopped", "generation": run.Generation, "lease": run.Lease,
+		"diagnostics": map[string]any{"usage": map[string]any{"source": "dsh_headless", "input_tokens": 0}},
+	}, 400, nil)
+	exitCode := uint32(0)
+	report := &runreport.Diagnostics{ExitCode: &exitCode, Usage: &runreport.Usage{Source: runreport.DSHHeadless}}
 	for range 2 {
 		do("PUT", runPath+"/events/2", device.Token, workspace.RunEvent{
-			Kind: "stopped", SessionID: nativeSession, Generation: run.Generation, Lease: run.Lease,
+			Kind: "stopped", SessionID: nativeSession, Generation: run.Generation, Lease: run.Lease, Diagnostics: report,
 		}, 204, nil)
+	}
+	var detail workspace.Detail
+	do("GET", "tasks/"+run.TaskID, testAdmin, nil, 200, &detail)
+	if len(detail.Runs) != 1 || detail.Runs[0].Diagnostics == nil || detail.Runs[0].Diagnostics.ExitCode == nil ||
+		*detail.Runs[0].Diagnostics.ExitCode != exitCode || detail.Runs[0].Diagnostics.Usage == nil {
+		t.Fatalf("Missing stopped run diagnostics: %+v", detail.Runs)
 	}
 	do("POST", controlPath, testAdmin, stop, 200, &task)
 	if task.Status != "paused" {

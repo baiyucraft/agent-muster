@@ -12,13 +12,16 @@ func TestReadCodexCapturesThreadAndCompletedFinal(t *testing.T) {
 		"{\"type\":\"thread.started\",\"thread_id\":\"550e8400-e29b-41d4-a716-446655440000\"}\n"+
 			"{\"type\":\"turn.started\",\"turn_id\":\"turn-1\"}\n"+
 			"{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"done\"}}\n"+
-			"{\"type\":\"turn.completed\"}\n",
+			"{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":20,\"output_tokens\":3}}\n",
 	), "", func(id string) error {
 		stored = id
 		return nil
 	})
 	if err != nil || result.SessionID != "550e8400-e29b-41d4-a716-446655440000" || result.Final != "done" || !result.Completed || stored != result.SessionID {
 		t.Fatalf("result=%#v stored=%q err=%v", result, stored, err)
+	}
+	if result.Usage == nil || result.Usage.InputTokens != 20 || result.Usage.OutputTokens != 3 {
+		t.Fatalf("用量 = %+v", result.Usage)
 	}
 }
 
