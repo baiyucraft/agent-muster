@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/baiyucraft/agent-muster/internal/hub/im"
 	"github.com/baiyucraft/agent-muster/internal/hub/registry"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,9 +28,13 @@ var createM1TransferTables string
 //go:embed migrations/008_approvals.sql
 var createApprovalTables string
 
-// InventoryStore 使用 PostgreSQL 保存单次配对与设备清单。
+//go:embed migrations/009_approval_notifications.sql
+var createApprovalNotificationTables string
+
+// InventoryStore 使用 PostgreSQL 保存设备与工作区记录。
 type InventoryStore struct {
-	pool *pgxpool.Pool
+	pool      *pgxpool.Pool
+	recipient im.Recipient
 }
 
 // OpenInventory 打开连接池，并在短事务中初始化注册表。
@@ -65,7 +70,10 @@ func OpenInventory(ctx context.Context, databaseURL string) (*InventoryStore, er
 		if err := migrateDeviceUpdates(ctx, tx); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, createApprovalTables, pgx.QueryExecModeSimpleProtocol)
+		if _, err := tx.Exec(ctx, createApprovalTables, pgx.QueryExecModeSimpleProtocol); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, createApprovalNotificationTables, pgx.QueryExecModeSimpleProtocol)
 		return err
 	})
 	if err != nil {

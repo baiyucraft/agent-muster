@@ -4,7 +4,9 @@ go 1.26.0
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.13.0
+	github.com/larksuite/oapi-sdk-go/v3 v3.13.0
 	github.com/pion/ice/v4 v4.4.9
 	github.com/pion/stun/v4 v4.0.1
 	github.com/pion/webrtc/v4 v4.2.27
@@ -14,7 +16,8 @@ require (
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/google/uuid v1.6.0 // indirect
+	github.com/gogo/protobuf v1.3.2 // indirect
+	github.com/gorilla/websocket v1.5.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.3 // indirect

@@ -2,15 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
+	"github.com/baiyucraft/agent-muster/internal/hub/feishu"
 	"github.com/baiyucraft/agent-muster/internal/hub/httpapi"
+	"github.com/baiyucraft/agent-muster/internal/hub/im"
 	"github.com/baiyucraft/agent-muster/internal/hub/postgres"
 	"github.com/baiyucraft/agent-muster/internal/hub/registry"
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
@@ -28,13 +33,20 @@ func main() {
 		fmt.Println("muster-hub dev")
 		return
 	}
+	if err := serve(*address, *webDir); err != nil {
+		log.Fatal(err)
+	}
+}
 
+func serve(address, webDir string) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	var web http.Handler
-	if *webDir != "" {
-		files := os.DirFS(*webDir)
+	if webDir != "" {
+		files := os.DirFS(webDir)
 		index, err := files.Open("index.html")
 		if err != nil {
-			log.Fatal("无法读取 Web 构建产物 index.html")
+			return errors.New("无法读取 Web 构建产物 index.html")
 		}
 		index.Close()
 		web = http.FileServerFS(files)
@@ -42,30 +54,44 @@ func main() {
 
 	var store registry.Store
 	var workStore workspace.Store
+	var imStore im.Store
 	databaseURL := os.Getenv("MUSTER_DATABASE_URL")
 	adminToken := os.Getenv("MUSTER_ADMIN_TOKEN")
 	pluginToken := os.Getenv("MUSTER_DSH_PLUGIN_TOKEN")
 	if pluginToken != "" && (!httpapi.ValidAdminToken(pluginToken) || pluginToken == adminToken || databaseURL == "") {
-		log.Fatal("启用工作台需要数据库连接和独立的 MUSTER_DSH_PLUGIN_TOKEN")
+		return errors.New("启用工作台需要数据库连接和独立的 MUSTER_DSH_PLUGIN_TOKEN")
+	}
+	recipient, feishuSecret, err := feishuConfig(pluginToken != "")
+	if err != nil {
+		return err
 	}
 	if databaseURL != "" || adminToken != "" {
 		if databaseURL == "" || !httpapi.ValidAdminToken(adminToken) {
-			log.Fatal("启用设备登记需要 MUSTER_DATABASE_URL 和有效的 MUSTER_ADMIN_TOKEN")
+			return errors.New("启用设备登记需要 MUSTER_DATABASE_URL 和有效的 MUSTER_ADMIN_TOKEN")
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		database, err := postgres.OpenInventory(ctx, databaseURL)
+		initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		database, err := postgres.OpenInventory(initCtx, databaseURL)
 		cancel()
 		if err != nil {
-			log.Fatalf("无法连接或初始化设备登记数据库，请核对连接配置、网络与建表权限 (%T)", err)
+			return fmt.Errorf("无法连接或初始化设备登记数据库，请核对连接配置、网络与建表权限 (%T)", err)
 		}
 		defer database.Close()
 		store = database
 		workStore = database
+		if feishuSecret != "" {
+			setup, finish := context.WithTimeout(ctx, 10*time.Second)
+			err := database.EnableApprovalNotifications(setup, recipient)
+			finish()
+			if err != nil {
+				return fmt.Errorf("无法初始化飞书请示通知 (%T)", err)
+			}
+			imStore = database
+		}
 	}
 
-	listener, err := net.Listen("tcp", *address)
+	listener, err := net.Listen("tcp", address)
 	if err != nil {
-		log.Fatalf("监听 HTTP 地址失败: %v", err)
+		return fmt.Errorf("监听 HTTP 地址失败: %w", err)
 	}
 	server := &http.Server{
 		Handler: httpapi.NewHandler(store, adminToken, web, httpapi.WorkspaceOptions{
@@ -76,6 +102,50 @@ func main() {
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+	if imStore != nil {
+		notifications, cancel := context.WithCancel(ctx)
+		workerDone := make(chan struct{})
+		go func() {
+			defer close(workerDone)
+			im.Run(notifications, imStore, recipient, feishu.New(recipient.AppID, feishuSecret))
+		}()
+		defer func() {
+			cancel()
+			<-workerDone
+		}()
+	}
 	log.Printf("muster-hub 正在监听 http://%s", listener.Addr())
-	log.Fatal(server.Serve(listener))
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if server.Shutdown(shutdown) != nil {
+			server.Close()
+		}
+	}()
+	err = server.Serve(listener)
+	stop()
+	<-stopped
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+// feishuConfig 读取允许发起和答复请示的固定私聊绑定。三项均空时停用渠道。
+func feishuConfig(workspaceEnabled bool) (im.Recipient, string, error) {
+	recipient := im.Recipient{
+		AppID:  os.Getenv("MUSTER_FEISHU_APP_ID"),
+		OpenID: os.Getenv("MUSTER_FEISHU_OPEN_ID"),
+	}
+	secret := os.Getenv("MUSTER_FEISHU_APP_SECRET")
+	if recipient.AppID == "" && recipient.OpenID == "" && secret == "" {
+		return recipient, "", nil
+	}
+	if !workspaceEnabled || recipient.AppID == "" || recipient.OpenID == "" || secret == "" {
+		return im.Recipient{}, "", errors.New("启用飞书请示需要工作台及完整的 MUSTER_FEISHU_APP_ID、MUSTER_FEISHU_APP_SECRET、MUSTER_FEISHU_OPEN_ID")
+	}
+	return recipient, secret, nil
 }

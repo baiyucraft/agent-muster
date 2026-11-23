@@ -234,7 +234,7 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 			if legacy {
 				return workspace.ErrConflict
 			}
-			if err := recordApproval(ctx, tx, run, id, sessionID, *event.Approval); err != nil {
+			if err := store.recordApproval(ctx, tx, run, id, sessionID, *event.Approval); err != nil {
 				return err
 			}
 		case "waiting":
