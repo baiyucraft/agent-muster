@@ -27,8 +27,20 @@ type workspaceRequest func(method, path, token string, payload any, want int, ou
 const testAdmin = "m0-integration-admin-token-separate"
 const testPlugin = "m0-integration-plugin-token-separate"
 
-// The integration DSN points to a test database. Each invocation uses a fresh schema.
 func openWorkspaceFixture(t *testing.T) (context.Context, *pgx.Conn, string, *httptest.Server, workspaceRequest) {
+	t.Helper()
+	ctx, conn, schema, address := newWorkspaceTestSchema(t)
+	database, err := postgres.OpenInventory(ctx, address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(database.Close)
+	server, do := serveWorkspaceFixture(t, ctx, database)
+	return ctx, conn, schema, server, do
+}
+
+// newWorkspaceTestSchema 为每个用例创建独立 schema，返回供 Hub 重连的临时数据库地址。
+func newWorkspaceTestSchema(t *testing.T) (context.Context, *pgx.Conn, string, string) {
 	t.Helper()
 	dsn := os.Getenv("MUSTER_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -53,12 +65,11 @@ func openWorkspaceFixture(t *testing.T) (context.Context, *pgx.Conn, string, *ht
 	query := address.Query()
 	query.Set("search_path", strings.Trim(schema, `"`))
 	address.RawQuery = query.Encode()
-	database, err := postgres.OpenInventory(ctx, address.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(database.Close)
+	return ctx, conn, schema, address.String()
+}
 
+func serveWorkspaceFixture(t *testing.T, ctx context.Context, database *postgres.InventoryStore) (*httptest.Server, workspaceRequest) {
+	t.Helper()
 	server := httptest.NewServer(NewHandler(database, testAdmin, nil, WorkspaceOptions{Store: database, PluginToken: testPlugin}))
 	t.Cleanup(server.Close)
 	do := func(method, path, token string, payload any, want int, output any) {
@@ -94,7 +105,7 @@ func openWorkspaceFixture(t *testing.T) (context.Context, *pgx.Conn, string, *ht
 			}
 		}
 	}
-	return ctx, conn, schema, server, do
+	return server, do
 }
 
 func TestWorkspaceRecovery(t *testing.T) {
