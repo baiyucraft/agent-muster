@@ -330,6 +330,7 @@ type Completion struct {
 // Store 定义工作区快照、任务执行、设备协作和中心插件投递的持久化操作。
 type Store interface {
 	Workspace(context.Context) (Snapshot, error)
+	DeviceUsage(context.Context) (DeviceUsage, error)
 	WorkspaceEvents(context.Context, int64) ([]int64, error)
 	TaskDetail(context.Context, string) (Detail, error)
 	ControlTask(context.Context, string, TaskControl) (Task, error)

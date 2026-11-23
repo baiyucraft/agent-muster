@@ -110,7 +110,7 @@ type RunDiagnostics = {
 }
 
 /** CLI 为本轮执行报告的 Token 计数。可选字段的统计口径由来源决定。 */
-type RunUsage = {
+export type RunUsage = {
   source: 'dsh_headless' | 'codex_exec'
   input_tokens: number
   output_tokens: number

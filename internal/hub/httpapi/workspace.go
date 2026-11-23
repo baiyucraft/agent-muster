@@ -59,6 +59,7 @@ func (s server) registerWorkspace(mux *http.ServeMux, options WorkspaceOptions, 
 		mux.HandleFunc(pattern, available(s.device(handler)))
 	}
 	admin("GET /api/v1/workspace", api.snapshot)
+	admin("GET /api/v1/workspace/usage", api.deviceUsage)
 	admin("GET /api/v1/tasks/{id}", api.task)
 	admin("POST /api/v1/tasks/{id}/control", api.controlTask)
 	admin("GET /api/v1/events", api.events)
@@ -110,6 +111,11 @@ func (api workspaceAPI) plugin(next http.HandlerFunc) http.HandlerFunc {
 
 func (api workspaceAPI) snapshot(w http.ResponseWriter, r *http.Request) {
 	value, err := api.store.Workspace(r.Context())
+	workspaceJSON(w, http.StatusOK, value, err)
+}
+
+func (api workspaceAPI) deviceUsage(w http.ResponseWriter, r *http.Request) {
+	value, err := api.store.DeviceUsage(r.Context())
 	workspaceJSON(w, http.StatusOK, value, err)
 }
 

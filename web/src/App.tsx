@@ -5,6 +5,7 @@ import { answerApproval, approvalAnswerBytes, controlTask, messageBytes, newID, 
 import { DeviceInventory } from './features/devices/DeviceInventory'
 import type { ApprovalActions } from './features/workspace/ApprovalCard'
 import { Conversation } from './features/workspace/Conversation'
+import { DeviceUsage } from './features/workspace/DeviceUsage'
 import { Projects } from './features/workspace/Projects'
 import { TaskBoard } from './features/workspace/TaskBoard'
 import type { TaskControlActions } from './features/workspace/TaskControls'
@@ -16,6 +17,7 @@ const views = [
   { id: 'board', label: '看板' },
   { id: 'devices', label: '设备' },
   { id: 'projects', label: '项目' },
+  { id: 'usage', label: '用量' },
 ] as const
 
 type View = typeof views[number]['id']
@@ -208,7 +210,7 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
       </header>
 
       <main className="workspace-content" id="workspace-content">
-        {route.view !== 'devices' && error && <p className="read-error" role="status">{error}{workspace && ' 当前显示上次读取的状态。'}</p>}
+        {route.view !== 'devices' && route.view !== 'usage' && error && <p className="read-error" role="status">{error}{workspace && ' 当前显示上次读取的状态。'}</p>}
         {route.view === 'devices' && <DeviceInventory token={token} onLock={onLock} />}
         {route.view === 'conversation' && (
           <Conversation
@@ -228,6 +230,7 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
         )}
         {route.view === 'board' && <TaskBoard token={token} tasks={workspace?.tasks} approvals={workspace?.approvals ?? []} approvalActions={approvalActions} taskControlActions={taskControlActions} cursor={workspace?.cursor} taskID={route.taskID} onFollow={attachTask} onLock={onLock} />}
         {route.view === 'projects' && <Projects token={token} workspace={workspace} onSaved={refresh} onLock={onLock} />}
+        {route.view === 'usage' && <DeviceUsage token={token} onLock={onLock} />}
       </main>
     </div>
   )
