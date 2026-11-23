@@ -86,9 +86,15 @@ export function nativeOutcome(agent: Agent, delivery: Delivery): Outcome | undef
   const events = agent.session.snapshotEvents()
   const turns = deliveryTurns(events, delivery.id)
   const completed = turns.findLast(turn => turn.completed)
+  const hasProposal = delivery.kind === 'message' && Boolean(delivery.binding_proposal)
   if (completed?.end !== undefined && (delivery.kind === 'message' || completed.text.trim())) {
     const usage = centerTurnUsage(events.slice(completed.start, completed.end + 1))
-    return { text: boundedReply(completed.text), status: 'handled', ...(usage && { usage }) }
+    const text = hasProposal ? '' : completed.text
+    return { text: boundedReply(text), status: 'handled', ...(usage && { usage }) }
+  }
+  // 提案由 Hub 先落账。工具回包或本机轮次丢失时，沿用已持久化的卡片。
+  if (hasProposal) {
+    return { text: '', status: 'handled' }
   }
   if (turns.some(turn => turn.attempt === delivery.attempt)) {
     return {
@@ -142,11 +148,14 @@ export function deliver(agent: Agent, delivery: Delivery): void {
 
   const previous = deliveryTurns(agent.session.snapshotEvents(), delivery.id)
   const continuation = delivery.kind === 'message' && previous.length > 0
+  const capabilities: string[] = []
+  if (delivery.plan_supported === true) capabilities.push('支持分组派发')
+  if (delivery.binding_proposals_supported === true) capabilities.push('支持项目绑定提案')
   const userRequest = delivery.task_id && delivery.kind === 'message' ? [
     '用户提交了与以下任务关联的消息。若用户明确要求继续执行，续接工具必须使用这个任务 ID。',
     JSON.stringify({ task_id: delivery.task_id, text: delivery.text }),
-  ].join('\n') : delivery.kind === 'message' && delivery.plan_supported === true ? [
-    '当前 Hub 支持分组派发。以下 JSON 中的 text 是用户请求。',
+  ].join('\n') : delivery.kind === 'message' && capabilities.length ? [
+    `当前 Hub ${capabilities.join('、')}。以下 JSON 中的 text 是用户请求。`,
     JSON.stringify({ text: delivery.text }),
   ].join('\n') : delivery.text
   const text = delivery.kind === 'message' && !continuation ? userRequest : delivery.kind === 'message' ? [

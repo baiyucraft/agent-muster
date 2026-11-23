@@ -63,6 +63,10 @@ func (store *InventoryStore) Workspace(ctx context.Context) (snapshot workspace.
 		if err != nil {
 			return err
 		}
+		snapshot.BindingProposals, err = selectRows(ctx, tx, "SELECT "+proposalColumns+" FROM muster_binding_proposals ORDER BY created_at,id", scanBindingProposal)
+		if err != nil {
+			return err
+		}
 		snapshot.Tasks, err = selectRows(ctx, tx, "SELECT "+taskColumns+" FROM muster_tasks t ORDER BY t.updated_at DESC,t.id", scanTask)
 		if err != nil {
 			return err
@@ -251,74 +255,79 @@ func (store *InventoryStore) SaveProject(ctx context.Context, project workspace.
 		project.GitPolicy = &policy
 	}
 	err := store.writeWorkspace(ctx, func(tx pgx.Tx) error {
-		if len(project.Bindings) == 0 {
-			if project.AgentKind == "" {
-				project.AgentKind = "dsh"
-			}
-			project.Bindings = []workspace.Binding{{
-				ID: project.ID, DeviceID: project.DeviceID, DirectoryID: project.DirectoryID,
-				AgentKind: project.AgentKind, IsDefault: true,
-			}}
-		}
-		seen := make(map[string]bool, len(project.Bindings))
-		var selected workspace.Binding
-		for _, binding := range project.Bindings {
-			if seen[binding.ID] || (binding.AgentKind != "dsh" && binding.AgentKind != "codex") {
-				return workspace.ErrConflict
-			}
-			seen[binding.ID] = true
-			err := tx.QueryRow(ctx, `SELECT d.label FROM muster_directories d JOIN muster_devices v USING (device_id)
-				WHERE d.device_id=$1 AND d.directory_id=$2 AND v.revoked_at IS NULL FOR SHARE OF v`,
-				binding.DeviceID, binding.DirectoryID).Scan(&binding.DirectoryLabel)
-			if err != nil {
-				return notFound(err)
-			}
-			if binding.IsDefault {
-				if selected.ID != "" {
-					return workspace.ErrConflict
-				}
-				selected = binding
-			}
-		}
-		if selected.ID == "" {
-			return workspace.ErrConflict
-		}
-		project.DeviceID, project.DirectoryID, project.DirectoryLabel, project.AgentKind =
-			selected.DeviceID, selected.DirectoryID, selected.DirectoryLabel, selected.AgentKind
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO muster_projects (id,name,device_id,directory_id,directory_label,agent_kind) VALUES ($1,$2,$3,$4,$5,$6)
-			ON CONFLICT (id) DO UPDATE SET (name,device_id,directory_id,directory_label,agent_kind) =
-				(EXCLUDED.name,EXCLUDED.device_id,EXCLUDED.directory_id,EXCLUDED.directory_label,EXCLUDED.agent_kind)`,
-			project.ID, project.Name, project.DeviceID, project.DirectoryID, project.DirectoryLabel, project.AgentKind); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, "UPDATE muster_project_bindings SET is_default=false WHERE project_id=$1 AND is_default", project.ID); err != nil {
-			return err
-		}
-		if err := saveProjectPolicy(ctx, tx, &project); err != nil {
-			return err
-		}
-		for _, binding := range project.Bindings {
-			tag, err := tx.Exec(ctx, `INSERT INTO muster_project_bindings (id,project_id,device_id,directory_id,agent_kind,is_default)
-				VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO UPDATE SET
-					(device_id,directory_id,agent_kind,is_default)=(EXCLUDED.device_id,EXCLUDED.directory_id,EXCLUDED.agent_kind,EXCLUDED.is_default)
-				WHERE muster_project_bindings.project_id=EXCLUDED.project_id`, binding.ID, project.ID, binding.DeviceID,
-				binding.DirectoryID, binding.AgentKind, binding.IsDefault)
-			if err != nil {
-				return err
-			}
-			if tag.RowsAffected() == 0 {
-				return workspace.ErrConflict
-			}
-		}
-		var err error
-		project.Bindings, err = projectBindings(ctx, tx, project.ID)
-		if err != nil {
+		if err := saveProject(ctx, tx, &project); err != nil {
 			return err
 		}
 		return advanceWorkspace(ctx, tx)
 	})
 	return project, err
+}
+
+// saveProject 保存当前事务中的默认绑定和规则，由调用方发布工作区游标。
+func saveProject(ctx context.Context, tx pgx.Tx, project *workspace.Project) error {
+	if len(project.Bindings) == 0 {
+		if project.AgentKind == "" {
+			project.AgentKind = "dsh"
+		}
+		project.Bindings = []workspace.Binding{{
+			ID: project.ID, DeviceID: project.DeviceID, DirectoryID: project.DirectoryID,
+			AgentKind: project.AgentKind, IsDefault: true,
+		}}
+	}
+	seen := make(map[string]bool, len(project.Bindings))
+	var selected workspace.Binding
+	for _, binding := range project.Bindings {
+		if seen[binding.ID] || (binding.AgentKind != "dsh" && binding.AgentKind != "codex") {
+			return workspace.ErrConflict
+		}
+		seen[binding.ID] = true
+		err := tx.QueryRow(ctx, `SELECT d.label FROM muster_directories d JOIN muster_devices v USING (device_id)
+				WHERE d.device_id=$1 AND d.directory_id=$2 AND v.revoked_at IS NULL FOR SHARE OF v`,
+			binding.DeviceID, binding.DirectoryID).Scan(&binding.DirectoryLabel)
+		if err != nil {
+			return notFound(err)
+		}
+		if binding.IsDefault {
+			if selected.ID != "" {
+				return workspace.ErrConflict
+			}
+			selected = binding
+		}
+	}
+	if selected.ID == "" {
+		return workspace.ErrConflict
+	}
+	project.DeviceID, project.DirectoryID, project.DirectoryLabel, project.AgentKind =
+		selected.DeviceID, selected.DirectoryID, selected.DirectoryLabel, selected.AgentKind
+	if _, err := tx.Exec(ctx, `
+			INSERT INTO muster_projects (id,name,device_id,directory_id,directory_label,agent_kind) VALUES ($1,$2,$3,$4,$5,$6)
+			ON CONFLICT (id) DO UPDATE SET (name,device_id,directory_id,directory_label,agent_kind) =
+				(EXCLUDED.name,EXCLUDED.device_id,EXCLUDED.directory_id,EXCLUDED.directory_label,EXCLUDED.agent_kind)`,
+		project.ID, project.Name, project.DeviceID, project.DirectoryID, project.DirectoryLabel, project.AgentKind); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, "UPDATE muster_project_bindings SET is_default=false WHERE project_id=$1 AND is_default", project.ID); err != nil {
+		return err
+	}
+	if err := saveProjectPolicy(ctx, tx, project); err != nil {
+		return err
+	}
+	for _, binding := range project.Bindings {
+		tag, err := tx.Exec(ctx, `INSERT INTO muster_project_bindings (id,project_id,device_id,directory_id,agent_kind,is_default)
+				VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO UPDATE SET
+					(device_id,directory_id,agent_kind,is_default)=(EXCLUDED.device_id,EXCLUDED.directory_id,EXCLUDED.agent_kind,EXCLUDED.is_default)
+				WHERE muster_project_bindings.project_id=EXCLUDED.project_id`, binding.ID, project.ID, binding.DeviceID,
+			binding.DirectoryID, binding.AgentKind, binding.IsDefault)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return workspace.ErrConflict
+		}
+	}
+	var err error
+	project.Bindings, err = projectBindings(ctx, tx, project.ID)
+	return err
 }
 
 // saveProjectPolicy 沿用工作区写入锁，使规则版本与绑定和事件游标一起提交。

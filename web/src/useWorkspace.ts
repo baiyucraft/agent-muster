@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AdminTokenError, HubRequestError } from './api/devices'
-import { latestApproval, readWorkspace, waitForWorkspaceEvent, type Approval, type Message, type Workspace } from './api/workspace'
+import { latestApproval, readWorkspace, waitForWorkspaceEvent, type Approval, type BindingProposal, type Message, type Workspace } from './api/workspace'
 
 /**
  * 将请求失败转换为界面可展示的说明。
@@ -59,6 +59,13 @@ export function useWorkspace(token: string, onLock: (reason: string) => void) {
     })
     refresh()
   }, [refresh])
+  const acceptBindingProposal = useCallback((proposal: BindingProposal) => {
+    setWorkspace((current) => current && {
+      ...current,
+      binding_proposals: current.binding_proposals.map((item) => item.id === proposal.id ? proposal : item),
+    })
+    refresh()
+  }, [refresh])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -72,12 +79,16 @@ export function useWorkspace(token: string, onLock: (reason: string) => void) {
             const snapshot = await readWorkspace(token, signal)
             if (signal.aborted) return
             setWorkspace((current) => {
-              if (!current?.approvals.length || !snapshot.approvals.length) return snapshot
-              // 快照请求可能先于答复提交发出，保留已经从 Hub 确认的新状态。
-              const confirmed = new Map(current.approvals.map((approval) => [approval.id, approval]))
+              if (!current) return snapshot
+              // 快照请求可能先于决定提交发出，保留已经从 Hub 确认的新状态。
+              const approvals = new Map(current.approvals.map((approval) => [approval.id, approval]))
+              const decidedProposals = new Map(current.binding_proposals.filter((proposal) => proposal.status !== 'pending').map((proposal) => [proposal.id, proposal]))
               return {
                 ...snapshot,
-                approvals: snapshot.approvals.map((approval) => latestApproval(approval, confirmed.get(approval.id))),
+                approvals: snapshot.approvals.map((approval) => latestApproval(approval, approvals.get(approval.id))),
+                binding_proposals: snapshot.binding_proposals.map((proposal) => proposal.status === 'pending'
+                  ? decidedProposals.get(proposal.id) ?? proposal
+                  : proposal),
               }
             })
             cursor = snapshot.cursor
@@ -105,5 +116,5 @@ export function useWorkspace(token: string, onLock: (reason: string) => void) {
     return () => controller.abort()
   }, [token, onLock, revision])
 
-  return { workspace, streamState, error, refresh, acceptMessage, acceptApproval }
+  return { workspace, streamState, error, refresh, acceptMessage, acceptApproval, acceptBindingProposal }
 }

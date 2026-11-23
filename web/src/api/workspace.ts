@@ -3,7 +3,7 @@ import { request } from './devices'
 /** 主对话中的消息，可能关联任务及中心 Agent 的处理状态。 */
 export type Message = {
   id: string
-  kind: 'user' | 'reply' | 'report' | 'approval'
+  kind: 'user' | 'reply' | 'report' | 'approval' | 'binding_proposal'
   text: string
   task_id?: string
   status?: 'accepted' | 'handled' | 'interrupted'
@@ -217,8 +217,34 @@ export function latestApproval(candidate: Approval, known?: Approval): Approval 
   return known && approvalStage[known.status] > approvalStage[candidate.status] ? known : candidate
 }
 
+/** 管理员可对待确认的项目绑定提案作出的决定。 */
+export type BindingProposalDecision = 'accepted' | 'rejected'
+
+/** 中心在独立对话消息中展示的项目绑定提案，决定由 Hub 持久保存。 */
+export type BindingProposal = {
+  /** 与独立提案消息使用同一 ID。 */
+  id: string
+  /** 触发本提案的用户消息 ID。 */
+  message_id: string
+  name: string
+  bindings: Array<Omit<ProjectBinding, 'id'> & { device_name: string }>
+  status: 'pending' | BindingProposalDecision
+  /** 接受提案后创建的项目 ID。 */
+  project_id?: string
+  created_at: string
+  decided_at?: string
+}
+
 /** 主对话和看板的同一版本快照，cursor 用于后续 SSE 订阅。 */
-export type Workspace = { cursor: number; messages: Message[]; tasks: Task[]; projects: Project[]; directories: Directory[]; approvals: Approval[] }
+export type Workspace = {
+  cursor: number
+  messages: Message[]
+  tasks: Task[]
+  projects: Project[]
+  directories: Directory[]
+  approvals: Approval[]
+  binding_proposals: BindingProposal[]
+}
 /** 任务详情快照，包含执行、输入、子任务、依赖、交接记录和设备产物。 */
 export type TaskDetail = {
   task: Task
@@ -264,7 +290,7 @@ export async function readWorkspace(token: string, signal: AbortSignal): Promise
   if (!Number.isSafeInteger(snapshot.cursor)) throw new Error('Hub 返回了无效的更新游标。')
   return {
     ...snapshot, messages: snapshot.messages ?? [], tasks: snapshot.tasks ?? [], projects: snapshot.projects ?? [],
-    directories: snapshot.directories ?? [], approvals: snapshot.approvals ?? [],
+    directories: snapshot.directories ?? [], approvals: snapshot.approvals ?? [], binding_proposals: snapshot.binding_proposals ?? [],
   }
 }
 
@@ -335,6 +361,25 @@ export async function answerApproval(token: string, id: string, answer: string, 
     body: JSON.stringify({ answer }),
   })
   return (await response.json()) as Approval
+}
+
+/**
+ * 用管理员会话提交项目绑定提案的决定。
+ * @param token 当前管理员会话的令牌。
+ * @param id 独立提案的 ID。
+ * @param decision 管理员选择接受或拒绝。
+ * @param signal 停止等待 HTTP 响应。
+ * @returns Hub 已保存的提案及决定。接受后携带创建的项目 ID。
+ * @throws 提案被其他决定处理或绑定已不可用时返回冲突。
+ */
+export async function decideBindingProposal(token: string, id: string, decision: BindingProposalDecision, signal: AbortSignal): Promise<BindingProposal> {
+  const response = await request(token, `/api/v1/binding-proposals/${encodeURIComponent(id)}/decision`, {
+    signal,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision }),
+  })
+  return (await response.json()) as BindingProposal
 }
 
 /**

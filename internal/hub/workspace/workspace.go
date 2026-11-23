@@ -206,12 +206,13 @@ type Approval struct {
 
 // Snapshot 是工作区在同一事件游标位置上的对话、任务、项目和目录快照。
 type Snapshot struct {
-	Cursor      int64       `json:"cursor"`
-	Messages    []Message   `json:"messages"`
-	Tasks       []Task      `json:"tasks"`
-	Projects    []Project   `json:"projects"`
-	Directories []Directory `json:"directories"`
-	Approvals   []Approval  `json:"approvals"`
+	Cursor           int64             `json:"cursor"`
+	Messages         []Message         `json:"messages"`
+	Tasks            []Task            `json:"tasks"`
+	Projects         []Project         `json:"projects"`
+	Directories      []Directory       `json:"directories"`
+	Approvals        []Approval        `json:"approvals"`
+	BindingProposals []BindingProposal `json:"binding_proposals"`
 }
 
 // Detail 汇集单项任务的运行记录、子任务、依赖、输入和投递。
@@ -285,6 +286,10 @@ type Delivery struct {
 	UsageSupported bool `json:"usage_supported,omitempty"`
 	// PlanSupported 表示当前 Hub 支持在一次派发中保存带依赖的任务组。
 	PlanSupported bool `json:"plan_supported,omitempty"`
+	// BindingProposalsSupported 表示当前 Hub 可登记待管理员确认的新建项目提案。
+	BindingProposalsSupported bool `json:"binding_proposals_supported,omitempty"`
+	// BindingProposal 恢复当前消息此前已登记的提案和决定。
+	BindingProposal *BindingProposal `json:"binding_proposal,omitempty"`
 }
 
 // Dispatch 表示中心插件依据消息租约创建任务或追加运行的请求。
@@ -385,6 +390,9 @@ type Store interface {
 	ControlTask(context.Context, string, TaskControl) (Task, error)
 	SaveProject(context.Context, Project) (Project, error)
 	Projects(context.Context) ([]Project, error)
+	BindingCandidates(context.Context) ([]BindingCandidate, error)
+	ProposeBinding(context.Context, string, BindingProposalInput) (BindingProposal, error)
+	DecideBinding(context.Context, string, string) (BindingProposal, error)
 	SubmitMessage(context.Context, Message) (Message, error)
 	AnswerApproval(context.Context, string, string) (Approval, error)
 	ReplaceDirectories(context.Context, string, [32]byte, []Directory) error

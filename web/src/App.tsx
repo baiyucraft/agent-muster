@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import musterIcon from '../../ui/muster-icon.svg'
 import { AdminTokenError, HubRequestError } from './api/devices'
-import { answerApproval, approvalAnswerBytes, controlTask, messageBytes, newID, sendMessage, withinTextLimit, type Task, type TaskControlRequest } from './api/workspace'
+import { answerApproval, approvalAnswerBytes, controlTask, decideBindingProposal, messageBytes, newID, sendMessage, withinTextLimit, type Task, type TaskControlRequest } from './api/workspace'
 import { DeviceInventory } from './features/devices/DeviceInventory'
 import type { ApprovalActions } from './features/workspace/ApprovalCard'
+import type { SubmitBindingDecision } from './features/workspace/BindingProposalCard'
 import { Conversation } from './features/workspace/Conversation'
 import { DeviceUsage } from './features/workspace/DeviceUsage'
 import { Projects } from './features/workspace/Projects'
@@ -69,7 +70,7 @@ export function App() {
 }
 
 function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: string) => void }) {
-  const { workspace, streamState, error, refresh, acceptMessage, acceptApproval } = useWorkspace(token, onLock)
+  const { workspace, streamState, error, refresh, acceptMessage, acceptApproval, acceptBindingProposal } = useWorkspace(token, onLock)
   const [route, setRoute] = useState(readRoute)
   const [draft, setDraft] = useState('')
   const [followTask, setFollowTask] = useState<Task>()
@@ -158,6 +159,21 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
     }
   }
 
+  const submitBindingDecision: SubmitBindingDecision = async (id, decision, signal) => {
+    try {
+      const proposal = await decideBindingProposal(token, id, decision, signal)
+      if (!signal.aborted) acceptBindingProposal(proposal)
+    } catch (failure) {
+      if (signal.aborted) return
+      if (failure instanceof AdminTokenError) {
+        onLock(failure.message)
+        return
+      }
+      if (failure instanceof HubRequestError && failure.status === 409) refresh()
+      throw failure
+    }
+  }
+
   async function submitTaskControl(id: string, input: TaskControlRequest) {
     const requests = taskControlRequests.current
     if (requests.has(id)) return
@@ -218,6 +234,8 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
             tasks={workspace?.tasks ?? []}
             approvals={workspace?.approvals ?? []}
             approvalActions={approvalActions}
+            bindingProposals={workspace?.binding_proposals ?? []}
+            onBindingDecision={submitBindingDecision}
             canSend={workspace !== null && streamState !== 'unavailable'}
             draft={draft}
             followTask={followTask}

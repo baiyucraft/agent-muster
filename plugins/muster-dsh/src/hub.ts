@@ -12,6 +12,10 @@ export interface Delivery {
   usage_supported?: boolean
   /** Hub 声明当前派发接口接受包含前后依赖的任务组。 */
   plan_supported?: boolean
+  /** Hub 支持为当前用户消息查询候选和提交项目绑定提案。 */
+  binding_proposals_supported?: boolean
+  /** 重新领取时，Hub 提供这条消息已经提交的提案及审批状态。 */
+  binding_proposal?: BindingProposal
 }
 
 /** 创建或续接单项工作的输入，续接时以 task_id 指定目标。 */
@@ -44,6 +48,46 @@ export interface PlanDispatch {
 
 /** 一次投递对应一个派发操作，可提交单项工作或任务组。 */
 export type Dispatch = SingleDispatch | PlanDispatch
+
+/** 提案中的设备、已登记目录和 Agent，整组使用一个默认绑定。 */
+export interface ProposedBinding {
+  device_id: string
+  directory_id: string
+  agent_kind: 'dsh' | 'codex'
+  is_default: boolean
+}
+
+/** 中心向用户提出的项目名称和绑定选择。 */
+export interface BindingProposalInput {
+  name: string
+  bindings: ProposedBinding[]
+}
+
+/** Hub 保存的项目绑定提案，接受后可通过 project_id 查项目。 */
+export interface BindingProposal {
+  id: string
+  message_id: string
+  name: string
+  bindings: Array<ProposedBinding & { device_name?: string; directory_label?: string }>
+  status: 'pending' | 'accepted' | 'rejected'
+  project_id?: string
+  created_at: string
+  decided_at?: string
+}
+
+/** 设备最近上报的候选目录和 CLI 调用能力，供中心查询。 */
+interface BindingCandidate {
+  device_id: string
+  device_name: string
+  last_seen_at?: string
+  directories: Array<{ id: string; label: string; device_id?: string }>
+  agents: Array<{
+    id: string
+    version: string
+    status: string
+    capabilities: { prompt: boolean; final_reply: boolean; resume: boolean } | null
+  }>
+}
 
 /** dsh 对本次已完成原生轮次中所有模型请求确认的 Token 计数。 */
 export interface CenterTurnUsage {
@@ -142,6 +186,28 @@ export class Hub {
    */
   async projects(signal: AbortSignal): Promise<unknown> {
     return (await this.request('GET', 'projects', signal)).json()
+  }
+
+  /**
+   * 获取已登记设备、目录和只读 Agent 能力快照。
+   * @param signal 取消候选查询。
+   * @returns Hub 提供的候选列表，供模型匹配用户指定的目标。
+   */
+  async bindingCandidates(signal: AbortSignal): Promise<{ candidates: BindingCandidate[] }> {
+    return (await this.request('GET', 'binding-candidates', signal)).json()
+  }
+
+  /**
+   * 在同一条用户消息下提交项目绑定提案，沿用当前租约。
+   * @param delivery 当前领取的主对话投递。同一投递和相同选择可以重试。
+   * @param input 项目名称和选中的已登记绑定。
+   * @param signal 取消提交请求。
+   * @returns Hub 保存的提案及审批状态。
+   */
+  async proposeBinding(delivery: Delivery, input: BindingProposalInput, signal: AbortSignal): Promise<BindingProposal> {
+    return (await this.request('POST', this.route(delivery, 'binding-proposal'), signal, {
+      lease: delivery.lease, ...input,
+    })).json()
   }
 
   /**

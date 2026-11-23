@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { Hub } from '../dist/hub.js'
+import { apply } from '../dist/index.js'
 import { boundedReply, deliver, nativeOutcome } from '../dist/session.js'
 import { bindTools, toolAllowed } from '../dist/tools.js'
 
@@ -145,7 +146,8 @@ test('a user follow-up carries the selected task ID before and after a retry', (
 })
 
 test('the center exposes only its registered Muster tools to execution', () => {
-  for (const name of ['muster_list_projects', 'muster_dispatch', 'muster_dispatch_plan', 'muster_resume_task', 'muster_get_task']) {
+  for (const name of ['muster_list_projects', 'muster_dispatch', 'muster_dispatch_plan', 'muster_resume_task', 'muster_get_task',
+    'muster_binding_candidates', 'muster_propose_binding']) {
     assert.equal(toolAllowed(name), true)
   }
   assert.equal(toolAllowed('subagent'), false)
@@ -233,6 +235,132 @@ test('the native input advertises group dispatch only for a supported new user r
   assert.match(inputText(compatible), /支持分组派发/)
   assert.doesNotMatch(inputText({ ...compatible, kind: 'report' }), /支持分组派发/)
   assert.doesNotMatch(inputText({ ...compatible, task_id: 'task-existing' }), /支持分组派发/)
+  const proposals = { ...compatible, binding_proposals_supported: true }
+  assert.match(inputText(proposals), /支持项目绑定提案/)
+  assert.doesNotMatch(inputText(compatible), /支持项目绑定提案/)
+  assert.doesNotMatch(inputText({ ...proposals, kind: 'report' }), /支持项目绑定提案/)
+  assert.doesNotMatch(inputText({ ...proposals, task_id: 'task-existing' }), /支持项目绑定提案/)
+})
+
+const bindingFixture = {
+  name: '素材',
+  bindings: [{ device_id: 'device-a', directory_id: 'dir-a', agent_kind: 'dsh', is_default: true }],
+}
+const proposalFixture = {
+  ...bindingFixture, id: 'proposal-id', message_id: 'message-id', status: 'pending', created_at: '2026-11-23T00:00:00Z',
+}
+
+test('queries registered candidates and submits a stable leased proposal for a supported new message', async (t) => {
+  const { tools, agent } = toolAgent()
+  const signal = new AbortController().signal
+  const requests = []
+  const candidates = {
+    candidates: [{
+      device_id: 'device-a', device_name: '家里电脑', directories: [{ id: 'dir-a', label: '素材' }],
+      agents: [{ id: 'dsh', version: '0.2.1-rc.5', status: 'supported',
+        capabilities: { prompt: true, final_reply: true, resume: true } }],
+    }],
+  }
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    requests.push({ method: options.method, path: url.pathname, input: options.body && JSON.parse(options.body) })
+    return Response.json(options.method === 'GET' ? candidates : proposalFixture)
+  })
+  const hub = new Hub('http://127.0.0.1', 'test-token')
+  const supported = { ...delivery, id: 'message-id', lease: 'lease', binding_proposals_supported: true }
+  let current = supported
+  const dispose = bindTools(agent, hub, () => ({ delivery: current, signal }))
+  const query = tools.get('muster_binding_candidates').execute
+  const propose = tools.get('muster_propose_binding').execute
+  try {
+    assert.deepEqual(await query({}, { agent, signal }), candidates)
+    assert.deepEqual(await propose({ ...bindingFixture, name: ' 素材 ' }, { agent, signal }), proposalFixture)
+    assert.deepEqual(current.binding_proposal, proposalFixture)
+    assert.deepEqual(await propose(bindingFixture, { agent, signal }), proposalFixture)
+    await assert.rejects(() => tools.get('muster_dispatch').execute(
+      { project_id: 'project', title: '派发', prompt: '执行' }, { agent, signal },
+    ), /已为本条消息提交项目绑定提案/)
+
+    for (const bindings of [[], [{ ...bindingFixture.bindings[0], is_default: false }], [
+      { ...bindingFixture.bindings[0], agent_kind: 'unknown' },
+    ]]) {
+      await assert.rejects(() => propose({ ...bindingFixture, bindings }, { agent, signal }), /绑定/)
+    }
+    for (current of [delivery, { ...supported, kind: 'report' }, { ...supported, task_id: 'task-existing' }]) {
+      await assert.rejects(() => query({}, { agent, signal }), /未启用项目绑定提案/)
+      await assert.rejects(() => propose(bindingFixture, { agent, signal }), /未启用项目绑定提案/)
+    }
+    const expectedPost = {
+      method: 'POST', path: '/api/v1/plugin/deliveries/message-id/binding-proposal',
+      input: { lease: 'lease', ...bindingFixture },
+    }
+    assert.deepEqual(requests, [
+      { method: 'GET', path: '/api/v1/plugin/binding-candidates', input: undefined },
+      expectedPost, expectedPost,
+    ])
+  } finally {
+    dispose()
+  }
+})
+
+test('recovers a committed proposal after lease loss without rerunning the interrupted model turn', () => {
+  const incomplete = native([start(1), message('muster:test:1'), reply('草稿'), end(1, 'aborted')])
+  const reclaimed = { ...delivery, attempt: 2, binding_proposal: proposalFixture }
+  assert.deepEqual(nativeOutcome(incomplete, reclaimed), { text: '', status: 'handled' })
+  assert.deepEqual(nativeOutcome(incomplete, {
+    ...reclaimed, binding_proposal: { ...proposalFixture, status: 'accepted', project_id: 'project-a' },
+  }), { text: '', status: 'handled' })
+  assert.deepEqual(nativeOutcome(incomplete, {
+    ...reclaimed, binding_proposal: { ...proposalFixture, status: 'rejected' },
+  }), { text: '', status: 'handled' })
+  const complete = native([start(1), message('muster:test:1'), reply('请确认素材项目'), end(1)])
+  assert.deepEqual(nativeOutcome(complete, reclaimed), { text: '', status: 'handled' })
+  assert.equal(nativeOutcome(incomplete, { ...delivery, attempt: 2 }), undefined)
+})
+
+test('a reclaimed proposal completes even when the native session cannot be resolved', async (t) => {
+  const address = 'MUSTER_DSH_HUB_URL'
+  const token = 'MUSTER_DSH_PLUGIN_TOKEN'
+  for (const key of [address, token]) {
+    const original = process.env[key]
+    t.after(() => {
+      if (original === undefined) delete process.env[key]
+      else process.env[key] = original
+    })
+  }
+  process.env[address] = 'http://127.0.0.1'
+  process.env[token] = 'test-token'
+  let complete
+  const completion = new Promise(resolve => { complete = resolve })
+  let claimed = false
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (String(url).endsWith('/claim') && !claimed) {
+      claimed = true
+      return Response.json({ ...delivery, id: 'message-test', lease: 'current-lease', binding_proposal: proposalFixture })
+    }
+    if (String(url).endsWith('/complete')) complete(JSON.parse(options.body))
+    return new Response(null, { status: 204 })
+  })
+  let sessionOpened = false
+  let stop
+  await apply({
+    logger: { info() {}, warn() {} },
+    sessionController: { resolveAgent() {
+      sessionOpened = true
+      throw new Error('session unavailable')
+    } },
+    effect(callback) { stop = callback() },
+  })
+  let timer
+  try {
+    const result = await Promise.race([completion, new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('delivery did not complete')), 1_000)
+    })])
+    assert.deepEqual(result, { lease: 'current-lease', text: '', status: 'handled' })
+    assert.equal(sessionOpened, false)
+  } finally {
+    clearTimeout(timer)
+    await stop()
+  }
 })
 
 test('an interrupted report can be generated after re-claim', () => {

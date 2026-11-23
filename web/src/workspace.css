@@ -357,6 +357,35 @@ select {
   line-height: 1.67;
 }
 
+.binding-proposal { max-width: 600px; }
+.binding-proposal-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.binding-proposal[data-status='accepted'] .approval-status { color: var(--green); background: var(--green-bg); }
+.binding-proposal[data-status='rejected'] .approval-status { color: var(--muted); background: var(--neutral); }
+
+.binding-proposal-list { margin: 0; padding: 0; list-style: none; }
+.binding-proposal-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-2);
+  padding-block: var(--space-2);
+  border-block-start: 1px solid var(--separator);
+}
+.binding-proposal-list li:last-child { border-block-end: 1px solid var(--separator); }
+.binding-proposal-target { display: grid; gap: 3px; font-size: var(--text-small); }
+.binding-proposal-target strong { font-size: var(--text-body); font-weight: 640; }
+.binding-proposal-target span, .binding-proposal-default { color: var(--muted); }
+.binding-proposal-default { align-self: center; font-size: var(--text-small); }
+.binding-proposal-footer { display: grid; gap: var(--space-2); margin-top: 4px; }
+.binding-proposal-actions { justify-content: flex-end; }
+.binding-proposal-projects { justify-self: start; font-size: var(--text-small); }
+
 .text-link,
 .task-link { color: var(--accent); font-weight: 640; text-underline-offset: 3px; }
 .task-link { display: inline-block; max-width: 100%; margin-top: 8px; font-size: 13px; overflow-wrap: anywhere; }

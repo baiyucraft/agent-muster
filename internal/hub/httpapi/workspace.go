@@ -71,13 +71,16 @@ func (s server) registerWorkspace(mux *http.ServeMux, options WorkspaceOptions, 
 	admin("GET /api/v1/events", api.events)
 	admin("POST /api/v1/approvals/{id}/answer", api.answerApproval)
 	admin("PUT /api/v1/projects/{id}", api.saveProject)
+	admin("PUT /api/v1/binding-proposals/{id}/decision", api.decideBinding)
 	admin("POST /api/v1/conversation/messages", api.submitMessage)
 	plugin("GET /api/v1/plugin/projects", api.projects)
+	plugin("GET /api/v1/plugin/binding-candidates", api.bindingCandidates)
 	plugin("GET /api/v1/plugin/tasks/{id}", api.task)
 	plugin("POST /api/v1/plugin/deliveries/claim", api.claimDelivery)
 	plugin("PUT /api/v1/plugin/deliveries/{id}/lease", api.renew)
 	plugin("PUT /api/v1/plugin/deliveries/{id}/complete", api.complete)
 	plugin("POST /api/v1/plugin/deliveries/{id}/dispatch", api.dispatch)
+	plugin("POST /api/v1/plugin/deliveries/{id}/binding-proposal", api.proposeBinding)
 	device("PUT /api/v1/devices/{device_id}/directories", api.directories)
 	device("GET /api/v1/devices/{device_id}/run-log-requests", logs.list)
 	device("PUT /api/v1/devices/{device_id}/run-log-requests/{request_id}", logs.submit)
@@ -344,6 +347,7 @@ func (api workspaceAPI) claimDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 	value.UsageSupported = true
 	value.PlanSupported = true
+	value.BindingProposalsSupported = true
 	workspaceJSON(w, http.StatusOK, value, err)
 }
 
@@ -475,6 +479,8 @@ func workspaceJSON(w http.ResponseWriter, status int, value any, err error) {
 	case errors.Is(err, workspace.ErrInvalidInputReceipt):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrInvalidArtifacts):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, workspace.ErrInvalidBindingProposal):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrConflict):
 		writeError(w, http.StatusConflict, "workspace state changed or request conflicts with a saved result")

@@ -238,7 +238,7 @@ paths:
       security: [{ adminBearer: [] }]
       responses:
         '200':
-          description: 主对话、任务、请示、项目、目录和同一事务视图的事件游标
+          description: 主对话、任务、请示、绑定提案、项目、目录和同一事务视图的事件游标
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Workspace' }
@@ -392,6 +392,38 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { description: 请示不存在 }
         '409': { description: 请示的任务状态与续接条件冲突 }
+        '413': { description: 请求体超过大小上限 }
+        '415': { description: 请求体须使用 application/json }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/binding-proposals/{id}/decision:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/BindingProposalID' }
+    put:
+      operationId: decideBindingProposal
+      security: [{ adminBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [accepted, rejected] }
+      responses:
+        '200':
+          description: 已保存的决定。确认时复验目标并创建项目，同一决定可重复提交。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BindingProposal' }
+        '400': { description: 无效的提案 ID 或决定 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 提案不存在 }
+        '409': { description: 决定冲突，或目标设备、目录或 CLI 已不符合条件 }
         '413': { description: 请求体超过大小上限 }
         '415': { description: 请求体须使用 application/json }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -1214,6 +1246,22 @@ paths:
         '404': { description: 投递不存在 }
         '409': { description: 授权失效或内容冲突 }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/plugin/binding-candidates:
+    get:
+      operationId: listPluginBindingCandidates
+      security: [{ pluginBearer: [] }]
+      responses:
+        '200':
+          description: 已登记设备、目录及最近上报的 CLI 探测记录。设备离线仍保留上次探测结果。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [candidates]
+                properties:
+                  candidates: { type: array, items: { $ref: '#/components/schemas/BindingCandidate' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/plugin/projects:
     get:
       operationId: listPluginProjects
@@ -1299,6 +1347,41 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { description: 投递不存在 }
         '409': { description: 领取已过期或结果冲突 }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/plugin/deliveries/{id}/binding-proposal:
+    parameters: [{ $ref: '#/components/parameters/DeliveryID' }]
+    post:
+      operationId: proposeProjectBindings
+      security: [{ pluginBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [lease, name, bindings]
+              properties:
+                lease: { $ref: '#/components/schemas/Lease' }
+                name: { type: string, description: 去除首尾空白后为 1 至 120 个 UTF-8 字节。 }
+                bindings:
+                  type: array
+                  minItems: 1
+                  maxItems: 32
+                  description: 每组设备、目录和 CLI 只能出现一次，且恰好有一条默认绑定。
+                  items: { $ref: '#/components/schemas/ProposedBindingInput' }
+      responses:
+        '200':
+          description: 已将提案加入主对话。当前租约可以重复提交同一内容。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BindingProposal' }
+        '400': { description: 无效的消息投递 ID、租约或提案 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 投递不存在 }
+        '409': { description: 租约失效、消息已派发、提案冲突，或目标当前不符合条件 }
+        '413': { description: 请求体超过大小上限 }
+        '415': { description: 请求体须使用 application/json }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/plugin/deliveries/{id}/dispatch:
     parameters: [{ $ref: '#/components/parameters/DeliveryID' }]
@@ -1649,6 +1732,49 @@ components:
         id: { $ref: '#/components/schemas/DirectoryID' }
         label: { type: string, description: 设备选定的显示名称。不超过 120 UTF-8 字节。 }
         device_id: { $ref: '#/components/schemas/DeviceID' }
+    BindingCandidate:
+      type: object
+      required: [device_id, device_name, directories, agents]
+      properties:
+        device_id: { $ref: '#/components/schemas/DeviceID' }
+        device_name: { $ref: '#/components/schemas/DeviceName' }
+        last_seen_at: { type: string, format: date-time }
+        directories: { type: array, items: { $ref: '#/components/schemas/Directory' } }
+        agents: { $ref: '#/components/schemas/Agents' }
+    BindingProposalID:
+      type: string
+      pattern: '^proposal-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    ProposedBindingInput:
+      type: object
+      additionalProperties: false
+      required: [device_id, directory_id, agent_kind, is_default]
+      properties:
+        device_id: { $ref: '#/components/schemas/DeviceID' }
+        directory_id: { $ref: '#/components/schemas/DirectoryID' }
+        agent_kind: { $ref: '#/components/schemas/AgentKind' }
+        is_default: { type: boolean }
+    ProposedBinding:
+      type: object
+      required: [device_id, device_name, directory_id, directory_label, agent_kind, is_default]
+      properties:
+        device_id: { $ref: '#/components/schemas/DeviceID' }
+        device_name: { $ref: '#/components/schemas/DeviceName' }
+        directory_id: { $ref: '#/components/schemas/DirectoryID' }
+        directory_label: { type: string }
+        agent_kind: { $ref: '#/components/schemas/AgentKind' }
+        is_default: { type: boolean }
+    BindingProposal:
+      type: object
+      required: [id, message_id, name, bindings, status, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/BindingProposalID' }
+        message_id: { type: string, format: uuid, description: 原始用户消息 ID。 }
+        name: { type: string }
+        bindings: { type: array, minItems: 1, maxItems: 32, items: { $ref: '#/components/schemas/ProposedBinding' } }
+        status: { type: string, enum: [pending, accepted, rejected] }
+        project_id: { type: string, format: uuid, description: 确认后保存的项目 ID。 }
+        created_at: { type: string, format: date-time }
+        decided_at: { type: string, format: date-time }
     Binding:
       type: object
       required: [id, device_id, directory_id, agent_kind, is_default]
@@ -1713,7 +1839,7 @@ components:
       required: [id, kind, text, created_at]
       properties:
         id: { type: string }
-        kind: { type: string, enum: [user, reply, report, approval] }
+        kind: { type: string, enum: [user, reply, report, approval, binding_proposal] }
         text: { type: string }
         task_id: { $ref: '#/components/schemas/TaskID' }
         status: { type: string, enum: [accepted, handled, interrupted] }
@@ -2014,6 +2140,7 @@ components:
         cursor: { type: integer, format: int64 }
         messages: { type: array, items: { $ref: '#/components/schemas/Message' } }
         approvals: { type: array, items: { $ref: '#/components/schemas/Approval' } }
+        binding_proposals: { type: array, items: { $ref: '#/components/schemas/BindingProposal' } }
         tasks: { type: array, items: { $ref: '#/components/schemas/Task' } }
         projects: { type: array, items: { $ref: '#/components/schemas/Project' } }
         directories: { type: array, items: { $ref: '#/components/schemas/Directory' } }
@@ -2031,6 +2158,8 @@ components:
         attempt: { type: integer, minimum: 1 }
         usage_supported: { type: boolean, description: 为 true 时完成回执可携带中心轮次用量。 }
         plan_supported: { type: boolean, description: 为 true 时当前 Hub 接受带 steps 的中心组合派发。 }
+        binding_proposals_supported: { type: boolean, description: 为 true 时当前 Hub 支持项目绑定提案。 }
+        binding_proposal: { $ref: '#/components/schemas/BindingProposal', description: 当前消息已经持久化的提案，重新领取时可继续使用。 }
     DeviceID:
       type: string
       pattern: '^d-[0-9a-f]{32}$'

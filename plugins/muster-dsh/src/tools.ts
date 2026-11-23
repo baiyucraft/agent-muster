@@ -1,6 +1,6 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
-import { type Delivery, type DispatchStep, type Hub, HubError } from './hub.js'
+import { type Delivery, type DispatchStep, type Hub, HubError, type ProposedBinding } from './hub.js'
 
 interface ActiveDelivery {
   delivery: Delivery
@@ -8,7 +8,10 @@ interface ActiveDelivery {
 }
 
 type Input = Record<string, unknown>
-const musterToolNames = ['muster_list_projects', 'muster_dispatch', 'muster_dispatch_plan', 'muster_resume_task', 'muster_get_task']
+const musterToolNames = [
+  'muster_list_projects', 'muster_dispatch', 'muster_dispatch_plan', 'muster_resume_task', 'muster_get_task',
+  'muster_binding_candidates', 'muster_propose_binding',
+]
 
 /**
  * 检查中心会话是否明确允许该工具。
@@ -39,6 +42,18 @@ const dispatchStepSchema: ObjectJsonSchema = {
       items: { type: 'integer' },
       description: '前置步骤的序号，从 1 开始，且只能引用更早的步骤。省略表示可以独立执行。',
     },
+  },
+}
+
+const proposedBindingSchema: ObjectJsonSchema = {
+  type: 'object',
+  required: ['device_id', 'directory_id', 'agent_kind', 'is_default'],
+  additionalProperties: false,
+  properties: {
+    device_id: { ...string, description: '候选设备 ID。' },
+    directory_id: { ...string, description: '该设备已登记的目录 ID。' },
+    agent_kind: { type: 'string', enum: ['dsh', 'codex'], description: '该设备已探测到完整调用能力的 Agent。' },
+    is_default: { type: 'boolean', description: '这一组中只能有一项为 true。' },
   },
 }
 
@@ -87,7 +102,38 @@ function parseSteps(steps: unknown): DispatchStep[] {
 }
 
 /**
- * 在中心会话注册任务查询、派发和续接操作，并校验当前投递是否允许写入。
+ * 校验中心模型选中的项目绑定，设备、目录和 Agent 的实际归属由 Hub 核对。
+ * @param bindings 模型为提案提交的绑定数组。
+ * @returns 一至三十二项有效绑定，恰有一项为默认项。
+ * @throws 绑定字段无效，或默认项数量错误时拒绝。
+ */
+function parseProposedBindings(bindings: unknown): ProposedBinding[] {
+  if (!Array.isArray(bindings) || bindings.length < 1 || bindings.length > 32) {
+    throw new Error('项目提案需要 1 至 32 项绑定。')
+  }
+  const result = bindings.map((binding: unknown): ProposedBinding => {
+    if (!binding || typeof binding !== 'object' || Array.isArray(binding)) {
+      throw new Error('项目绑定需要填写设备、目录、Agent 和默认标记。')
+    }
+    const { device_id, directory_id, agent_kind, is_default } = binding as Input
+    if (typeof device_id !== 'string' || !device_id.trim() || typeof directory_id !== 'string' || !directory_id.trim() ||
+      (agent_kind !== 'dsh' && agent_kind !== 'codex') || typeof is_default !== 'boolean') {
+      throw new Error('项目绑定的设备、目录、Agent 或默认标记无效。')
+    }
+    return { device_id, directory_id, agent_kind, is_default }
+  })
+  if (result.filter(binding => binding.is_default).length !== 1) throw new Error('项目提案需要选定唯一的默认绑定。')
+  return result
+}
+
+function requireBindingProposalSupport(delivery: Delivery): void {
+  if (delivery.kind !== 'message' || delivery.task_id || delivery.binding_proposals_supported !== true) {
+    throw new Error('当前投递未启用项目绑定提案。可以从项目管理页完成绑定。')
+  }
+}
+
+/**
+ * 在中心会话注册项目提案及任务查询、派发和续接操作，并校验当前投递是否允许写入。
  * @param agent 应接收工具的中心 dsh Agent。
  * @param hub 提供任务和项目 API 的客户端。
  * @param active 获取会话当前持有的投递及取消信号。
@@ -123,7 +169,7 @@ export function bindTools(agent: Agent, hub: Hub, active: () => ActiveDelivery |
         } catch (error) {
           if (!(error instanceof HubError)) throw error
           throw new Error(error.status === 409
-            ? 'Hub 状态已变化或这条消息已经派发。请选择查询工具核对。'
+            ? 'Hub 状态已变化，或这条消息已经提交过任务或项目绑定提案。请选择查询工具核对。'
             : `Hub 无法处理该请求（HTTP ${error.status}）。`)
         }
       },
@@ -132,11 +178,34 @@ export function bindTools(agent: Agent, hub: Hub, active: () => ActiveDelivery |
 
   function requireMessage(delivery: Delivery) {
     if (delivery.kind !== 'message') throw new Error('交付报告只允许查询，不能发起任务')
+    if (delivery.binding_proposal) throw new Error('已为本条消息提交项目绑定提案。请在主对话查看确认状态。')
   }
 
   try {
     register('muster_list_projects', '查看项目、设备和可选 Agent 绑定，派发前找到项目及绑定 ID。', strings([]),
       (_input, _delivery, signal) => hub.projects(signal))
+    register('muster_binding_candidates', '为当前主对话消息查找已登记的设备、目录和 Agent 能力。用设备和目录名称匹配用户目标，使用返回的 ID。', strings([]),
+      (_input, delivery, signal) => {
+        requireBindingProposalSupport(delivery)
+        return hub.bindingCandidates(signal)
+      })
+    register('muster_propose_binding', '为未绑定的明确目标提交项目绑定提案。先查候选，只选择已登记目录和调用能力完整的 Agent。用户在主对话确认后才会建立项目，任务需由用户另发消息安排。', {
+      type: 'object',
+      required: ['name', 'bindings'],
+      additionalProperties: false,
+      properties: {
+        name: { ...string, description: '用户指定的项目名称。' },
+        bindings: { type: 'array', description: '一至三十二项绑定。', items: proposedBindingSchema },
+      },
+    }, async (input, delivery, signal) => {
+      requireBindingProposalSupport(delivery)
+      const proposal = await hub.proposeBinding(delivery, {
+        name: (input.name as string).trim(),
+        bindings: parseProposedBindings(input.bindings),
+      }, signal)
+      delivery.binding_proposal = proposal
+      return proposal
+    })
     register('muster_dispatch', '把工作派到已绑定项目，立即返回任务 ID。用 binding_id 选择设备和 Agent。项目有 git_policy 时，用户要求 Git 候选提交和项目测试可选 git_verify，用户明确要求推送到项目预设目标才可选 git_publish。后者按项目配置测试、审查并核对推送结果。', strings(['project_id', 'title', 'prompt'], ['binding_id', 'workflow']),
       (input, delivery, signal) => {
         requireMessage(delivery)

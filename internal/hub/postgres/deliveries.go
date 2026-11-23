@@ -36,6 +36,20 @@ func (store *InventoryStore) ClaimDelivery(ctx context.Context) (delivery worksp
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
+		if err != nil {
+			return err
+		}
+		delivery.BindingProposalsSupported = true
+		if delivery.Kind != "message" {
+			return nil
+		}
+		proposal, err := scanBindingProposal(tx.QueryRow(ctx, "SELECT "+proposalColumns+" FROM muster_binding_proposals WHERE message_id=$1", delivery.MessageID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err == nil {
+			delivery.BindingProposal = &proposal
+		}
 		return err
 	})
 	return delivery, err
@@ -58,13 +72,14 @@ func (store *InventoryStore) RenewDelivery(ctx context.Context, id, lease string
 func (store *InventoryStore) CompleteDelivery(ctx context.Context, id string, input workspace.Completion) error {
 	return store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		var kind, messageID, taskID, dispatched string
-		var done, leased, repeated bool
+		var done, leased, repeated, bindingProposed bool
 		err := tx.QueryRow(ctx, `
 			SELECT kind,COALESCE(message_id,''),COALESCE(task_id,''),COALESCE(dispatch_task_id,''),
 				done,COALESCE(lease=$2 AND lease_until>=clock_timestamp(),false),
-				COALESCE(completion=$3::jsonb,false)
-			FROM muster_deliveries WHERE id=$1`, id, input.Lease, input).
-			Scan(&kind, &messageID, &taskID, &dispatched, &done, &leased, &repeated)
+				COALESCE(completion=$3::jsonb,false),
+				EXISTS(SELECT 1 FROM muster_binding_proposals p WHERE p.message_id=d.message_id)
+			FROM muster_deliveries d WHERE id=$1`, id, input.Lease, input).
+			Scan(&kind, &messageID, &taskID, &dispatched, &done, &leased, &repeated, &bindingProposed)
 		if err != nil {
 			return notFound(err)
 		}
@@ -74,7 +89,8 @@ func (store *InventoryStore) CompleteDelivery(ctx context.Context, id string, in
 		if done || !leased {
 			return workspace.ErrConflict
 		}
-		if input.Status == "interrupted" || (kind == "report" && input.Text == "") {
+		// 提案与卡片已一并落库。即使模型轮次中断，该消息也已处理。
+		if !bindingProposed && (input.Status == "interrupted" || (kind == "report" && input.Text == "")) {
 			_, err := tx.Exec(ctx, `
 				UPDATE muster_deliveries SET lease='',lease_until=NULL,available_at=clock_timestamp()+interval '20 seconds',
 					attempt=attempt+1,completion=$2 WHERE id=$1`, id, input)
@@ -82,14 +98,14 @@ func (store *InventoryStore) CompleteDelivery(ctx context.Context, id string, in
 		}
 		if kind == "message" {
 			status := input.Status
-			if dispatched != "" {
+			if dispatched != "" || bindingProposed {
 				status = "handled"
 			}
 			if _, err := tx.Exec(ctx, "UPDATE muster_messages SET status=$2 WHERE id=$1", messageID, status); err != nil {
 				return err
 			}
 		}
-		if input.Text != "" && dispatched == "" && input.Status == "handled" {
+		if input.Text != "" && dispatched == "" && !bindingProposed && input.Status == "handled" {
 			messageKind := "reply"
 			if kind == "report" {
 				messageKind = "report"
@@ -120,16 +136,18 @@ func (store *InventoryStore) Dispatch(ctx context.Context, id string, input work
 	err = store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		var kind, messageID, selectedTask string
 		var done, leased bool
+		var bindingProposed bool
 		var savedDigest []byte
 		err := tx.QueryRow(ctx, `
 			SELECT kind,COALESCE(message_id,''),COALESCE(task_id,''),COALESCE(dispatch_task_id,''),done,
-				COALESCE(lease=$2 AND lease_until>=clock_timestamp(),false),plan_digest
-			FROM muster_deliveries WHERE id=$1`, id, input.Lease).
-			Scan(&kind, &messageID, &selectedTask, &taskID, &done, &leased, &savedDigest)
+				COALESCE(lease=$2 AND lease_until>=clock_timestamp(),false),plan_digest,
+				EXISTS(SELECT 1 FROM muster_binding_proposals p WHERE p.message_id=d.message_id)
+			FROM muster_deliveries d WHERE id=$1`, id, input.Lease).
+			Scan(&kind, &messageID, &selectedTask, &taskID, &done, &leased, &savedDigest, &bindingProposed)
 		if err != nil {
 			return notFound(err)
 		}
-		if kind != "message" || !leased || done {
+		if kind != "message" || !leased || done || bindingProposed {
 			return workspace.ErrConflict
 		}
 		if taskID != "" {

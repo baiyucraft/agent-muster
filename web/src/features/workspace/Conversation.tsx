@@ -1,9 +1,10 @@
 import { useEffect, useRef, type FormEvent } from 'react'
 import musterIcon from '../../../../ui/muster-icon.svg'
-import { messageBytes, withinTextLimit, type Approval, type Message, type Task } from '../../api/workspace'
+import { messageBytes, withinTextLimit, type Approval, type BindingProposal, type Message, type Task } from '../../api/workspace'
 import { ApprovalCard, type ApprovalActions } from './ApprovalCard'
+import { BindingProposalCard, type SubmitBindingDecision } from './BindingProposalCard'
 
-const messageLabel = { user: '你', reply: '中心助手', report: '任务汇报', approval: '任务请示' }
+const messageLabel = { user: '你', reply: '中心助手', report: '任务汇报', approval: '任务请示', binding_proposal: '项目绑定提案' }
 const messageStatus = { accepted: '已受理', handled: '', interrupted: '处理已中断' }
 const timestamp = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
 
@@ -11,11 +12,13 @@ export function Time({ value }: { value: string }) {
   return <time dateTime={value}>{timestamp.format(new Date(value))}</time>
 }
 
-export function MessageItem({ message, task, approval, approvalActions }: {
+export function MessageItem({ message, task, approval, approvalActions, proposal, onBindingDecision }: {
   message: Message
   task?: Task
   approval?: Approval
   approvalActions?: ApprovalActions
+  proposal?: BindingProposal
+  onBindingDecision?: SubmitBindingDecision
 }) {
   const status = message.status && messageStatus[message.status]
   return (
@@ -31,6 +34,8 @@ export function MessageItem({ message, task, approval, approvalActions }: {
         </div>
         {approval && approvalActions ? (
           <ApprovalCard approval={approval} task={task} actions={approvalActions} />
+        ) : proposal && onBindingDecision ? (
+          <BindingProposalCard proposal={proposal} onDecision={onBindingDecision} />
         ) : (
           <>
             <p className="message-text">{message.text}</p>
@@ -47,6 +52,8 @@ type ConversationProps = {
   tasks: Task[]
   approvals: Approval[]
   approvalActions: ApprovalActions
+  bindingProposals: BindingProposal[]
+  onBindingDecision: SubmitBindingDecision
   canSend: boolean
   draft: string
   followTask?: Task
@@ -57,12 +64,13 @@ type ConversationProps = {
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
 }
 
-export function Conversation({ messages, tasks, approvals, approvalActions, canSend, draft, followTask, sending, sendError, onDraftChange, onClearFollowTask, onSubmit }: ConversationProps) {
+export function Conversation({ messages, tasks, approvals, approvalActions, bindingProposals, onBindingDecision, canSend, draft, followTask, sending, sendError, onDraftChange, onClearFollowTask, onSubmit }: ConversationProps) {
   const composer = useRef<HTMLTextAreaElement>(null)
   const thread = useRef<HTMLDivElement>(null)
   const followLatest = useRef(true)
   const tasksByID = new Map(tasks.map((task) => [task.id, task]))
   const approvalsByID = new Map(approvals.map((approval) => [approval.id, approval]))
+  const proposalsByID = new Map(bindingProposals.map((proposal) => [proposal.id, proposal]))
   const validDraft = withinTextLimit(draft, messageBytes)
 
   useEffect(() => {
@@ -85,7 +93,8 @@ export function Conversation({ messages, tasks, approvals, approvalActions, canS
           {messages?.length === 0 && <div className="conversation-empty"><img src={musterIcon} alt="" /><h2>交办第一件事</h2></div>}
           {messages?.map((message) => (
             <MessageItem key={message.id} message={message} task={message.task_id ? tasksByID.get(message.task_id) : undefined}
-              approval={message.kind === 'approval' ? approvalsByID.get(message.id) : undefined} approvalActions={approvalActions} />
+              approval={message.kind === 'approval' ? approvalsByID.get(message.id) : undefined} approvalActions={approvalActions}
+              proposal={message.kind === 'binding_proposal' ? proposalsByID.get(message.id) : undefined} onBindingDecision={onBindingDecision} />
           ))}
         </div>
 
