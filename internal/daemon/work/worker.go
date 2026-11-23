@@ -324,12 +324,27 @@ func (worker *Worker) execute(ctx context.Context, run control.Run, peer *collab
 	if run.Lease != "" {
 		leaseErr = startLease(runCtx, run, peer, abandon)
 	}
+	if leaseErr == nil {
+		startRunControl(runCtx, run, peer, abandon)
+	}
 	sessionID := run.SessionID
 	event := control.RunEvent{Kind: "failed", SessionID: sessionID, Generation: run.Generation, Lease: run.Lease}
-	dir, err := worker.resolveDirectory(runCtx, run.DirectoryID)
-	err = errors.Join(leaseErr, err)
+	err := errors.Join(leaseErr, runCtx.Err())
+	var dir string
+	if err == nil {
+		dir, err = worker.resolveDirectory(runCtx, run.DirectoryID)
+	}
 	if err == nil {
 		event, err = worker.invoke(runCtx, run, service, dir, execute, event)
+	}
+	if errors.Is(err, runner.ErrProcessExitUnconfirmed) {
+		// 退出尚未确认时继续保留本地活动记录，等待设备运行恢复流程核对。
+		return err
+	}
+	if errors.Is(context.Cause(runCtx), errRunStopRequested) && err != nil {
+		event.Kind = "stopped"
+		event.Text = "设备已停止本轮执行。"
+		err = nil
 	}
 	if err != nil {
 		if event.Text != "" {
@@ -398,7 +413,7 @@ func (worker *Worker) invoke(ctx context.Context, run control.Run, service *loca
 	switch {
 	case didStart && ctx.Err() != nil:
 		event.Kind = "interrupted"
-		err = context.Cause(ctx)
+		err = errors.Join(context.Cause(ctx), err)
 	case err == nil:
 		event.Kind = "completed"
 		wait, waitErr := worker.requestedWait(ctx, run.ID)
@@ -439,7 +454,10 @@ func (worker *Worker) preparePrompt(ctx context.Context, run control.Run, direct
 		if err != nil {
 			return "", fmt.Errorf("无法读取本机已接收的提示词: %w", err)
 		}
-		prompt = string(body)
+		if prompt != "" {
+			prompt += "\n\n"
+		}
+		prompt += string(body)
 	}
 	var notes strings.Builder
 	for _, attachment := range run.Attachments {

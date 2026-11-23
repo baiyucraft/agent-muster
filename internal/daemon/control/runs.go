@@ -50,6 +50,7 @@ type Run struct {
 	DependencyResults []DependencyResult  `json:"dependency_results,omitempty"`
 	DelegationTargets []DelegationTarget  `json:"delegation_targets,omitempty"`
 	ApprovalSupported bool                `json:"approval_supported,omitempty"`
+	ControlSupported  bool                `json:"control_supported,omitempty"` // Hub 可向该运行下发停止指令。
 }
 
 // DependencyResult 记录父任务续接时可见的依赖任务标识与状态。
@@ -103,7 +104,7 @@ type TransferReference struct {
 	LocalRef string `json:"local_ref,omitempty"`
 }
 
-// RunEvent 是设备上报的运行事件。请示只随本轮退出后的 approval_requested 事件发送。
+// RunEvent 是设备上报的运行事件。请示和停止分别在本轮退出后使用 approval_requested 和 stopped。
 type RunEvent struct {
 	Kind           string             `json:"kind"`
 	SessionID      string             `json:"session_id,omitempty"`
@@ -128,7 +129,8 @@ func (client *Client) ClaimRun(ctx context.Context, identity Identity) (*Run, er
 	if err != nil {
 		return nil, err
 	}
-	response, err := client.send(ctx, http.MethodPost, endpoint, identity.Token, nil, http.StatusOK, http.StatusNoContent)
+	response, err := client.sendWithHeaders(ctx, http.MethodPost, endpoint, identity.Token,
+		http.Header{"Muster-Run-Control": []string{"1"}}, nil, http.StatusOK, http.StatusNoContent)
 	if err != nil {
 		return nil, err
 	}
@@ -146,6 +148,29 @@ func (client *Client) ClaimRun(ctx context.Context, identity Identity) (*Run, er
 		return nil, errors.New("Hub 返回不完整的运行记录")
 	}
 	return &run, nil
+}
+
+// RunStopRequested 使用当前运行的租约凭据检查停止指令。
+// 只有返回 true 且无错误时，设备才可据此停止该运行。
+func (client *Client) RunStopRequested(ctx context.Context, identity Identity, runID string, proof LeaseProof) (bool, error) {
+	endpoint, err := client.deviceURL(identity, "runs", runID, "control")
+	if err != nil {
+		return false, err
+	}
+	response, err := client.send(ctx, http.MethodPost, endpoint, identity.Token, proof, http.StatusOK)
+	if err != nil {
+		return false, err
+	}
+	defer response.Body.Close()
+	var result struct {
+		Stop *bool `json:"stop"`
+	}
+	const limit = 4096
+	payload, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil || len(payload) > limit || json.Unmarshal(payload, &result) != nil || result.Stop == nil {
+		return false, errors.New("Hub 的运行控制响应格式无效")
+	}
+	return *result.Stop, nil
 }
 
 // ReportRunEvent 按运行 ID 和设备事件序号上报事件，重试时复用这两个值。

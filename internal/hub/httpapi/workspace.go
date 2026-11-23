@@ -58,6 +58,7 @@ func (s server) registerWorkspace(mux *http.ServeMux, options WorkspaceOptions, 
 	}
 	admin("GET /api/v1/workspace", api.snapshot)
 	admin("GET /api/v1/tasks/{id}", api.task)
+	admin("POST /api/v1/tasks/{id}/control", api.controlTask)
 	admin("GET /api/v1/events", api.events)
 	admin("POST /api/v1/approvals/{id}/answer", api.answerApproval)
 	admin("PUT /api/v1/projects/{id}", api.saveProject)
@@ -78,6 +79,7 @@ func (s server) registerWorkspace(mux *http.ServeMux, options WorkspaceOptions, 
 	device("PUT /api/v1/devices/{device_id}/rtc/{transfer_id}/answer", api.putRTCAnswer)
 	device("PUT /api/v1/devices/{device_id}/rtc/{transfer_id}/diagnostic", api.reportRTCDiagnostic)
 	device("POST /api/v1/devices/{device_id}/runs/claim", api.claimRun)
+	device("POST /api/v1/devices/{device_id}/runs/{id}/control", api.runControl)
 	device("PUT /api/v1/devices/{device_id}/runs/{id}/lease", api.renewRun)
 	device("POST /api/v1/devices/{device_id}/runs/{id}/wait/validate", api.validateWait)
 	device("PUT /api/v1/devices/{device_id}/runs/{id}/events/{sequence}", api.recordEvent)
@@ -187,8 +189,9 @@ func (api workspaceAPI) claimRun(w http.ResponseWriter, r *http.Request, device 
 	defer cancel()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	controlSupported := r.Header.Get("Muster-Run-Control") == "1"
 	for {
-		run, err := api.store.ClaimRun(ctx, device, token)
+		run, err := api.store.ClaimRunWithControl(ctx, device, token, controlSupported)
 		if ctx.Err() != nil {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -225,6 +228,11 @@ func (api workspaceAPI) recordEvent(w http.ResponseWriter, r *http.Request, devi
 	}
 	switch event.Kind {
 	case "started", "interrupted", "failed":
+	case "stopped":
+		if !validRunLease(event.Generation, event.Lease) || len(event.TransferIDs) != 0 || event.Approval != nil {
+			writeError(w, http.StatusBadRequest, "invalid stopped run event")
+			return
+		}
 	case "approval_requested":
 		if event.Approval == nil || len(event.TransferIDs) != 0 {
 			writeError(w, http.StatusBadRequest, "approval requires a question and cannot include transfers")

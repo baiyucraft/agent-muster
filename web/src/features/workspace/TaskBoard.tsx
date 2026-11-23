@@ -4,15 +4,17 @@ import { latestApproval, readTask, type Approval, type Run, type Task, type Task
 import { messageFor } from '../../useWorkspace'
 import { ApprovalCard, type ApprovalActions } from './ApprovalCard'
 import { MessageItem, Time } from './Conversation'
+import { TaskControls, type TaskControlActions } from './TaskControls'
 
 const statusText: Record<Task['status'] | Run['status'], string> = {
   queued: '排队', running: '运行中', waiting: '等待', waiting_dependencies: '等待子任务', waiting_delivery: '等待交付',
   waiting_reply: '等待答复', approval_requested: '已发起请示',
-  completed: '已完成', failed: '执行失败', paused: '已暂停', cancelled: '已取消', interrupted: '待核对',
+  completed: '已完成', failed: '执行失败', pausing: '正在暂停', paused: '已暂停', stopping: '正在停止', stopped: '已停止',
+  cancelling: '正在取消', cancelled: '已取消', interrupted: '待核对',
 }
 const groups: { stage: string; name: string; states: Task['status'][] }[] = [
   { stage: 'queued', name: '排队', states: ['queued'] },
-  { stage: 'running', name: '运行中', states: ['running'] },
+  { stage: 'running', name: '运行中', states: ['running', 'pausing', 'stopping', 'cancelling'] },
   { stage: 'waiting', name: '等待', states: ['waiting_reply', 'waiting_dependencies', 'waiting_delivery', 'paused', 'interrupted'] },
   { stage: 'finished', name: '已结束', states: ['completed', 'failed', 'cancelled'] },
 ]
@@ -46,13 +48,14 @@ type TaskBoardProps = {
   tasks?: Task[]
   approvals: Approval[]
   approvalActions: ApprovalActions
+  taskControlActions: TaskControlActions
   cursor?: number
   taskID?: string
   onFollow: (task: Task) => void
   onLock: (reason: string) => void
 }
 
-export function TaskBoard({ token, tasks, approvals, approvalActions, cursor, taskID, onFollow, onLock }: TaskBoardProps) {
+export function TaskBoard({ token, tasks, approvals, approvalActions, taskControlActions, cursor, taskID, onFollow, onLock }: TaskBoardProps) {
   const [deviceNames, setDeviceNames] = useState<Map<string, string>>(() => new Map())
   useEffect(() => {
     const controller = new AbortController()
@@ -65,7 +68,7 @@ export function TaskBoard({ token, tasks, approvals, approvalActions, cursor, ta
   }, [token, onLock])
 
   if (taskID) return <TaskDetails key={taskID} token={token} taskID={taskID} cursor={cursor} tasks={tasks} approvals={approvals}
-    approvalActions={approvalActions} deviceNames={deviceNames} onFollow={onFollow} onLock={onLock} />
+    approvalActions={approvalActions} taskControlActions={taskControlActions} deviceNames={deviceNames} onFollow={onFollow} onLock={onLock} />
 
   const roots = tasks?.filter((task) => !task.parent_task_id)
   const childrenByParent = new Map<string, Task[]>()
@@ -139,11 +142,11 @@ function ChildTasks({ tasks }: { tasks: Task[] }) {
   return <div className="child-task-list">{tasks.map((task) => <a href={`#board/${task.id}`} className="child-task-row" key={task.id}><span>{task.title}</span><TaskStatus status={task.status} /></a>)}</div>
 }
 
-type TaskDetailsProps = Required<Pick<TaskBoardProps, 'token' | 'taskID' | 'onFollow' | 'onLock'>> & Pick<TaskBoardProps, 'cursor' | 'tasks' | 'approvals' | 'approvalActions'> & {
+type TaskDetailsProps = Required<Pick<TaskBoardProps, 'token' | 'taskID' | 'onFollow' | 'onLock'>> & Pick<TaskBoardProps, 'cursor' | 'tasks' | 'approvals' | 'approvalActions' | 'taskControlActions'> & {
   deviceNames: Map<string, string>
 }
 
-function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskID, deviceNames, onFollow, onLock }: TaskDetailsProps) {
+function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskControlActions, taskID, deviceNames, onFollow, onLock }: TaskDetailsProps) {
   const [detail, setDetail] = useState<TaskDetail>()
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
@@ -162,8 +165,11 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskID,
     return () => controller.abort()
   }, [token, taskID, cursor, onLock, retry])
 
-  const canFollow = detail && !error && !detail.task.parent_task_id && detail.task.status !== 'cancelled' && (
-    detail.task.status === 'queued' || detail.task.status === 'running' || detail.runs.some((run) => run.session_id)
+  const controlResult = taskControlActions.submissions.get(taskID)?.result
+  const snapshotTask = tasks?.find((task) => task.id === taskID)
+  const task = latestTask(detail?.task, latestTask(snapshotTask, controlResult))
+  const canFollow = detail && task && !error && !task.parent_task_id && task.status !== 'cancelled' && task.status !== 'cancelling' && (
+    task.status === 'queued' || task.status === 'running' || task.status === 'paused' || detail.runs.some((run) => run.session_id)
   )
   const taskName = (id: string) => tasks?.find((task) => task.id === id)?.title ?? id
   const taskApprovals = new Map(detail?.approvals.map((approval) => [approval.id, approval]))
@@ -177,8 +183,8 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskID,
     <section aria-labelledby="task-heading">
       <a className="text-link back-link" href="#board">← 返回看板</a>
       <div className="view-heading">
-        <h1 id="task-heading">{detail?.task.title ?? '任务详情'}</h1>
-        {detail && canFollow && <button type="button" className="primary-button" onClick={() => onFollow(detail.task)}>追加要求</button>}
+        <h1 id="task-heading">{task?.title ?? '任务详情'}</h1>
+        {canFollow && <button type="button" className="primary-button" onClick={() => onFollow(task)}>追加要求</button>}
       </div>
       {error && <div className="request-error" role="alert"><p>{error}</p><button type="button" className="outline-button" onClick={() => setRetry((current) => current + 1)}>重试</button></div>}
       {!detail && !error && <p className="panel-placeholder">正在读取详情…</p>}
@@ -191,26 +197,27 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskID,
           ))}
         </section>
       )}
-      {detail && <div className="task-detail-grid">
+      {detail && task && <div className="task-detail-grid">
         <div className="task-detail-panel">
-          {detail.task.parent_task_id && <div className="task-ancestry">
-            <a className="text-link" href={`#board/${detail.task.parent_task_id}`}>父任务 {taskName(detail.task.parent_task_id)}</a>
-            {detail.task.root_task_id && detail.task.root_task_id !== detail.task.parent_task_id && <a className="text-link" href={`#board/${detail.task.root_task_id}`}>根任务 {taskName(detail.task.root_task_id)}</a>}
+          {task.parent_task_id && <div className="task-ancestry">
+            <a className="text-link" href={`#board/${task.parent_task_id}`}>父任务 {taskName(task.parent_task_id)}</a>
+            {task.root_task_id && task.root_task_id !== task.parent_task_id && <a className="text-link" href={`#board/${task.root_task_id}`}>根任务 {taskName(task.root_task_id)}</a>}
           </div>}
           <dl className="task-facts">
-            <div><dt>状态</dt><dd><TaskStatus status={detail.task.status} />{detail.task.report_pending && ' · 待汇报'}</dd></div>
-            {detail.task.waiting_reason && <div><dt>等待原因</dt><dd>{waitingReasonText[detail.task.waiting_reason] ?? detail.task.waiting_reason}</dd></div>}
-            <div><dt>项目</dt><dd>{detail.task.project_name}</dd></div>
-            <div><dt>设备</dt><dd>{deviceNames.get(detail.task.device_id) ?? detail.task.device_id}</dd></div>
-            <div><dt>Agent</dt><dd>{agentName(detail.task.agent_kind)}</dd></div>
-            <div><dt>更新时间</dt><dd><Time value={detail.task.updated_at} /></dd></div>
+            <div><dt>状态</dt><dd aria-live="polite"><TaskStatus status={task.status} />{task.report_pending && ' · 待汇报'}</dd></div>
+            {task.waiting_reason && <div><dt>等待原因</dt><dd>{waitingReasonText[task.waiting_reason] ?? task.waiting_reason}</dd></div>}
+            <div><dt>项目</dt><dd>{task.project_name}</dd></div>
+            <div><dt>设备</dt><dd>{deviceNames.get(task.device_id) ?? task.device_id}</dd></div>
+            <div><dt>Agent</dt><dd>{agentName(task.agent_kind)}</dd></div>
+            <div><dt>更新时间</dt><dd><Time value={task.updated_at} /></dd></div>
           </dl>
-          {detail.task.result && <div className="detail-result"><h2>结果</h2><p className="message-text">{detail.task.result}</p></div>}
+          <TaskControls task={task} actions={taskControlActions} disabled={Boolean(error)} />
+          {task.result && <div className="detail-result"><h2>结果</h2><p className="message-text">{task.result}</p></div>}
           <details className="task-technical">
             <summary>标识</summary>
             <dl className="task-facts">
-              <div><dt>任务编号</dt><dd><code>{detail.task.id}</code></dd></div>
-              {detail.task.binding_id && <div><dt>执行绑定</dt><dd><code>{detail.task.binding_id}</code></dd></div>}
+              <div><dt>任务编号</dt><dd><code>{task.id}</code></dd></div>
+              {task.binding_id && <div><dt>执行绑定</dt><dd><code>{task.binding_id}</code></dd></div>}
             </dl>
           </details>
         </div>
@@ -253,10 +260,19 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskID,
             {transfer.last_error && <p className="transfer-error">{transfer.last_error}</p>}
           </article>)}</div>
         </details>}
-        {relatedMessages && relatedMessages.length > 0 && <section className="task-detail-panel related-messages" aria-labelledby="related-heading"><h2 id="related-heading">关联对话</h2>{relatedMessages.map((message) => <MessageItem key={message.id} message={message} task={detail.task} />)}</section>}
+        {relatedMessages && relatedMessages.length > 0 && <section className="task-detail-panel related-messages" aria-labelledby="related-heading"><h2 id="related-heading">关联对话</h2>{relatedMessages.map((message) => <MessageItem key={message.id} message={message} task={task} />)}</section>}
       </div>}
     </section>
   )
+}
+
+function latestTask(candidate?: Task, known?: Task): Task | undefined {
+  if (!candidate || !known) return candidate ?? known
+  // PostgreSQL 时间精确到微秒，补足 Date.parse 截断的小数位。
+  const micros = (value: string) => (value.match(/\.(\d+)/u)?.[1] ?? '').padEnd(6, '0').slice(3, 6)
+  const difference = Date.parse(candidate.updated_at) - Date.parse(known.updated_at)
+  if (difference) return difference > 0 ? candidate : known
+  return micros(candidate.updated_at) >= micros(known.updated_at) ? candidate : known
 }
 
 function formatBytes(size: number): string {

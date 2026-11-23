@@ -25,6 +25,8 @@ func renderCard(a workspace.Approval) (string, error) {
 		title, theme = "已答复", "green"
 	case "handled":
 		title, theme = "已处理", "grey"
+	case "cancelled":
+		title, theme = "已取消", "grey"
 	default:
 		return "", errors.New("飞书请示的状态无效")
 	}
@@ -61,7 +63,7 @@ func renderCard(a workspace.Approval) (string, error) {
 				},
 			},
 		})
-	} else if a.Answer != "" {
+	} else if a.Status != "cancelled" && a.Answer != "" {
 		elements = append(elements, text(a.Answer))
 	}
 	card := map[string]any{

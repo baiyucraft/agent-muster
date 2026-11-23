@@ -214,19 +214,22 @@ func insertTask(ctx context.Context, tx pgx.Tx, taskID, runID, title, parentID, 
 }
 
 func appendRun(ctx context.Context, tx pgx.Tx, taskID, runID string) error {
-	var status, session, parent string
+	var status, session, parent, mode string
 	err := tx.QueryRow(ctx, `
-		SELECT t.status,t.session_id,COALESCE(t.parent_id,'') FROM muster_tasks t
+		SELECT t.status,t.session_id,COALESCE(t.parent_id,''),t.control_mode FROM muster_tasks t
 		JOIN muster_directories d USING (device_id,directory_id)
 		JOIN muster_devices v USING (device_id) WHERE t.id=$1 AND v.revoked_at IS NULL`, taskID).
-		Scan(&status, &session, &parent)
+		Scan(&status, &session, &parent, &mode)
 	if err != nil {
 		return notFound(err)
 	}
 	if parent != "" {
 		return registry.ErrNotFound
 	}
-	if status == "running" || status == "queued" || status == "waiting_reply" {
+	if mode == "cancel" || status == "interrupted" && mode == "pause" {
+		return workspace.ErrConflict
+	}
+	if status == "running" || status == "queued" || status == "waiting_reply" || status == "paused" {
 		return nil
 	}
 	if session == "" {

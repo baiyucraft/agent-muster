@@ -56,6 +56,11 @@ func (store *InventoryStore) ReplaceDirectories(ctx context.Context, id string, 
 // ClaimRun 为认证设备领取可执行运行，优先返回已领取且仍可执行的当前运行。
 // 重领保留原运行身份及原生会话输入，并延长租约。
 func (store *InventoryStore) ClaimRun(ctx context.Context, device string, token [32]byte) (claim workspace.RunClaim, err error) {
+	return store.ClaimRunWithControl(ctx, device, token, false)
+}
+
+// ClaimRunWithControl 记录 daemon 是否能确认停止，并保留已领取轮次的原协议能力。
+func (store *InventoryStore) ClaimRunWithControl(ctx context.Context, device string, token [32]byte, supported bool) (claim workspace.RunClaim, err error) {
 	err = store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		if err := authenticateDevice(ctx, tx, device, token); err != nil {
 			return err
@@ -66,21 +71,26 @@ func (store *InventoryStore) ClaimRun(ctx context.Context, device string, token 
 				SELECT r.id,t.session_id,(r.claimed_at IS NULL) AS first_claim FROM muster_runs r
 				JOIN muster_tasks t ON r.id=t.current_run_id AND r.task_id=t.id
 				WHERE r.device_id=$1 AND r.status IN ('queued','running') AND t.status IN ('queued','running')
+				AND (r.claimed_at IS NOT NULL OR t.control_mode='')
+				AND (NOT r.control_supported OR $3)
+				AND NOT EXISTS (SELECT 1 FROM muster_runs active WHERE active.device_id=$1
+					AND active.id<>r.id AND active.status IN ('queued','running') AND active.claimed_at IS NOT NULL)
 				ORDER BY (r.claimed_at IS NOT NULL) DESC,
 					CASE WHEN r.created_at<=clock_timestamp()-interval '5 minutes' THEN 0 ELSE r.ready_priority END,
 					r.sequence LIMIT 1
 			)
 			UPDATE muster_runs r SET claimed_at=COALESCE(r.claimed_at,clock_timestamp()),
+				control_supported=CASE WHEN choice.first_claim THEN $3 ELSE r.control_supported END,
 				input_session=CASE WHEN choice.first_claim THEN choice.session_id ELSE r.input_session END,
 				lease=COALESCE(NULLIF(r.lease,''),$2),lease_until=clock_timestamp()+interval '60 seconds'
 			FROM choice,muster_tasks t LEFT JOIN muster_tasks parent ON parent.id=t.parent_id
 			WHERE r.id=choice.id AND t.id=r.task_id
 			RETURNING r.id,t.id,t.directory_id,r.input,r.input_session,t.agent_kind,t.project_id,r.generation,
 				r.lease,r.lease_until,t.binding_id,COALESCE(t.parent_id,''),COALESCE(parent.device_id,''),t.root_id,
-				r.prompt_transfer_id,r.dependency_results,choice.first_claim`, device, rand.Text()).
+				r.prompt_transfer_id,r.dependency_results,choice.first_claim,r.control_supported`, device, rand.Text(), supported).
 			Scan(&claim.ID, &claim.TaskID, &claim.DirectoryID, &claim.Prompt, &claim.SessionID, &claim.AgentKind,
 				&claim.ProjectID, &claim.Generation, &claim.Lease, &claim.LeaseUntil, &claim.BindingID, &claim.ParentTaskID,
-				&claim.ParentDeviceID, &claim.RootTaskID, &claim.PromptTransferID, &claim.DependencyResults, &firstClaim)
+				&claim.ParentDeviceID, &claim.RootTaskID, &claim.PromptTransferID, &claim.DependencyResults, &firstClaim, &claim.ControlSupported)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -116,18 +126,20 @@ func (store *InventoryStore) ClaimRun(ctx context.Context, device string, token 
 }
 
 type runState struct {
-	TaskID         string
-	CurrentRun     string
-	ParentTaskID   string
-	ParentDeviceID string
-	RootTaskID     string
-	Status         string
-	WaitingReason  string
-	SessionID      string
-	Generation     int64
-	Lease          string
-	LeaseLive      bool
-	LegacyEvents   bool
+	TaskID           string
+	CurrentRun       string
+	ParentTaskID     string
+	ParentDeviceID   string
+	RootTaskID       string
+	Status           string
+	WaitingReason    string
+	SessionID        string
+	Generation       int64
+	Lease            string
+	LeaseLive        bool
+	LegacyEvents     bool
+	ControlMode      string
+	ControlSupported bool
 }
 
 // RenewRun 校验设备、当前运行、代次及有效租约后延长租期，返回新的到期时间。
@@ -152,11 +164,12 @@ func (store *InventoryStore) RenewRun(ctx context.Context, device string, token 
 func readRunState(ctx context.Context, tx pgx.Tx, device, id string) (value runState, err error) {
 	err = tx.QueryRow(ctx, `SELECT t.id,t.current_run_id,COALESCE(t.parent_id,''),COALESCE(p.device_id,''),t.root_id,r.status,t.waiting_reason,
 		COALESCE(NULLIF(r.session_id,''),r.input_session),r.generation,r.lease,
-		COALESCE(r.lease_until>=clock_timestamp(),false),r.legacy_events
+		COALESCE(r.lease_until>=clock_timestamp(),false),r.legacy_events,t.control_mode,r.control_supported
 		FROM muster_runs r JOIN muster_tasks t ON t.id=r.task_id LEFT JOIN muster_tasks p ON t.parent_id=p.id
 		WHERE r.id=$1 AND r.device_id=$2 AND r.claimed_at IS NOT NULL`, id, device).
 		Scan(&value.TaskID, &value.CurrentRun, &value.ParentTaskID, &value.ParentDeviceID, &value.RootTaskID,
-			&value.Status, &value.WaitingReason, &value.SessionID, &value.Generation, &value.Lease, &value.LeaseLive, &value.LegacyEvents)
+			&value.Status, &value.WaitingReason, &value.SessionID, &value.Generation, &value.Lease, &value.LeaseLive,
+			&value.LegacyEvents, &value.ControlMode, &value.ControlSupported)
 	return value, notFound(err)
 }
 
@@ -228,6 +241,18 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 		if run.Status != "queued" && run.Status != "running" {
 			// Preserve evidence for a settled round without changing task state or scheduling.
 			return advanceWorkspace(ctx, tx)
+		}
+		if event.Kind == "stopped" && (!run.ControlSupported || run.CurrentRun != id || !run.stopping()) {
+			return workspace.ErrConflict
+		}
+		if run.CurrentRun == id && run.stopping() && event.Kind != "started" && event.Kind != "session" {
+			if run.ControlMode == "cancel" || event.Kind == "stopped" || event.Kind == "interrupted" {
+				return settleStoppedRun(ctx, tx, run, id, sessionID, event)
+			}
+			// 正常退出先于停止指令到达时保留本轮结果，并暂停随后可能出现的续接。
+			if _, err := tx.Exec(ctx, "UPDATE muster_tasks SET control_mode='pause' WHERE id=$1", run.TaskID); err != nil {
+				return err
+			}
 		}
 		switch event.Kind {
 		case "approval_requested":
@@ -302,6 +327,7 @@ func updateTaskFromRun(ctx context.Context, tx pgx.Tx, run runState, runID, stat
 		taskStatus = "waiting"
 	}
 	if _, err := tx.Exec(ctx, `UPDATE muster_tasks SET status=$2,session_id=$3,result=$4,waiting_reason=$5,
+		control_mode=CASE WHEN $2 IN ('completed','failed','interrupted') THEN '' ELSE control_mode END,
 		updated_at=clock_timestamp() WHERE id=$1`, run.TaskID, taskStatus, sessionID, outcome, reason); err != nil {
 		return err
 	}

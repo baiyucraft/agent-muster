@@ -16,7 +16,10 @@ const messageColumns = "id, kind, body, COALESCE(task_id, requested_task_id), st
 const taskColumns = `t.id, t.project_id, t.project_name, t.device_id, t.directory_id, t.status, t.title, t.result,
 	EXISTS (SELECT 1 FROM muster_deliveries d WHERE d.task_id = t.id AND d.kind = 'report' AND NOT d.done),
 	t.updated_at,COALESCE(t.parent_id,''),t.root_id,t.binding_id,t.agent_kind,t.waiting_reason,
-	COALESCE((SELECT generation FROM muster_runs WHERE id=t.current_run_id),0),t.input_generation`
+	COALESCE((SELECT generation FROM muster_runs WHERE id=t.current_run_id),0),t.input_generation,
+	t.control_mode,
+	EXISTS (SELECT 1 FROM muster_runs r WHERE r.id=t.current_run_id AND r.claimed_at IS NOT NULL AND r.status IN ('queued','running')),
+	COALESCE((SELECT r.control_supported FROM muster_runs r WHERE r.id=t.current_run_id),false)`
 
 // WorkspaceEvents 按游标升序返回指定位置之后最多 128 条工作区事件。
 // 超过当前工作区位置的游标返回冲突。
@@ -295,9 +298,12 @@ func (store *InventoryStore) SubmitMessage(ctx context.Context, input workspace.
 			return err
 		}
 		if input.TaskID != "" {
-			var id string
-			if err := tx.QueryRow(ctx, "SELECT id FROM muster_tasks WHERE id=$1", input.TaskID).Scan(&id); err != nil {
+			var mode string
+			if err := tx.QueryRow(ctx, "SELECT control_mode FROM muster_tasks WHERE id=$1", input.TaskID).Scan(&mode); err != nil {
 				return notFound(err)
+			}
+			if mode == "cancel" {
+				return workspace.ErrConflict
 			}
 		}
 		message, err = scanMessage(tx.QueryRow(ctx, `
@@ -381,10 +387,13 @@ func scanMessage(row pgx.Row) (value workspace.Message, err error) {
 }
 
 func scanTask(row pgx.Row) (value workspace.Task, err error) {
+	var control taskControlState
 	err = row.Scan(&value.ID, &value.ProjectID, &value.ProjectName, &value.DeviceID, &value.DirectoryID,
 		&value.Status, &value.Title, &value.Result, &value.ReportPending, &value.UpdatedAt,
 		&value.ParentTaskID, &value.RootTaskID, &value.BindingID, &value.AgentKind, &value.WaitingReason,
-		&value.CurrentRunGeneration, &value.WaitGeneration)
+		&value.CurrentRunGeneration, &value.WaitGeneration, &control.mode, &control.active, &control.supported)
+	control.status = value.Status
+	value.ControlActions = control.actions()
 	if value.Status == "waiting" {
 		switch value.WaitingReason {
 		case "children":
@@ -393,6 +402,7 @@ func scanTask(row pgx.Row) (value workspace.Task, err error) {
 			value.Status = "waiting_delivery"
 		}
 	}
+	value.Status = control.displayStatus(value.Status)
 	return
 }
 

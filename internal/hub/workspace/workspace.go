@@ -71,6 +71,13 @@ type Task struct {
 	WaitingReason        string    `json:"waiting_reason,omitempty"`
 	CurrentRunGeneration int64     `json:"current_run_generation"`
 	WaitGeneration       int64     `json:"wait_generation,omitempty"`
+	ControlActions       []string  `json:"control_actions,omitempty"`
+}
+
+// TaskControl 是管理员任务操作。请求 ID 在同一任务下去重，重复时返回当前状态。
+type TaskControl struct {
+	Action    string `json:"action"`
+	RequestID string `json:"request_id"`
 }
 
 // Run 描述任务的一轮执行，保留其状态、原生会话、代次和租约期限。
@@ -108,6 +115,7 @@ type RunClaim struct {
 	DependencyResults []DependencyResult `json:"dependency_results,omitempty"`
 	DelegationTargets []DelegationTarget `json:"delegation_targets,omitempty"`
 	ApprovalSupported bool               `json:"approval_supported,omitempty"`
+	ControlSupported  bool               `json:"control_supported,omitempty"`
 }
 
 // DependencyResult 记录父任务续接时收到的子任务标识和状态。
@@ -297,12 +305,15 @@ type Store interface {
 	Workspace(context.Context) (Snapshot, error)
 	WorkspaceEvents(context.Context, int64) ([]int64, error)
 	TaskDetail(context.Context, string) (Detail, error)
+	ControlTask(context.Context, string, TaskControl) (Task, error)
 	SaveProject(context.Context, Project) (Project, error)
 	Projects(context.Context) ([]Project, error)
 	SubmitMessage(context.Context, Message) (Message, error)
 	AnswerApproval(context.Context, string, string) (Approval, error)
 	ReplaceDirectories(context.Context, string, [32]byte, []Directory) error
 	ClaimRun(context.Context, string, [32]byte) (RunClaim, error)
+	ClaimRunWithControl(context.Context, string, [32]byte, bool) (RunClaim, error)
+	RunControl(context.Context, string, [32]byte, string, int64, string) (bool, error)
 	RenewRun(context.Context, string, [32]byte, string, int64, string) (time.Time, error)
 	Delegate(context.Context, string, [32]byte, string, Delegation) (Task, error)
 	ValidateWait(context.Context, string, [32]byte, string, RunEvent) error

@@ -14,6 +14,9 @@ import (
 
 var sessionIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
 
+// ErrProcessExitUnconfirmed 表示 Windows 未确认本轮所属进程树已全部退出。
+var ErrProcessExitUnconfirmed = errors.New("无法确认本轮 Agent 进程树已退出")
+
 // RunDSH 从标准输入向无界面的 dsh 传递提示词，并在解析到原生会话事件后回调 session。
 func RunDSH(ctx context.Context, directory, prompt, sessionID string, started func() error, session func(string) error) (string, error) {
 	return RunDSHWithEnvironment(ctx, directory, prompt, sessionID, nil, started, session)

@@ -25,6 +25,9 @@ func TestRunProtocolAuthenticatesAndParsesNoWork(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusNoContent)
 		case "/api/v1/devices/d-0123456789abcdef0123456789abcdef/runs/claim":
+			if r.Header.Get("Muster-Run-Control") != "1" || r.ContentLength != 0 {
+				t.Error("运行领取须使用请求头协商控制能力，并保留空请求体")
+			}
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			t.Errorf("unexpected request %s", r.URL.Path)
@@ -45,6 +48,45 @@ func TestRunProtocolAuthenticatesAndParsesNoWork(t *testing.T) {
 	run, err := client.ClaimRun(context.Background(), identity)
 	if err != nil || run != nil || calls != 2 {
 		t.Fatalf("run=%#v calls=%d err=%v", run, calls, err)
+	}
+}
+
+func TestRunStopRequestedAuthenticatesRunAndRequiresExplicitBoolean(t *testing.T) {
+	proof := LeaseProof{Generation: 2, Lease: "fixture-lease"}
+	for _, test := range []struct {
+		body      string
+		stop      bool
+		wantError bool
+	}{
+		{body: `{"stop":true}`, stop: true},
+		{body: `{"stop":false}`},
+		{body: `{}`, wantError: true},
+		{body: `{"stop":"true"}`, wantError: true},
+	} {
+		t.Run(test.body, func(t *testing.T) {
+			identity := testIdentity()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/devices/"+identity.DeviceID+"/runs/run-test/control" ||
+					r.Header.Get("Authorization") != "Bearer "+identity.Token || r.URL.RawQuery != "" {
+					t.Errorf("停止检查的认证、方法或路径不符：%s %s", r.Method, r.URL.Path)
+				}
+				var got LeaseProof
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil || got != proof {
+					t.Errorf("停止检查没有使用该轮的租约凭据：%v", err)
+				}
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			identity.HubURL = server.URL
+			client, err := NewClient(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stop, err := client.RunStopRequested(t.Context(), identity, "run-test", proof)
+			if stop != test.stop || (err != nil) != test.wantError {
+				t.Fatalf("检查停止指令得到 %t, %v", stop, err)
+			}
+		})
 	}
 }
 

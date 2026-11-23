@@ -270,6 +270,36 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { description: 任务不存在 }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/tasks/{id}/control:
+    parameters: [{ $ref: '#/components/parameters/TaskID' }]
+    post:
+      operationId: controlTask
+      security: [{ adminBearer: [] }]
+      requestBody:
+        description: JSON 请求体不超过 16 KiB。
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [action, request_id]
+              properties:
+                action: { $ref: '#/components/schemas/TaskControlAction' }
+                request_id: { type: string, format: uuid, description: 同一次操作的重试须使用原 ID。 }
+      responses:
+        '200':
+          description: 操作已登记，返回当前任务状态。同一任务以相同请求 ID 和操作重试时返回当前状态。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+        '400': { description: 无效的任务 ID、操作或请求 ID }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 任务不存在 }
+        '409': { description: 当前状态不可执行此操作，或同一请求 ID 已用于其他操作。 }
+        '413': { description: 请求体超过大小上限 }
+        '415': { description: 请求体须使用 application/json }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/approvals/{id}/answer:
     parameters:
       - { name: id, in: path, required: true, schema: { $ref: '#/components/schemas/ApprovalID' } }
@@ -376,6 +406,11 @@ paths:
     post:
       operationId: claimRun
       security: [{ deviceBearer: [] }]
+      parameters:
+        - name: Muster-Run-Control
+          in: header
+          description: 支持运行停止指令的设备发送值 1。
+          schema: { type: string, enum: ['1'] }
       responses:
         '200':
           description: 已领取运行。重复领取未结束的运行会返回原指令。
@@ -393,6 +428,9 @@ paths:
                   approval_supported:
                     type: boolean
                     description: 为 true 时设备可提交请示回执。字段缺省视为未启用。
+                  control_supported:
+                    type: boolean
+                    description: 为 true 时设备查询运行停止指令，并在停止后上报 stopped 事件。字段缺省视为未启用。
                   agent_kind: { $ref: '#/components/schemas/AgentKind' }
                   generation: { type: integer, format: int64, minimum: 1 }
                   lease: { $ref: '#/components/schemas/Lease' }
@@ -430,6 +468,42 @@ paths:
         '400': { description: 请求体必须为空 }
         '401': { $ref: '#/components/responses/DeviceUnauthorized' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/devices/{device_id}/runs/{id}/control:
+    parameters:
+      - { $ref: '#/components/parameters/DeviceID' }
+      - { name: id, in: path, required: true, schema: { $ref: '#/components/schemas/RunID' } }
+    post:
+      operationId: getRunControl
+      security: [{ deviceBearer: [] }]
+      requestBody:
+        description: JSON 请求体不超过 16 KiB。
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [generation, lease]
+              properties:
+                generation: { type: integer, format: int64, minimum: 1 }
+                lease: { $ref: '#/components/schemas/Lease' }
+      responses:
+        '200':
+          description: 返回当前运行是否应停止。查询不会消费指令。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [stop]
+                properties:
+                  stop: { type: boolean }
+        '400': { description: 无效的运行 ID、运行代次或租约 }
+        '401': { $ref: '#/components/responses/DeviceUnauthorized' }
+        '404': { description: 运行不属于该设备 }
+        '409': { description: 运行代次或租约与当前记录不匹配 }
+        '413': { description: 请求体超过大小上限 }
+        '415': { description: 请求体须使用 application/json }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/devices/{device_id}/runs/{id}/events/{sequence}:
     parameters:
       - { $ref: '#/components/parameters/DeviceID' }
@@ -439,7 +513,7 @@ paths:
       operationId: recordRunEvent
       security: [{ deviceBearer: [] }]
       requestBody:
-        description: JSON 请求体不超过 80 KiB。请示事件须携带当前运行代次和租约。
+        description: JSON 请求体不超过 80 KiB。请示与停止事件须携带当前运行代次和租约。停止事件须在确认本轮进程树退出后上报。
         required: true
         content:
           application/json:
@@ -448,7 +522,7 @@ paths:
               additionalProperties: false
               required: [kind]
               properties:
-                kind: { type: string, enum: [started, session, waiting, approval_requested, completed, failed, interrupted] }
+                kind: { type: string, enum: [started, session, waiting, approval_requested, stopped, completed, failed, interrupted] }
                 generation: { type: integer, format: int64, minimum: 1 }
                 lease: { $ref: '#/components/schemas/Lease' }
                 session_id: { type: string, description: session 事件必填 }
@@ -463,7 +537,7 @@ paths:
         '400': { description: 无效的事件或序号 }
         '401': { $ref: '#/components/responses/DeviceUnauthorized' }
         '404': { description: 设备未领取该运行 }
-        '409': { description: 事件序号、内容、原生会话或请示状态发生冲突 }
+        '409': { description: 事件序号、内容、原生会话、请示或运行控制状态发生冲突 }
         '413': { description: 请求体超过大小上限 }
         '415': { description: 请求体须使用 application/json }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -1265,13 +1339,17 @@ components:
         impact: { type: string }
         status:
           type: string
-          enum: [pending, answered, handled]
-          description: 依次表示待答复、答复已保存和设备已处理。
+          enum: [pending, answered, handled, cancelled]
+          description: 分别表示待答复、答复已保存、设备已处理和请示已取消。
         answer: { type: string }
         created_at: { type: string, format: date-time }
         answered_at: { type: string, format: date-time }
         handled_at: { type: string, format: date-time }
-    TaskState: { type: string, enum: [queued, running, waiting_dependencies, waiting_delivery, waiting_reply, completed, failed, interrupted, paused, cancelled] }
+    TaskControlAction:
+      type: string
+      enum: [pause, stop_current, resume, cancel]
+      description: pause 在本轮结束后暂停排程。stop_current 结束当前进程树并暂停任务。resume 恢复排程。cancel 取消任务及其未结束的子任务。
+    TaskState: { type: string, enum: [queued, running, waiting_dependencies, waiting_delivery, waiting_reply, pausing, stopping, cancelling, completed, failed, interrupted, paused, cancelled] }
     Task:
       type: object
       required: [id, project_id, project_name, device_id, directory_id, status, title, report_pending, updated_at]
@@ -1289,6 +1367,11 @@ components:
         current_run_generation: { type: integer, format: int64, minimum: 1 }
         wait_generation: { type: integer, format: int64, minimum: 1 }
         status: { $ref: '#/components/schemas/TaskState' }
+        control_actions:
+          type: array
+          uniqueItems: true
+          description: 当前任务状态允许的控制操作。字段缺省表示暂无可用操作。
+          items: { $ref: '#/components/schemas/TaskControlAction' }
         title: { type: string }
         result: { type: string }
         report_pending: { type: boolean }
@@ -1300,7 +1383,7 @@ components:
         id: { $ref: '#/components/schemas/RunID' }
         task_id: { $ref: '#/components/schemas/TaskID' }
         directory_id: { $ref: '#/components/schemas/DirectoryID' }
-        status: { type: string, enum: [queued, running, waiting, waiting_delivery, approval_requested, completed, failed, interrupted, paused, cancelled] }
+        status: { type: string, enum: [queued, running, waiting, waiting_delivery, approval_requested, stopped, completed, failed, interrupted, paused, cancelled] }
         session_id: { type: string }
         generation: { type: integer, format: int64, minimum: 1 }
         lease_until: { type: string, format: date-time }

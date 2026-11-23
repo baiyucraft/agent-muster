@@ -39,6 +39,7 @@
 
 .approval-card[data-status='pending'] .approval-status { color: var(--amber); background: var(--amber-bg); }
 .approval-card[data-status='handled'] .approval-status { color: var(--green); background: var(--green-bg); }
+.approval-card[data-status='cancelled'] .approval-status { color: var(--muted); background: var(--neutral); }
 .approval-task, .approval-impact { font-size: var(--text-small); }
 .approval-question, .approval-impact, .approval-answer p, .approval-error { margin: 0; white-space: pre-wrap; }
 .approval-question { font-size: var(--text-body); font-weight: 650; line-height: 1.5; }

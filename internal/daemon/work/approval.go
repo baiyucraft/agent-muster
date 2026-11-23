@@ -11,6 +11,7 @@ import (
 
 	"github.com/baiyucraft/agent-muster/internal/approval"
 	"github.com/baiyucraft/agent-muster/internal/daemon/control"
+	"github.com/baiyucraft/agent-muster/internal/daemon/runner"
 )
 
 const approvalMarker = "MUSTER_APPROVAL_V1"
@@ -88,6 +89,9 @@ func (worker *Worker) finishApproval(ctx context.Context, run control.Run, dir s
 		}
 		if question == nil || retryErr != nil || ctx.Err() != nil {
 			event.Kind = "interrupted"
+			if errors.Is(retryErr, runner.ErrProcessExitUnconfirmed) {
+				return retryErr
+			}
 			return err
 		}
 	}

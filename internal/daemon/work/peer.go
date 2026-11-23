@@ -46,6 +46,7 @@ type collaborationHub interface {
 	hub
 	RegisterPeer(context.Context, control.Identity, string, string) error
 	RenewRun(context.Context, control.Identity, string, control.LeaseProof) (time.Time, error)
+	RunStopRequested(context.Context, control.Identity, string, control.LeaseProof) (bool, error)
 	Delegate(context.Context, control.Identity, string, control.Delegation) (json.RawMessage, error)
 	ValidateWait(context.Context, control.Identity, string, control.RunEvent) error
 	CreateTransfer(context.Context, control.Identity, string, control.Manifest) (control.Transfer, error)

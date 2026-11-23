@@ -13,7 +13,8 @@ import (
 )
 
 const approvalColumns = `a.id,a.task_id,t.root_id,a.run_id,a.question,a.options,a.impact,
-	CASE WHEN a.handled_at IS NOT NULL THEN 'handled' WHEN a.answered_at IS NOT NULL THEN 'answered' ELSE 'pending' END,
+	CASE WHEN a.cancelled_at IS NOT NULL THEN 'cancelled' WHEN a.handled_at IS NOT NULL THEN 'handled'
+		WHEN a.answered_at IS NOT NULL THEN 'answered' ELSE 'pending' END,
 	a.answer,a.created_at,a.answered_at,a.handled_at
 	FROM muster_approvals a JOIN muster_tasks t ON t.id=a.task_id`
 
@@ -83,6 +84,9 @@ func normalizeApprovalAnswer(answer string) (string, error) {
 
 // saveApprovalAnswer 由 Web 和 IM 共用，调用方须持有工作区写入锁并已验证答复。
 func saveApprovalAnswer(ctx context.Context, tx pgx.Tx, value *workspace.Approval, answer string) error {
+	if value.Status == "cancelled" {
+		return workspace.ErrConflict
+	}
 	if value.AnsweredAt != nil {
 		return nil
 	}
@@ -130,7 +134,7 @@ func saveApprovalAnswer(ctx context.Context, tx pgx.Tx, value *workspace.Approva
 func finishApproval(ctx context.Context, tx pgx.Tx, runID string) error {
 	_, err := tx.Exec(ctx, `WITH handled AS (
 		UPDATE muster_approvals SET handled_at=clock_timestamp()
-		WHERE resume_run_id=$1 AND handled_at IS NULL RETURNING id
+		WHERE resume_run_id=$1 AND handled_at IS NULL AND cancelled_at IS NULL RETURNING id
 	)
 	UPDATE muster_approval_notifications SET desired_status='handled',next_attempt_at=clock_timestamp()
 	WHERE approval_id IN (SELECT id FROM handled)`, runID)

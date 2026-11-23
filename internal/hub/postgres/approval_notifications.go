@@ -21,7 +21,7 @@ func (store *InventoryStore) EnableApprovalNotifications(ctx context.Context, re
 	}
 	err := store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO muster_approval_notifications(approval_id,app_id,open_id,desired_status)
-			SELECT id,$1,$2,'pending' FROM muster_approvals WHERE answered_at IS NULL
+			SELECT id,$1,$2,'pending' FROM muster_approvals WHERE answered_at IS NULL AND cancelled_at IS NULL
 			ON CONFLICT (approval_id) DO NOTHING`, recipient.AppID, recipient.OpenID)
 		return err
 	})
@@ -69,7 +69,7 @@ func (store *InventoryStore) ClaimApprovalNotification(ctx context.Context, reci
 			return err
 		}
 		delivery.Lease, delivery.Approval.Status = lease, state
-		if state == "pending" {
+		if state == "pending" || state == "cancelled" {
 			delivery.Approval.Answer, delivery.Approval.AnsweredAt = "", nil
 		}
 		if state != "handled" {

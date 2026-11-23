@@ -10,7 +10,13 @@ export type Message = {
   created_at: string
 }
 
-type RunStatus = 'queued' | 'running' | 'waiting' | 'waiting_delivery' | 'completed' | 'failed' | 'paused' | 'cancelled' | 'interrupted' | 'approval_requested'
+type RunStatus = 'queued' | 'running' | 'waiting' | 'waiting_delivery' | 'completed' | 'failed' | 'paused' | 'stopped' | 'cancelled' | 'interrupted' | 'approval_requested'
+
+/** 任务生命周期操作。详情只展示 Hub 返回的可用操作。 */
+export type TaskControlAction = 'pause' | 'stop_current' | 'resume' | 'cancel'
+
+/** 重试同一次操作时保持请求 ID，新操作使用新的 ID。 */
+export type TaskControlRequest = { action: TaskControlAction; request_id: string }
 
 /** 看板的任务摘要，包含关联设备、Agent、依赖等待及待汇报状态。 */
 export type Task = {
@@ -18,7 +24,7 @@ export type Task = {
   project_id: string
   project_name: string
   device_id: string
-  status: Exclude<RunStatus, 'waiting' | 'approval_requested'> | 'waiting_dependencies' | 'waiting_reply'
+  status: Exclude<RunStatus, 'waiting' | 'stopped' | 'approval_requested'> | 'waiting_dependencies' | 'waiting_reply' | 'pausing' | 'stopping' | 'cancelling'
   title: string
   updated_at: string
   result?: string
@@ -30,6 +36,7 @@ export type Task = {
   waiting_reason?: 'children' | 'delivery' | 'transfers'
   current_run_generation?: number
   wait_generation?: number
+  control_actions?: TaskControlAction[]
 }
 
 /** 设备登记后对 Hub 可见的工作目录 ID 与展示名称。 */
@@ -96,14 +103,14 @@ export type Approval = {
   question: string
   options: string[]
   impact?: string
-  status: 'pending' | 'answered' | 'handled'
+  status: 'pending' | 'answered' | 'handled' | 'cancelled'
   answer?: string
   created_at: string
   answered_at?: string
   handled_at?: string
 }
 
-const approvalStage: Record<Approval['status'], number> = { pending: 0, answered: 1, handled: 2 }
+const approvalStage: Record<Approval['status'], number> = { pending: 0, answered: 1, handled: 2, cancelled: 3 }
 
 /**
  * 比较同一条请示的两份记录，保留已确认的最新状态。
@@ -180,6 +187,24 @@ export async function readTask(token: string, id: string, signal: AbortSignal): 
     dependencies: detail.dependencies ?? [], transfers: detail.transfers ?? [],
     inputs: detail.inputs ?? [], waited_transfers: detail.waited_transfers ?? [], approvals: detail.approvals ?? [],
   }
+}
+
+/**
+ * 请求 Hub 改变任务的调度状态。对运行中的任务，设备确认后才进入最终状态。
+ * @param token 当前管理员会话的令牌。
+ * @param id Hub 分配的任务 ID。
+ * @param input 操作和用于重试去重的客户端请求 ID。
+ * @param signal 停止等待响应。
+ * @returns Hub 当前确认的任务记录。
+ */
+export async function controlTask(token: string, id: string, input: TaskControlRequest, signal: AbortSignal): Promise<Task> {
+  const response = await request(token, `/api/v1/tasks/${encodeURIComponent(id)}/control`, {
+    signal,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  return (await response.json()) as Task
 }
 
 /**
@@ -285,7 +310,7 @@ export async function waitForWorkspaceEvent(token: string, cursor: number, signa
 }
 
 /**
- * 生成浏览器可用的客户端消息或项目 ID。
+ * 生成客户端提交 ID，适用于 HTTPS 与普通 HTTP 工作台。
  * @returns 基于浏览器随机字节的 UUID v4 字符串。
  */
 export function newID(): string {

@@ -62,7 +62,7 @@ func (store *InventoryStore) Delegate(ctx context.Context, device string, token 
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		if run.CurrentRun != runID || run.Status != "running" || !run.LeaseLive {
+		if run.CurrentRun != runID || run.Status != "running" || !run.LeaseLive || run.stopping() {
 			return workspace.ErrConflict
 		}
 		route, err := resolveBinding(ctx, tx, input.ProjectID, input.BindingID)
@@ -145,7 +145,7 @@ func (store *InventoryStore) ValidateWait(ctx context.Context, device string, to
 		if err != nil {
 			return err
 		}
-		if run.CurrentRun != runID || run.Status != "running" || !run.LeaseLive ||
+		if run.CurrentRun != runID || run.Status != "running" || !run.LeaseLive || run.stopping() ||
 			event.Lease == "" || event.Lease != run.Lease || event.Generation != run.Generation {
 			return workspace.ErrConflict
 		}
@@ -251,7 +251,7 @@ func reconcileWait(ctx context.Context, tx pgx.Tx, taskID string) error {
 	var generation int64
 	var device, status string
 	err := tx.QueryRow(ctx, `SELECT input_generation,device_id,status FROM muster_tasks
-		WHERE id=$1 AND waiting_reason IN ('children','transfers')`, taskID).Scan(&generation, &device, &status)
+		WHERE id=$1 AND control_mode<>'cancel' AND waiting_reason IN ('children','transfers')`, taskID).Scan(&generation, &device, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -263,7 +263,7 @@ func reconcileWait(ctx context.Context, tx pgx.Tx, taskID string) error {
 			SELECT 1 FROM muster_run_transfers rt JOIN muster_transfers tr ON tr.id=rt.transfer_id
 			WHERE rt.run_id=c.current_run_id AND rt.direction='result' AND tr.received_at IS NULL
 		) THEN 'delivering'
-		WHEN c.status IN ('completed','failed','interrupted') THEN c.status
+		WHEN c.status IN ('completed','failed','interrupted','cancelled') THEN c.status
 		ELSE 'waiting' END
 		FROM muster_tasks c WHERE c.id=d.depends_on_task_id AND d.task_id=$1 AND d.generation=$2`, taskID, generation); err != nil {
 		return err

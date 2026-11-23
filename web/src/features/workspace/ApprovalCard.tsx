@@ -14,6 +14,7 @@ const statusText: Record<Approval['status'], string> = {
   pending: '待答复',
   answered: '已答复',
   handled: '已处理',
+  cancelled: '已取消',
 }
 
 /**
@@ -59,9 +60,9 @@ export function ApprovalCard({ approval, task, actions }: { approval: Approval; 
           {invalidDraft && <p id={`${id}-limit`} className="approval-error" role="status">答复最多 {approvalAnswerBytes} 个 UTF-8 字节，且不能包含空字符。</p>}
           {submission?.error && <p className="approval-error" role="alert">{submission.error}</p>}
         </form>
-      ) : (
+      ) : approval.answer && (
         <div className="approval-answer" role="status">
-          {approval.answer && <p>{approval.answer}</p>}
+          <p>{approval.answer}</p>
         </div>
       )}
     </article>

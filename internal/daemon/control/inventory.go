@@ -147,6 +147,10 @@ func (client *Client) report(ctx context.Context, identity Identity, method, ope
 }
 
 func (client *Client) send(ctx context.Context, method string, endpoint *url.URL, token string, payload any, statusCodes ...int) (*http.Response, error) {
+	return client.sendWithHeaders(ctx, method, endpoint, token, nil, payload, statusCodes...)
+}
+
+func (client *Client) sendWithHeaders(ctx context.Context, method string, endpoint *url.URL, token string, headers http.Header, payload any, statusCodes ...int) (*http.Response, error) {
 	var body io.Reader
 	if payload != nil {
 		data, err := json.Marshal(payload)
@@ -158,6 +162,9 @@ func (client *Client) send(ctx context.Context, method string, endpoint *url.URL
 	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
 	if err != nil {
 		return nil, err
+	}
+	if headers != nil {
+		request.Header = headers.Clone()
 	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
