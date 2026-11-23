@@ -37,6 +37,9 @@ var createTaskControlTables string
 //go:embed migrations/011_run_diagnostics.sql
 var addRunDiagnostics string
 
+//go:embed migrations/012_git_policies.sql
+var addGitPolicies string
+
 // InventoryStore 使用 PostgreSQL 保存设备与工作区记录。
 type InventoryStore struct {
 	pool      *pgxpool.Pool
@@ -85,7 +88,10 @@ func OpenInventory(ctx context.Context, databaseURL string) (*InventoryStore, er
 		if _, err := tx.Exec(ctx, createTaskControlTables, pgx.QueryExecModeSimpleProtocol); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, addRunDiagnostics, pgx.QueryExecModeSimpleProtocol)
+		if _, err := tx.Exec(ctx, addRunDiagnostics, pgx.QueryExecModeSimpleProtocol); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, addGitPolicies, pgx.QueryExecModeSimpleProtocol)
 		return err
 	})
 	if err != nil {

@@ -1290,12 +1290,36 @@ components:
         device_id: { $ref: '#/components/schemas/DeviceID' }
         directory_id: { $ref: '#/components/schemas/DirectoryID' }
         agent_kind: { $ref: '#/components/schemas/AgentKind' }
+        git_policy:
+          description: 省略时保留已保存规则，显式 null 时关闭。版本由 Hub 生成。
+          oneOf:
+            - { $ref: '#/components/schemas/GitDeliveryPolicy' }
+            - { type: 'null' }
         bindings:
           type: array
           minItems: 1
           maxItems: 32
           description: 恰有一条默认绑定
           items: { $ref: '#/components/schemas/Binding' }
+    GitDeliveryPolicy:
+      type: object
+      additionalProperties: false
+      required: [base_ref, remote, test, max_repairs]
+      properties:
+        revision: { type: integer, minimum: 0, description: Hub 保存后分配的规则版本。 }
+        base_ref: { type: string, description: 完整的 refs/heads/ 本地分支或 refs/remotes/ 远端跟踪引用。 }
+        remote: { type: string, description: 设备仓库已配置的 Git 远端别名。 }
+        target_branch: { type: string, description: 完整的 refs/heads/ 目标引用。留空使用任务分支。 }
+        test:
+          type: object
+          additionalProperties: false
+          required: [program, timeout_seconds]
+          properties:
+            program: { type: string, description: 设备 PATH 中的测试程序名称。 }
+            args: { type: array, items: { type: string }, description: 原样传入的参数列表。 }
+            timeout_seconds: { type: integer, minimum: 1, maximum: 3600 }
+        review_agent: { $ref: '#/components/schemas/AgentKind' }
+        max_repairs: { type: integer, minimum: 0, maximum: 5 }
     Project:
       allOf:
         - { $ref: '#/components/schemas/ProjectBinding' }

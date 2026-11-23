@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/baiyucraft/agent-muster/internal/approval"
+	"github.com/baiyucraft/agent-muster/internal/gitdelivery"
 	"github.com/baiyucraft/agent-muster/internal/runreport"
 )
 
@@ -27,13 +28,15 @@ type Directory struct {
 
 // Project 表示项目及其执行绑定，顶层设备与目录字段记录默认绑定。
 type Project struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	DeviceID       string    `json:"device_id"`
-	DirectoryID    string    `json:"directory_id"`
-	DirectoryLabel string    `json:"directory_label"`
-	AgentKind      string    `json:"agent_kind"`
-	Bindings       []Binding `json:"bindings,omitempty"`
+	ID             string              `json:"id"`
+	Name           string              `json:"name"`
+	DeviceID       string              `json:"device_id"`
+	DirectoryID    string              `json:"directory_id"`
+	DirectoryLabel string              `json:"directory_label"`
+	AgentKind      string              `json:"agent_kind"`
+	Bindings       []Binding           `json:"bindings,omitempty"`
+	GitPolicy      *gitdelivery.Policy `json:"git_policy,omitempty"`
+	ClearGitPolicy bool                `json:"-"` // 管理端显式提交 null 时清空规则。
 }
 
 // Binding 将项目关联到指定设备、目录和 Agent，并记录是否为默认项。

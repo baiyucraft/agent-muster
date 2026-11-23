@@ -43,10 +43,22 @@ export type Task = {
 export type Directory = { id: string; label: string; device_id: string }
 /** 项目到单台设备工作目录及 Agent 的绑定，含是否为默认绑定。 */
 export type ProjectBinding = { id: string; device_id: string; directory_id: string; directory_label: string; agent_kind: string; is_default: boolean }
+/** 管理员为项目保存的 Git 交付规则。revision 由 Hub 管理，target_branch 为空时按任务生成。 */
+export type GitPolicy = {
+  revision?: number
+  base_ref: string
+  remote: string
+  /** 目标分支的完整 refs/heads 引用。 */
+  target_branch?: string
+  /** 测试程序及按原顺序传入的独立参数，超时单位为秒。 */
+  test: { program: string; args: string[]; timeout_seconds: number }
+  review_agent?: 'dsh' | 'codex'
+  max_repairs: number
+}
 /** 工作区快照内的项目及绑定信息，旧记录可能只提供设备和目录字段。 */
-export type Project = { id: string; name: string; device_id: string; directory_id: string; directory_label: string; agent_kind?: string; bindings?: ProjectBinding[] }
-/** 保存项目时发送的名称、默认执行目标和全部绑定。 */
-export type ProjectInput = { name: string; agent_kind: string; bindings: ProjectBinding[]; device_id: string; directory_id: string }
+export type Project = { id: string; name: string; device_id: string; directory_id: string; directory_label: string; agent_kind?: string; bindings?: ProjectBinding[]; git_policy?: GitPolicy }
+/** 保存项目名称和执行绑定。省略 git_policy 时保留规则，null 清除规则。 */
+export type ProjectInput = { name: string; agent_kind: string; bindings: ProjectBinding[]; device_id: string; directory_id: string; git_policy?: Omit<GitPolicy, 'revision'> | null }
 
 /** 一次任务执行记录，取得原生会话后可带会话 ID。 */
 export type Run = {

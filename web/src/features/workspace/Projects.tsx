@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { AdminTokenError, readDevices, type Device } from '../../api/devices'
-import { newID, projectNameBytes, saveProject, withinTextLimit, type Directory, type Project, type ProjectBinding, type ProjectInput, type Workspace } from '../../api/workspace'
+import { newID, projectNameBytes, saveProject, withinTextLimit, type Directory, type GitPolicy, type Project, type ProjectBinding, type ProjectInput, type Workspace } from '../../api/workspace'
 import { messageFor } from '../../useWorkspace'
 import './projects.css'
 
@@ -11,9 +11,38 @@ type ProjectsProps = {
   onLock: (reason: string) => void
 }
 
-type ProjectDraft = { id: string; name: string; bindings: ProjectBinding[] }
+type ProjectDraft = { id: string; name: string; bindings: ProjectBinding[]; gitPolicy: GitPolicyDraft; initialGitPolicy: string }
+
+/** 编辑时保留开关和短分支名，独立参数使用稳定键以便逐项编辑。 */
+type GitPolicyDraft = {
+  enabled: boolean
+  baseRef: string
+  remote: string
+  targetBranch: string
+  program: string
+  args: { id: string; value: string }[]
+  timeoutSeconds: string
+  reviewAgent: GitPolicy['review_agent'] | ''
+  maxRepairs: string
+}
 
 const maxProjectBindings = 32
+const branchPrefix = 'refs/heads/'
+
+/** 将已保存的规则转为表单值，旧项目默认关闭。 */
+function gitPolicyDraft(policy?: GitPolicy): GitPolicyDraft {
+  return {
+    enabled: Boolean(policy),
+    baseRef: policy?.base_ref ?? 'refs/remotes/origin/main',
+    remote: policy?.remote ?? 'origin',
+    targetBranch: policy?.target_branch?.replace(/^refs\/heads\//, '') ?? '',
+    program: policy?.test.program ?? '',
+    args: (policy?.test.args ?? []).map((value) => ({ id: newID(), value })),
+    timeoutSeconds: String(policy?.test.timeout_seconds ?? 120),
+    reviewAgent: policy?.review_agent ?? '',
+    maxRepairs: String(policy?.max_repairs ?? 0),
+  }
+}
 
 function bindingsFor(project: Project): ProjectBinding[] {
   if (project.bindings?.length) return project.bindings
@@ -28,15 +57,66 @@ function bindingsFor(project: Project): ProjectBinding[] {
   }]
 }
 
+/** 生成用于提交和比较的规则，关闭交付时生成 null。 */
+function gitPolicyInput(policy: GitPolicyDraft): Omit<GitPolicy, 'revision'> | null {
+  if (!policy.enabled) return null
+  const targetBranch = policy.targetBranch.trim()
+  return {
+    base_ref: policy.baseRef.trim(),
+    remote: policy.remote.trim(),
+    target_branch: targetBranch ? `${branchPrefix}${targetBranch}` : undefined,
+    test: { program: policy.program.trim(), args: policy.args.map(({ value }) => value), timeout_seconds: Number(policy.timeoutSeconds) },
+    review_agent: policy.reviewAgent || undefined,
+    max_repairs: Number(policy.maxRepairs),
+  }
+}
+
+/** 只提交发生变化的规则，避免项目编辑覆盖其他会话保存的规则。 */
 function projectInput(draft: ProjectDraft): ProjectInput {
   const primary = draft.bindings.find((binding) => binding.is_default) ?? draft.bindings[0]
+  const policy = gitPolicyInput(draft.gitPolicy)
   return {
     name: draft.name.trim(),
     agent_kind: primary?.agent_kind ?? 'dsh',
     bindings: draft.bindings,
     device_id: primary?.device_id ?? '',
     directory_id: primary?.directory_id ?? '',
+    git_policy: JSON.stringify(policy) === draft.initialGitPolicy ? undefined : policy,
   }
+}
+
+/** 编辑项目级 Git 交付规则，参数按独立输入保存。 */
+function GitDeliveryFields({ policy, saving, onChange }: { policy: GitPolicyDraft; saving: boolean; onChange: (policy: GitPolicyDraft) => void }) {
+  return <fieldset className="project-git-policy" disabled={saving}>
+    <legend>Git 交付</legend>
+    <label className="default-binding"><input type="checkbox" checked={policy.enabled} onChange={(event) => onChange({ ...policy, enabled: event.target.checked })} />启用 Git 交付</label>
+    {policy.enabled && <div className="git-policy-fields">
+      <label>基准引用<input value={policy.baseRef} onChange={(event) => onChange({ ...policy, baseRef: event.target.value })} placeholder="refs/remotes/origin/main" required /></label>
+      <label>远程仓库别名<input value={policy.remote} onChange={(event) => onChange({ ...policy, remote: event.target.value })} placeholder="origin" required /></label>
+      <label>目标分支<input value={policy.targetBranch} onChange={(event) => onChange({ ...policy, targetBranch: event.target.value })} placeholder="留空时按任务生成" /></label>
+      <label>测试程序<input value={policy.program} onChange={(event) => onChange({ ...policy, program: event.target.value })} placeholder="go" required /></label>
+      <label>测试超时（秒）<input type="number" min={1} max={3600} step={1} value={policy.timeoutSeconds} onChange={(event) => onChange({ ...policy, timeoutSeconds: event.target.value })} required /></label>
+      <label>Review Agent<select value={policy.reviewAgent} onChange={(event) => {
+        const value = event.target.value
+        onChange({ ...policy, reviewAgent: value === 'dsh' || value === 'codex' ? value : '' })
+      }}>
+        <option value="">关闭 Review</option>
+        <option value="dsh">dsh</option>
+        <option value="codex">Codex</option>
+      </select></label>
+      <label>最多返修次数<input type="number" min={0} max={5} step={1} value={policy.maxRepairs} onChange={(event) => onChange({ ...policy, maxRepairs: event.target.value })} required /></label>
+      <div className="git-policy-args" role="group" aria-label="测试参数">
+        <button className="outline-button" type="button" onClick={() => onChange({ ...policy, args: [...policy.args, { id: newID(), value: '' }] })}>添加测试参数</button>
+        {policy.args.map((arg, index) => <div className="git-policy-arg" key={arg.id}>
+          <textarea rows={1} aria-label={`测试参数 ${index + 1}`} value={arg.value} onChange={(event) => {
+            const value = event.target.value
+            onChange({ ...policy, args: policy.args.map((item) => item.id === arg.id ? { ...item, value } : item) })
+          }} />
+          <button type="button" className="quiet-button" onClick={() => onChange({ ...policy, args: policy.args.filter((item) => item.id !== arg.id) })}>移除<span className="screen-reader">测试参数 {index + 1}</span></button>
+        </div>)}
+      </div>
+    </div>}
+  </fieldset>
 }
 
 export function Projects({ token, workspace, onSaved, onLock }: ProjectsProps) {
@@ -65,11 +145,11 @@ export function Projects({ token, workspace, onSaved, onLock }: ProjectsProps) {
     else editorTrigger.current?.focus()
   }, [draftID])
 
-  function edit(project: ProjectDraft, trigger: HTMLButtonElement) {
+  function edit(project: Omit<ProjectDraft, 'initialGitPolicy'>, trigger: HTMLButtonElement) {
     if (request.current) return
     editorTrigger.current = trigger
     setSaveError('')
-    setDraft(project)
+    setDraft({ ...project, initialGitPolicy: JSON.stringify(gitPolicyInput(project.gitPolicy)) })
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -114,7 +194,7 @@ export function Projects({ token, workspace, onSaved, onLock }: ProjectsProps) {
   }
 
   function create(trigger: HTMLButtonElement) {
-    edit({ id: newID(), name: '', bindings: [newBinding(true)] }, trigger)
+    edit({ id: newID(), name: '', bindings: [newBinding(true)], gitPolicy: gitPolicyDraft() }, trigger)
   }
 
   function updateBinding(index: number, patch: Partial<ProjectBinding>) {
@@ -177,6 +257,7 @@ export function Projects({ token, workspace, onSaved, onLock }: ProjectsProps) {
             <div className="binding-actions"><label className="default-binding"><input type="radio" name={`default-binding-${draft.id}`} checked={binding.is_default} onChange={() => updateBinding(index, { is_default: true })} disabled={saving} />默认绑定</label><button type="button" className="quiet-button" onClick={() => removeBinding(index)} disabled={saving || draft.bindings.length <= 1}>移除<span className="screen-reader">执行绑定</span></button></div>
           </article>
         })}</div>
+        <GitDeliveryFields policy={draft.gitPolicy} saving={saving} onChange={(gitPolicy) => setDraft({ ...draft, gitPolicy })} />
         {saveError && <p className="read-error" role="alert">{saveError}</p>}
         <div className="form-actions"><button className="quiet-button" type="button" onClick={() => setDraft(undefined)} disabled={saving}>取消</button><button className="primary-button" type="submit" disabled={saving || !draft.name.trim() || !validName || !canSave}>{saving ? '正在保存…' : '保存项目'}</button></div>
       </form>
@@ -207,7 +288,7 @@ export function Projects({ token, workspace, onSaved, onLock }: ProjectsProps) {
           return <article className="project-entry" key={project.id}>
             <header className="project-entry-heading">
               <h2>{project.name}</h2>
-              <button className="quiet-button" type="button" disabled={saving || draftID === project.id} onClick={(event) => edit({ id: project.id, name: project.name, bindings }, event.currentTarget)}>编辑<span className="screen-reader"> {project.name}</span></button>
+              <button className="quiet-button" type="button" disabled={saving || draftID === project.id} onClick={(event) => edit({ id: project.id, name: project.name, bindings, gitPolicy: gitPolicyDraft(project.git_policy) }, event.currentTarget)}>编辑<span className="screen-reader"> {project.name}</span></button>
             </header>
             {draftID === project.id ? editor : <>
               {primary && <div className="project-primary-binding">

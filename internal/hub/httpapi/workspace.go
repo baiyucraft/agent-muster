@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -120,9 +122,29 @@ func (api workspaceAPI) task(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api workspaceAPI) saveProject(w http.ResponseWriter, r *http.Request) {
-	var input workspace.Project
-	if !readJSON(w, r, &input) {
+	var request struct {
+		workspace.Project
+		GitPolicy json.RawMessage `json:"git_policy"`
+	}
+	if !readJSON(w, r, &request) {
 		return
+	}
+	input := request.Project
+	if len(request.GitPolicy) != 0 {
+		decoder := json.NewDecoder(bytes.NewReader(request.GitPolicy))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input.GitPolicy); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid Git delivery policy")
+			return
+		}
+		input.ClearGitPolicy = input.GitPolicy == nil
+		if input.GitPolicy != nil {
+			input.GitPolicy.Revision = 0
+			if err := input.GitPolicy.Validate(); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
 	}
 	id := r.PathValue("id")
 	input.Name = strings.TrimSpace(input.Name)

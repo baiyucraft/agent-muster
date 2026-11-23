@@ -84,3 +84,63 @@
   padding: 0;
   border: 0;
 }
+
+.project-git-policy {
+  min-width: 0;
+  margin: var(--space-4) 0 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--inset);
+}
+
+.project-git-policy legend {
+  padding: 0 4px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.git-policy-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 205px), 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.git-policy-fields label {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  color: var(--muted);
+  font-size: var(--text-small);
+}
+
+.git-policy-fields :is(input, select, textarea) {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 5px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.git-policy-fields textarea {
+  resize: vertical;
+}
+
+.git-policy-args {
+  display: grid;
+  grid-column: 1 / -1;
+  justify-items: start;
+  gap: var(--space-2);
+}
+
+.git-policy-arg {
+  display: grid;
+  width: min(100%, 480px);
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+}

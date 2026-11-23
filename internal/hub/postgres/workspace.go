@@ -3,7 +3,9 @@ package postgres
 import (
 	"context"
 	"errors"
+	"reflect"
 
+	"github.com/baiyucraft/agent-muster/internal/gitdelivery"
 	"github.com/baiyucraft/agent-muster/internal/hub/registry"
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
 	"github.com/jackc/pgx/v5"
@@ -11,7 +13,7 @@ import (
 
 var _ workspace.Store = (*InventoryStore)(nil)
 
-const projectColumns = "id, name, device_id, directory_id, directory_label, agent_kind"
+const projectColumns = "id, name, device_id, directory_id, directory_label, agent_kind, git_policy"
 const messageColumns = "id, kind, body, COALESCE(task_id, requested_task_id), status, created_at"
 const taskColumns = `t.id, t.project_id, t.project_name, t.device_id, t.directory_id, t.status, t.title, t.result,
 	EXISTS (SELECT 1 FROM muster_deliveries d WHERE d.task_id = t.id AND d.kind = 'report' AND NOT d.done),
@@ -213,6 +215,14 @@ func scanBinding(row pgx.Row) (value workspace.Binding, err error) {
 
 // SaveProject 保存项目与绑定，要求恰好一个默认绑定，并兼容原有单绑定输入。
 func (store *InventoryStore) SaveProject(ctx context.Context, project workspace.Project) (workspace.Project, error) {
+	if project.GitPolicy != nil {
+		policy := project.GitPolicy.Clone()
+		policy.Revision = 0
+		if err := policy.Validate(); err != nil {
+			return workspace.Project{}, err
+		}
+		project.GitPolicy = &policy
+	}
 	err := store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		if len(project.Bindings) == 0 {
 			if project.AgentKind == "" {
@@ -258,6 +268,9 @@ func (store *InventoryStore) SaveProject(ctx context.Context, project workspace.
 		if _, err := tx.Exec(ctx, "UPDATE muster_project_bindings SET is_default=false WHERE project_id=$1 AND is_default", project.ID); err != nil {
 			return err
 		}
+		if err := saveProjectPolicy(ctx, tx, &project); err != nil {
+			return err
+		}
 		for _, binding := range project.Bindings {
 			tag, err := tx.Exec(ctx, `INSERT INTO muster_project_bindings (id,project_id,device_id,directory_id,agent_kind,is_default)
 				VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO UPDATE SET
@@ -279,6 +292,34 @@ func (store *InventoryStore) SaveProject(ctx context.Context, project workspace.
 		return advanceWorkspace(ctx, tx)
 	})
 	return project, err
+}
+
+// saveProjectPolicy 沿用工作区写入锁，使规则版本与绑定和事件游标一起提交。
+func saveProjectPolicy(ctx context.Context, tx pgx.Tx, project *workspace.Project) error {
+	var prior *gitdelivery.Policy
+	var revision int64
+	err := tx.QueryRow(ctx, "SELECT git_policy,git_policy_revision FROM muster_projects WHERE id=$1", project.ID).
+		Scan(&prior, &revision)
+	if err != nil {
+		return err
+	}
+	if project.GitPolicy == nil && !project.ClearGitPolicy {
+		project.GitPolicy = prior
+		return nil
+	}
+	if project.GitPolicy != nil {
+		project.GitPolicy.Revision = revision
+	}
+	if reflect.DeepEqual(prior, project.GitPolicy) {
+		return nil
+	}
+	revision++
+	if project.GitPolicy != nil {
+		project.GitPolicy.Revision = revision
+	}
+	_, err = tx.Exec(ctx, "UPDATE muster_projects SET git_policy=$2,git_policy_revision=$3 WHERE id=$1",
+		project.ID, project.GitPolicy, revision)
+	return err
 }
 
 // SubmitMessage 事务性保存用户消息和插件投递。
@@ -377,7 +418,7 @@ func scanDirectory(row pgx.Row) (value workspace.Directory, err error) {
 }
 
 func scanProject(row pgx.Row) (value workspace.Project, err error) {
-	err = row.Scan(&value.ID, &value.Name, &value.DeviceID, &value.DirectoryID, &value.DirectoryLabel, &value.AgentKind)
+	err = row.Scan(&value.ID, &value.Name, &value.DeviceID, &value.DirectoryID, &value.DirectoryLabel, &value.AgentKind, &value.GitPolicy)
 	return
 }
 
