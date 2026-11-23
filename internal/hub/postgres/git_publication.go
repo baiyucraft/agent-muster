@@ -126,9 +126,9 @@ func gitPushAllowed(ctx context.Context, tx pgx.Tx, run runState, id string) (bo
 	var blocked bool
 	err := tx.QueryRow(ctx, `SELECT
 		EXISTS (SELECT 1 FROM muster_messages WHERE requested_task_id=$1 AND status='accepted') OR
-		EXISTS (SELECT 1 FROM muster_runs WHERE task_id=$1 AND generation>$3 AND status='queued') OR
+		EXISTS (SELECT 1 FROM muster_runs WHERE task_id=$1 AND id<>$2 AND status='queued') OR
 		EXISTS (SELECT 1 FROM muster_git_push_intents WHERE task_id=$1 AND run_id<>$2 AND status IN ('pending','unavailable'))`,
-		run.TaskID, id, run.Generation).Scan(&blocked)
+		run.TaskID, id).Scan(&blocked)
 	return !blocked, err
 }
 

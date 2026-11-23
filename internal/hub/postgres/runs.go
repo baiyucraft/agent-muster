@@ -76,12 +76,16 @@ func (store *InventoryStore) ClaimRunWithGitPublication(ctx context.Context, dev
 			return err
 		}
 		var firstClaim bool
+		// 先处理已受理的用户要求。已领取的运行保持归属，设备可继续按原租约恢复。
 		err := tx.QueryRow(ctx, `
 			WITH choice AS (
 				SELECT r.id,t.session_id,(r.claimed_at IS NULL) AS first_claim FROM muster_runs r
 				JOIN muster_tasks t ON r.id=t.current_run_id AND r.task_id=t.id
 				WHERE r.device_id=$1 AND r.status IN ('queued','running') AND t.status IN ('queued','running')
 				AND (r.claimed_at IS NOT NULL OR t.control_mode='')
+				AND (r.claimed_at IS NOT NULL OR r.ready_priority<>$6 OR r.dependency_results IS NULL OR NOT EXISTS (
+					SELECT 1 FROM muster_messages m WHERE m.requested_task_id=t.id AND m.status='accepted'
+				))
 				AND (NOT r.control_supported OR $3)
 				AND (t.git_policy IS NULL OR $4)
 				AND (NOT t.git_publish OR ($3 AND $4 AND $5))
@@ -102,7 +106,7 @@ func (store *InventoryStore) ClaimRunWithGitPublication(ctx context.Context, dev
 			RETURNING r.id,t.id,t.directory_id,r.input,r.input_session,t.agent_kind,t.project_id,r.generation,
 				r.lease,r.lease_until,t.binding_id,COALESCE(t.parent_id,''),COALESCE(parent.device_id,''),t.root_id,
 				r.prompt_transfer_id,r.dependency_results,choice.first_claim,r.control_supported,t.git_policy,t.git_publish`,
-			device, rand.Text(), controlSupported, gitVerificationSupported, gitPublishSupported).
+			device, rand.Text(), controlSupported, gitVerificationSupported, gitPublishSupported, priorityDependency).
 			Scan(&claim.ID, &claim.TaskID, &claim.DirectoryID, &claim.Prompt, &claim.SessionID, &claim.AgentKind,
 				&claim.ProjectID, &claim.Generation, &claim.Lease, &claim.LeaseUntil, &claim.BindingID, &claim.ParentTaskID,
 				&claim.ParentDeviceID, &claim.RootTaskID, &claim.PromptTransferID, &claim.DependencyResults, &firstClaim, &claim.ControlSupported, &claim.GitPolicy, &claim.GitPublish)
@@ -380,9 +384,20 @@ func updateTaskFromRun(ctx context.Context, tx pgx.Tx, run runState, runID, stat
 	}
 	if ended && sessionID != "" && status != "interrupted" {
 		var next string
-		err := tx.QueryRow(ctx, `SELECT id FROM muster_runs WHERE task_id=$1 AND id<>$2 AND status='queued' ORDER BY sequence LIMIT 1`,
-			run.TaskID, runID).Scan(&next)
+		var dependency bool
+		err := tx.QueryRow(ctx, `SELECT id,ready_priority=$3 AND dependency_results IS NOT NULL FROM muster_runs
+			WHERE task_id=$1 AND id<>$2 AND status='queued' ORDER BY ready_priority,sequence LIMIT 1`,
+			run.TaskID, runID, priorityDependency).Scan(&next, &dependency)
 		if err == nil {
+			if dependency {
+				reason = ""
+				// 自动续接可能早于追加轮入队。领取前更新代次，已分配租约的运行保持原代次。
+				if _, err := tx.Exec(ctx, `UPDATE muster_runs SET generation=(
+					SELECT MAX(generation)+1 FROM muster_runs WHERE task_id=$1
+				) WHERE id=$2 AND claimed_at IS NULL AND generation<$3`, run.TaskID, next, run.Generation); err != nil {
+					return err
+				}
+			}
 			_, err := tx.Exec(ctx, `UPDATE muster_tasks SET status='queued',waiting_reason=$4,current_run_id=$2,
 				session_id=$3,updated_at=clock_timestamp() WHERE id=$1`, run.TaskID, next, sessionID, reason)
 			return err

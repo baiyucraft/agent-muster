@@ -185,6 +185,12 @@ func recordWait(ctx context.Context, tx pgx.Tx, run runState, runID, device stri
 	if err := supersedeWaitDependencies(ctx, tx, run.TaskID); err != nil {
 		return err
 	}
+	// 追加轮声明了新的等待条件时，旧代次已结算但尚未领取的续接不再有效。
+	if _, err := tx.Exec(ctx, `UPDATE muster_runs SET status='cancelled',updated_at=clock_timestamp()
+		WHERE task_id=$1 AND status='queued' AND claimed_at IS NULL AND ready_priority=$2
+			AND dependency_results IS NOT NULL`, run.TaskID, priorityDependency); err != nil {
+		return err
+	}
 	var generation int64
 	if err := tx.QueryRow(ctx, `UPDATE muster_tasks SET input_generation=input_generation+1 WHERE id=$1 RETURNING input_generation`,
 		run.TaskID).Scan(&generation); err != nil {

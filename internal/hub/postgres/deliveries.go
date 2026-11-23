@@ -247,11 +247,15 @@ func insertTask(ctx context.Context, tx pgx.Tx, taskID, runID, title, parentID, 
 
 func appendRun(ctx context.Context, tx pgx.Tx, taskID, runID string) error {
 	var status, session, parent, mode string
+	var pendingDependency bool
 	err := tx.QueryRow(ctx, `
-		SELECT t.status,t.session_id,COALESCE(t.parent_id,''),t.control_mode FROM muster_tasks t
+		SELECT t.status,t.session_id,COALESCE(t.parent_id,''),t.control_mode,EXISTS (
+			SELECT 1 FROM muster_runs r WHERE r.id=t.current_run_id AND r.status='queued'
+				AND r.claimed_at IS NULL AND r.ready_priority=$2 AND r.dependency_results IS NOT NULL
+		) FROM muster_tasks t
 		JOIN muster_directories d USING (device_id,directory_id)
-		JOIN muster_devices v USING (device_id) WHERE t.id=$1 AND v.revoked_at IS NULL`, taskID).
-		Scan(&status, &session, &parent, &mode)
+		JOIN muster_devices v USING (device_id) WHERE t.id=$1 AND v.revoked_at IS NULL`, taskID, priorityDependency).
+		Scan(&status, &session, &parent, &mode, &pendingDependency)
 	if err != nil {
 		return notFound(err)
 	}
@@ -261,13 +265,17 @@ func appendRun(ctx context.Context, tx pgx.Tx, taskID, runID string) error {
 	if mode == "cancel" || status == "interrupted" && mode == "pause" {
 		return workspace.ErrConflict
 	}
-	if status == "running" || status == "queued" || status == "waiting_reply" || status == "paused" {
+	if status == "running" || status == "queued" && !pendingDependency || status == "waiting_reply" || status == "paused" {
 		return nil
 	}
 	if session == "" {
 		return workspace.ErrConflict
 	}
-	_, err = tx.Exec(ctx, `
-		UPDATE muster_tasks SET status='queued',current_run_id=$2,updated_at=clock_timestamp() WHERE id=$1`, taskID, runID)
+	// 已排队的依赖续接保留原运行和附件，等追加要求处理后再领取。
+	_, err = tx.Exec(ctx, `UPDATE muster_tasks t SET status='queued',current_run_id=$2,updated_at=clock_timestamp(),
+		waiting_reason=CASE WHEN NOT $3 THEN t.waiting_reason WHEN EXISTS (
+			SELECT 1 FROM muster_task_dependencies d WHERE d.task_id=t.id AND d.generation=t.input_generation
+		) THEN 'children' ELSE 'transfers' END
+		WHERE t.id=$1`, taskID, runID, pendingDependency)
 	return err
 }

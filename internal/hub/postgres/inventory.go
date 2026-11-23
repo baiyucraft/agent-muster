@@ -109,8 +109,10 @@ func OpenInventory(ctx context.Context, databaseURL string) (*InventoryStore, er
 		if _, err := tx.Exec(ctx, addGitPublication, pgx.QueryExecModeSimpleProtocol); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, addCenterTaskGroups, pgx.QueryExecModeSimpleProtocol)
-		return err
+		if _, err := tx.Exec(ctx, addCenterTaskGroups, pgx.QueryExecModeSimpleProtocol); err != nil {
+			return err
+		}
+		return migrateQueuedManualRecoveries(ctx, tx)
 	})
 	if err != nil {
 		pool.Close()

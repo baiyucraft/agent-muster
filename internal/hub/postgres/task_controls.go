@@ -217,7 +217,11 @@ func resumeStoppedRun(ctx context.Context, tx pgx.Tx, taskID, requestID string) 
 	if session != "" {
 		prompt = "上一轮已停止。请先核对当前文件、会话和已完成操作，再处理尚未完成的要求。\n\n" + prompt
 	}
-	runID := "run-" + stableUUID(taskID+"\x00resume\x00"+requestID)
+	// 显式恢复是用户操作。即使复制了依赖输入，也应先核对停止现场。
+	if priority == priorityDependency {
+		priority = priorityFollowUp
+	}
+	runID := manualRecoveryRunID(taskID, requestID)
 	if err := nextRun(ctx, tx, taskID, runID, prompt, transfer, priority); err != nil {
 		return err
 	}
@@ -234,6 +238,42 @@ func resumeStoppedRun(ctx context.Context, tx pgx.Tx, taskID, requestID string) 
 		return err
 	}
 	_, err = tx.Exec(ctx, "UPDATE muster_tasks SET status='queued',current_run_id=$2,result='' WHERE id=$1", taskID, runID)
+	return err
+}
+
+// manualRecoveryRunID 从已持久化的恢复请求重建轮次 ID，供重试和历史回填使用。
+func manualRecoveryRunID(taskID, requestID string) string {
+	return "run-" + stableUUID(taskID+"\x00resume\x00"+requestID)
+}
+
+// migrateQueuedManualRecoveries 纠正旧版继承了依赖优先级的手动恢复轮次。
+// 以恢复请求重建轮次 ID，仅提升仍为当前轮且尚未领取的匹配记录。
+func migrateQueuedManualRecoveries(ctx context.Context, tx pgx.Tx) error {
+	type recoveryRequest struct{ taskID, requestID, runID string }
+	requests, err := selectRows(ctx, tx, `SELECT t.id,c.request_id::text,r.id
+		FROM muster_runs r JOIN muster_tasks t ON t.id=r.task_id AND t.current_run_id=r.id
+		JOIN muster_task_control_requests c ON c.task_id=t.id AND c.action='resume'
+		WHERE r.status='queued' AND r.claimed_at IS NULL AND r.ready_priority=$1 AND r.dependency_results IS NOT NULL`,
+		func(row pgx.Row) (request recoveryRequest, err error) {
+			err = row.Scan(&request.taskID, &request.requestID, &request.runID)
+			return
+		}, priorityDependency)
+	if err != nil {
+		return err
+	}
+	var runIDs []string
+	for _, request := range requests {
+		if request.runID == manualRecoveryRunID(request.taskID, request.requestID) {
+			runIDs = append(runIDs, request.runID)
+		}
+	}
+	if len(runIDs) == 0 {
+		return nil
+	}
+	_, err = tx.Exec(ctx, `UPDATE muster_runs r SET ready_priority=$2
+		FROM muster_tasks t WHERE t.id=r.task_id AND t.current_run_id=r.id
+		AND r.id=ANY($1::text[]) AND r.status='queued' AND r.claimed_at IS NULL AND r.ready_priority=$3`,
+		runIDs, priorityFollowUp, priorityDependency)
 	return err
 }
 
