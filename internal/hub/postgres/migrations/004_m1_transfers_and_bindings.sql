@@ -19,10 +19,12 @@ FROM muster_projects p WHERE NOT EXISTS (
 ALTER TABLE muster_tasks
     ADD COLUMN IF NOT EXISTS binding_id text,
     ADD COLUMN IF NOT EXISTS waiting_reason text NOT NULL DEFAULT '';
-UPDATE muster_tasks t SET binding_id = t.project_id WHERE t.binding_id IS NULL;
-ALTER TABLE muster_tasks ALTER COLUMN binding_id SET NOT NULL;
+UPDATE muster_tasks t SET binding_id = t.project_id WHERE t.binding_id IS NULL AND t.project_id IS NOT NULL;
 DO $$
 BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'muster_tasks'::regclass AND attname = 'center_group' AND NOT attisdropped) THEN
+        ALTER TABLE muster_tasks ALTER COLUMN binding_id SET NOT NULL;
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint
         WHERE conname = 'muster_tasks_binding_fk' AND conrelid = 'muster_tasks'::regclass) THEN
         ALTER TABLE muster_tasks ADD CONSTRAINT muster_tasks_binding_fk

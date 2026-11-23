@@ -8,7 +8,7 @@ import { RunLogs } from './RunLogs'
 import { TaskControls, type TaskControlActions } from './TaskControls'
 
 const statusText: Record<Task['status'] | Run['status'], string> = {
-  queued: '排队', running: '运行中', waiting: '等待', waiting_dependencies: '等待子任务', waiting_delivery: '等待交付',
+  queued: '排队', running: '运行中', waiting: '等待', waiting_dependencies: '等待依赖', waiting_delivery: '等待交付',
   waiting_reply: '等待答复', approval_requested: '已发起请示',
   completed: '已完成', failed: '执行失败', pausing: '正在暂停', paused: '已暂停', stopping: '正在停止', stopped: '已停止',
   cancelling: '正在取消', cancelled: '已取消', interrupted: '待核对',
@@ -28,6 +28,7 @@ const waitingReasonText: Record<string, string> = {
   delivery: '接收设备尚未确认收到任务输入',
   children: '等待所依赖的子任务结束并交付结果',
   transfers: '等待接收设备确认交接',
+  prerequisites: '等待前置任务完成',
 }
 
 const taskInputText: Record<TaskInput['kind'], string> = {
@@ -94,7 +95,7 @@ export function TaskBoard({ token, tasks, approvals, approvalActions, taskContro
             <section key={group.stage} className="board-column" data-stage={group.stage} aria-label={group.name}>
               <h2>{group.name}<span>{entries.length}</span></h2>
               {entries.length === 0 && <p className="column-empty">暂无任务</p>}
-              {entries.map((task) => <TaskCard key={task.id} task={task} children={childrenByParent.get(task.id) ?? []} deviceName={deviceNames.get(task.device_id)} />)}
+              {entries.map((task) => <TaskCard key={task.id} task={task} children={childrenByParent.get(task.id) ?? []} deviceNames={deviceNames} />)}
             </section>
           )
         })}
@@ -124,23 +125,31 @@ function BoardApprovals({ approvals, tasks, actions }: { approvals: Approval[]; 
   )
 }
 
-function TaskCard({ task, children, deviceName }: { task: Task; children: Task[]; deviceName?: string }) {
+function TaskCard({ task, children, deviceNames }: { task: Task; children: Task[]; deviceNames: Map<string, string> }) {
   return (
     <article className="task-tree-card">
       <a href={`#board/${task.id}`} className="task-card">
         <h3>{task.title}</h3>
-        <div className="task-card-meta"><span>{task.project_name}</span><TaskStatus status={task.status} /></div>
+        <div className="task-card-meta">{task.project_name && <span>{task.project_name}</span>}<TaskStatus status={task.status} /></div>
         {task.waiting_reason && <p className="task-waiting-reason">{waitingReasonText[task.waiting_reason] ?? task.waiting_reason}</p>}
-        <div className="task-card-facts"><span>{deviceName ?? task.device_id}</span><span>{agentName(task.agent_kind)}</span></div>
+        {!task.center_group && <div className="task-card-facts"><span>{deviceNames.get(task.device_id) ?? task.device_id}</span><span>{agentName(task.agent_kind)}</span></div>}
         <div className="task-card-footer"><Time value={task.updated_at} />{task.report_pending && <span>待汇报</span>}</div>
       </a>
-      {children.length > 0 && <details><summary className="tree-toggle">{children.length} 项子任务</summary><ChildTasks tasks={children} /></details>}
+      {children.length > 0 && <details><summary className="tree-toggle">{children.length} 项子任务</summary><ChildTasks tasks={children} deviceNames={task.center_group ? deviceNames : undefined} /></details>}
     </article>
   )
 }
 
-function ChildTasks({ tasks }: { tasks: Task[] }) {
-  return <div className="child-task-list">{tasks.map((task) => <a href={`#board/${task.id}`} className="child-task-row" key={task.id}><span>{task.title}</span><TaskStatus status={task.status} /></a>)}</div>
+function ChildTasks({ tasks, deviceNames }: { tasks: Task[]; deviceNames?: Map<string, string> }) {
+  return <div className="child-task-list">{tasks.map((task) => (
+    <a href={`#board/${task.id}`} className="child-task-row" key={task.id}>
+      <span className="child-task-name">
+        <span>{task.title}</span>
+        {deviceNames && <small>{deviceNames.get(task.device_id) ?? task.device_id} · {agentName(task.agent_kind)}</small>}
+      </span>
+      <TaskStatus status={task.status} />
+    </a>
+  ))}</div>
 }
 
 type TaskDetailsProps = Required<Pick<TaskBoardProps, 'token' | 'taskID' | 'onFollow' | 'onLock'>> & Pick<TaskBoardProps, 'cursor' | 'tasks' | 'approvals' | 'approvalActions' | 'taskControlActions'> & {
@@ -170,7 +179,7 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
   const controlResult = taskControlActions.submissions.get(taskID)?.result
   const snapshotTask = tasks?.find((task) => task.id === taskID)
   const task = latestTask(detail?.task, latestTask(snapshotTask, controlResult))
-  const canFollow = detail && task && !error && !task.parent_task_id && task.status !== 'cancelled' && task.status !== 'cancelling' && (
+  const canFollow = detail && task && !error && !task.parent_task_id && !task.center_group && task.status !== 'cancelled' && task.status !== 'cancelling' && (
     task.status === 'queued' || task.status === 'running' || task.status === 'paused' || detail.runs.some((run) => run.session_id)
   )
   const taskName = (id: string) => tasks?.find((task) => task.id === id)?.title ?? id
@@ -208,9 +217,11 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
           <dl className="task-facts">
             <div><dt>状态</dt><dd aria-live="polite"><TaskStatus status={task.status} />{task.report_pending && ' · 待汇报'}</dd></div>
             {task.waiting_reason && <div><dt>等待原因</dt><dd>{waitingReasonText[task.waiting_reason] ?? task.waiting_reason}</dd></div>}
-            <div><dt>项目</dt><dd>{task.project_name}</dd></div>
-            <div><dt>设备</dt><dd>{deviceNames.get(task.device_id) ?? task.device_id}</dd></div>
-            <div><dt>Agent</dt><dd>{agentName(task.agent_kind)}</dd></div>
+            {!task.center_group && <>
+              <div><dt>项目</dt><dd>{task.project_name}</dd></div>
+              <div><dt>设备</dt><dd>{deviceNames.get(task.device_id) ?? task.device_id}</dd></div>
+              <div><dt>Agent</dt><dd>{agentName(task.agent_kind)}</dd></div>
+            </>}
             <div><dt>更新时间</dt><dd><Time value={task.updated_at} /></dd></div>
           </dl>
           <TaskControls task={task} actions={taskControlActions} disabled={Boolean(error)} />
@@ -224,7 +235,7 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
             </dl>
           </details>
         </div>
-        <details className="task-detail-panel" onToggle={(event) => setRunsOpen(event.currentTarget.open)}>
+        {!task.center_group && <details className="task-detail-panel" onToggle={(event) => setRunsOpen(event.currentTarget.open)}>
           <summary className="task-section-title">运行记录<span>{detail.runs.length}</span></summary>
           {detail.runs.length === 0 && <p className="standalone-note">等待首次运行。</p>}
           {detail.runs.map((run) => <article className="run-row" key={run.id}>
@@ -239,8 +250,17 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
               <RunLogs token={token} taskID={taskID} runID={run.id} onLock={onLock} />}
             {run.text && <p className="message-text">{run.text}</p>}
           </article>)}
-        </details>
-        {detail.children.length > 0 && <section className="task-detail-panel" aria-labelledby="children-heading"><h2 id="children-heading">子任务</h2><ChildTasks tasks={detail.children} /></section>}
+        </details>}
+        {detail.children.length > 0 && <section className="task-detail-panel" aria-labelledby="children-heading"><h2 id="children-heading">子任务</h2><ChildTasks tasks={detail.children} deviceNames={task.center_group ? deviceNames : undefined} /></section>}
+        {task.depends_on_task_ids && task.depends_on_task_ids.length > 0 && <section className="task-detail-panel" aria-labelledby="prerequisites-heading">
+          <h2 id="prerequisites-heading">前置任务</h2>
+          <div className="child-task-list">{task.depends_on_task_ids.map((id) => {
+            const prerequisite = tasks?.find((candidate) => candidate.id === id)
+            return <a className="child-task-row" href={`#board/${id}`} key={id}>
+              <span>{prerequisite?.title ?? id}</span>{prerequisite && <TaskStatus status={prerequisite.status} />}
+            </a>
+          })}</div>
+        </section>}
         {detail.dependencies.length > 0 && <section className="task-detail-panel" aria-labelledby="dependencies-heading">
           <h2 id="dependencies-heading">依赖任务</h2>
           <div className="child-task-list">{detail.dependencies.map((dependency) => <a className="child-task-row" href={`#board/${dependency.depends_on_task_id}`} key={`${dependency.depends_on_task_id}/${dependency.generation}`}>

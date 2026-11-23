@@ -15,14 +15,15 @@ var _ workspace.Store = (*InventoryStore)(nil)
 
 const projectColumns = "id, name, device_id, directory_id, directory_label, agent_kind, git_policy"
 const messageColumns = "id, kind, body, COALESCE(task_id, requested_task_id), status, created_at"
-const taskColumns = `t.id, t.project_id, t.project_name, t.device_id, t.directory_id, t.status, t.title, t.result,
+const taskColumns = `t.id, COALESCE(t.project_id,''), t.project_name, COALESCE(t.device_id,''), COALESCE(t.directory_id,''), t.status, t.title, t.result,
 	EXISTS (SELECT 1 FROM muster_deliveries d WHERE d.task_id = t.id AND d.kind = 'report' AND NOT d.done),
-	t.updated_at,COALESCE(t.parent_id,''),t.root_id,t.binding_id,t.agent_kind,t.waiting_reason,
+	t.updated_at,COALESCE(t.parent_id,''),t.root_id,COALESCE(t.binding_id,''),t.agent_kind,t.waiting_reason,
 	COALESCE((SELECT generation FROM muster_runs WHERE id=t.current_run_id),0),t.input_generation,
 	t.control_mode,
 	EXISTS (SELECT 1 FROM muster_runs r WHERE r.id=t.current_run_id AND r.claimed_at IS NOT NULL AND r.status IN ('queued','running')),
 	COALESCE((SELECT r.control_supported FROM muster_runs r WHERE r.id=t.current_run_id),false),
-	COALESCE((t.git_policy->>'revision')::bigint,0),t.git_publish`
+	COALESCE((t.git_policy->>'revision')::bigint,0),t.git_publish,t.center_group,
+	ARRAY(SELECT prerequisite_id FROM muster_center_task_dependencies WHERE task_id=t.id ORDER BY prerequisite_id)`
 
 // WorkspaceEvents 按游标升序返回指定位置之后最多 128 条工作区事件。
 // 超过当前工作区位置的游标返回冲突。
@@ -106,7 +107,8 @@ func (store *InventoryStore) TaskDetail(ctx context.Context, id string) (detail 
 		if err != nil {
 			return err
 		}
-		detail.Children, err = selectRows(ctx, tx, "SELECT "+taskColumns+" FROM muster_tasks t WHERE t.parent_id=$1 ORDER BY t.id", scanTask, id)
+		detail.Children, err = selectRows(ctx, tx, "SELECT "+taskColumns+` FROM muster_tasks t WHERE t.parent_id=$1
+			ORDER BY CASE WHEN $2 THEN (SELECT MIN(sequence) FROM muster_runs WHERE task_id=t.id) END,t.id`, scanTask, id, detail.Task.CenterGroup)
 		if err != nil {
 			return err
 		}
@@ -344,10 +346,11 @@ func (store *InventoryStore) SubmitMessage(ctx context.Context, input workspace.
 		}
 		if input.TaskID != "" {
 			var mode string
-			if err := tx.QueryRow(ctx, "SELECT control_mode FROM muster_tasks WHERE id=$1", input.TaskID).Scan(&mode); err != nil {
+			var group bool
+			if err := tx.QueryRow(ctx, "SELECT control_mode,center_group FROM muster_tasks WHERE id=$1", input.TaskID).Scan(&mode, &group); err != nil {
 				return notFound(err)
 			}
-			if mode == "cancel" {
+			if group || mode == "cancel" {
 				return workspace.ErrConflict
 			}
 		}
@@ -436,12 +439,17 @@ func scanTask(row pgx.Row) (value workspace.Task, err error) {
 	err = row.Scan(&value.ID, &value.ProjectID, &value.ProjectName, &value.DeviceID, &value.DirectoryID,
 		&value.Status, &value.Title, &value.Result, &value.ReportPending, &value.UpdatedAt,
 		&value.ParentTaskID, &value.RootTaskID, &value.BindingID, &value.AgentKind, &value.WaitingReason,
-		&value.CurrentRunGeneration, &value.WaitGeneration, &control.mode, &control.active, &control.supported, &value.GitPolicyRevision, &value.GitPublish)
+		&value.CurrentRunGeneration, &value.WaitGeneration, &control.mode, &control.active, &control.supported,
+		&value.GitPolicyRevision, &value.GitPublish, &value.CenterGroup, &value.DependsOnTaskIDs)
 	control.status = value.Status
 	value.ControlActions = control.actions()
+	if value.CenterGroup && len(value.ControlActions) != 0 {
+		// 聚合根任务只能取消整棵子树，暂停和停止作用于具体运行。
+		value.ControlActions = []string{"cancel"}
+	}
 	if value.Status == "waiting" {
 		switch value.WaitingReason {
-		case "children":
+		case "children", "prerequisites":
 			value.Status = "waiting_dependencies"
 		case "delivery", "transfers":
 			value.Status = "waiting_delivery"

@@ -200,7 +200,7 @@ func recordWait(ctx context.Context, tx pgx.Tx, run runState, runID, device stri
 }
 
 func recordResultTransfers(ctx context.Context, tx pgx.Tx, run runState, id string, transferIDs []string) error {
-	if run.ParentTaskID == "" && len(transferIDs) > 0 {
+	if run.ParentDeviceID == "" && len(transferIDs) > 0 {
 		return workspace.ErrConflict
 	}
 	for _, transferID := range transferIDs {
@@ -219,11 +219,16 @@ func supersedeWaitDependencies(ctx context.Context, tx pgx.Tx, taskID string) er
 
 func reconcileParent(ctx context.Context, tx pgx.Tx, childID string) error {
 	var parentID string
-	if err := tx.QueryRow(ctx, "SELECT COALESCE(parent_id,'') FROM muster_tasks WHERE id=$1", childID).Scan(&parentID); err != nil {
+	var centerGroup bool
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(t.parent_id,''),COALESCE(p.center_group,false)
+		FROM muster_tasks t LEFT JOIN muster_tasks p ON p.id=t.parent_id WHERE t.id=$1`, childID).Scan(&parentID, &centerGroup); err != nil {
 		return err
 	}
 	if parentID == "" {
 		return nil
+	}
+	if centerGroup {
+		return reconcileCenterTaskGroup(ctx, tx, parentID)
 	}
 	return reconcileWait(ctx, tx, parentID)
 }
@@ -322,5 +327,8 @@ func reconcileWait(ctx context.Context, tx pgx.Tx, taskID string) error {
 	}
 	_, err = tx.Exec(ctx, `UPDATE muster_tasks SET status='queued',waiting_reason='',current_run_id=$2,updated_at=clock_timestamp()
 		WHERE id=$1`, taskID, runID)
-	return err
+	if err != nil {
+		return err
+	}
+	return reconcileCenterGroupForStep(ctx, tx, taskID)
 }

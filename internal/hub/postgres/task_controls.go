@@ -91,6 +91,11 @@ func (store *InventoryStore) ControlTask(ctx context.Context, id string, input w
 		if err := applyTaskControl(ctx, tx, id, input); err != nil {
 			return err
 		}
+		if input.Action != "cancel" {
+			if err := reconcileCenterGroupForStep(ctx, tx, id); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO muster_task_control_requests(task_id,request_id,action)
 			VALUES($1,$2::text::uuid,$3)`, id, input.RequestID, input.Action); err != nil {
 			return err
@@ -185,6 +190,10 @@ func settleStoppedRun(ctx context.Context, tx pgx.Tx, run runState, id, sessionI
 	}
 	if status == "interrupted" && run.ParentTaskID != "" {
 		if err := reconcileParent(ctx, tx, run.TaskID); err != nil {
+			return err
+		}
+	} else if run.ParentTaskID != "" && run.ParentDeviceID == "" {
+		if err := reconcileCenterTaskGroup(ctx, tx, run.ParentTaskID); err != nil {
 			return err
 		}
 	}
@@ -284,6 +293,12 @@ func settleCancelledTree(ctx context.Context, tx pgx.Tx, root string) error {
 		return err
 	}
 	for _, id := range ids {
+		if id == root {
+			if err := reconcileCenterTaskGroup(ctx, tx, root); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := reconcileParent(ctx, tx, id); err != nil {
 			return err
 		}

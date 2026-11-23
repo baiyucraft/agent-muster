@@ -472,6 +472,8 @@ select {
 .child-task-list { display: grid; gap: 5px; border-top: 1px solid var(--separator); padding: 7px; }
 .child-task-row { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--border); border-radius: 5px; padding: 8px; color: var(--ink); background: var(--inset); font-size: 12px; text-decoration: none; }
 .child-task-row > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.child-task-name { display: grid; gap: 3px; overflow-wrap: anywhere; }
+.child-task-name small { color: var(--muted); font-size: 11px; }
 .child-task-row:hover { border-color: var(--accent-border); }
 
 .back-link { display: inline-block; margin-bottom: 12px; font-size: 13px; }

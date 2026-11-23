@@ -331,6 +331,7 @@ func (api workspaceAPI) claimDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value.UsageSupported = true
+	value.PlanSupported = true
 	workspaceJSON(w, http.StatusOK, value, err)
 }
 
@@ -366,15 +367,18 @@ func (api workspaceAPI) complete(w http.ResponseWriter, r *http.Request) {
 
 func (api workspaceAPI) dispatch(w http.ResponseWriter, r *http.Request) {
 	var input workspace.Dispatch
-	if !readWorkspaceText(w, r, &input) {
+	// JSON 转义可能把一个字节扩为六字节。为八项计划保留完整提示词及结构空间。
+	if !readJSONLimit(w, r, &input, 320<<10) {
 		return
 	}
 	id := r.PathValue("id")
-	create := input.TaskID == "" && (!input.GitPublish || input.GitDelivery) && uuidPattern.MatchString(input.ProjectID) && validText(input.Title, 240, true) &&
+	create := input.Steps == nil && input.TaskID == "" && (!input.GitPublish || input.GitDelivery) && uuidPattern.MatchString(input.ProjectID) && validText(input.Title, 240, true) &&
 		(input.BindingID == "" || uuidPattern.MatchString(input.BindingID))
-	appendToTask := !input.GitDelivery && !input.GitPublish && input.ProjectID == "" && input.BindingID == "" && prefixedUUID(input.TaskID, "task-")
+	appendToTask := input.Steps == nil && !input.GitDelivery && !input.GitPublish && input.ProjectID == "" && input.BindingID == "" && prefixedUUID(input.TaskID, "task-")
+	plan := input.TaskID == "" && input.ProjectID == "" && input.BindingID == "" && input.Prompt == "" &&
+		!input.GitDelivery && !input.GitPublish && validText(input.Title, 240, true) && validDispatchSteps(input.Steps)
 	if !prefixedUUID(id, "message-") || !leasePattern.MatchString(input.Lease) ||
-		(!create && !appendToTask) || !validText(input.Prompt, 6000, true) {
+		(!plan && (!(create || appendToTask) || !validText(input.Prompt, 6000, true))) {
 		writeError(w, http.StatusBadRequest, "invalid task dispatch")
 		return
 	}
@@ -382,6 +386,26 @@ func (api workspaceAPI) dispatch(w http.ResponseWriter, r *http.Request) {
 	workspaceJSON(w, http.StatusOK, struct {
 		TaskID string `json:"task_id"`
 	}{taskID}, err)
+}
+
+func validDispatchSteps(steps []workspace.DispatchStep) bool {
+	if len(steps) < 2 || len(steps) > 8 {
+		return false
+	}
+	for index, step := range steps {
+		if !uuidPattern.MatchString(step.ProjectID) || step.BindingID != "" && !uuidPattern.MatchString(step.BindingID) ||
+			!validText(step.Title, 240, true) || !validText(step.Prompt, 6000, true) {
+			return false
+		}
+		seen := make(map[int]bool, len(step.DependsOn))
+		for _, prerequisite := range step.DependsOn {
+			if prerequisite < 1 || prerequisite > index || seen[prerequisite] {
+				return false
+			}
+			seen[prerequisite] = true
+		}
+	}
+	return true
 }
 
 func (api workspaceAPI) events(w http.ResponseWriter, r *http.Request) {

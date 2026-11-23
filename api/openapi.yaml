@@ -414,7 +414,7 @@ paths:
         '400': { description: 无效消息 }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { description: 追加要求关联的任务不存在 }
-        '409': { description: 消息 ID 已存在且内容不同 }
+        '409': { description: 消息 ID 已存在且内容不同，或目标是组合根任务或正在取消的任务 }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/devices/{device_id}/directories:
     parameters: [{ $ref: '#/components/parameters/DeviceID' }]
@@ -1211,8 +1211,45 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [lease, prompt]
-              description: 建任务时提供 project_id 和 title，追加时提供 task_id。
+              required: [lease]
+              description: >-
+                单项派发提供 project_id、title 和 prompt。续接普通根任务提供 task_id 和 prompt。
+                组合派发提供 title 和 steps，一次提交完整计划。任务与绑定在同一事务内冻结。
+                同一消息以原计划重试时返回已有根任务 ID，计划内容冲突时返回 409。
+                请求体上限为 320 KiB。
+              oneOf:
+                - required: [project_id, title, prompt]
+                  if:
+                    required: [git_publish]
+                    properties:
+                      git_publish: { const: true }
+                  then:
+                    required: [git_delivery]
+                    properties:
+                      git_delivery: { const: true }
+                  not:
+                    anyOf:
+                      - required: [task_id]
+                      - required: [steps]
+                - required: [task_id, prompt]
+                  properties:
+                    git_delivery: { const: false }
+                    git_publish: { const: false }
+                  not:
+                    anyOf:
+                      - required: [project_id]
+                      - required: [binding_id]
+                      - required: [steps]
+                - required: [title, steps]
+                  properties:
+                    git_delivery: { const: false }
+                    git_publish: { const: false }
+                  not:
+                    anyOf:
+                      - required: [project_id]
+                      - required: [binding_id]
+                      - required: [task_id]
+                      - required: [prompt]
               properties:
                 lease: { $ref: '#/components/schemas/Lease' }
                 project_id: { type: string, format: uuid }
@@ -1226,6 +1263,12 @@ paths:
                 task_id: { $ref: '#/components/schemas/TaskID' }
                 title: { type: string, description: 不超过 240 UTF-8 字节 }
                 prompt: { type: string, description: 不超过 6000 UTF-8 字节 }
+                steps:
+                  type: array
+                  minItems: 2
+                  maxItems: 8
+                  description: 常规设备工作。前置步骤全部完成后才允许领取有依赖的步骤。
+                  items: { $ref: '#/components/schemas/DispatchStep' }
       responses:
         '200':
           description: 已派发任务或返回该来源消息的已有任务 ID
@@ -1239,7 +1282,8 @@ paths:
         '400': { description: 无效的派发请求 }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { description: 投递或续接任务不存在 }
-        '409': { description: 领取、项目绑定、项目 Git 规则或任务续接状态冲突 }
+        '409': { description: 领取、项目绑定、项目 Git 规则、已保存计划或任务续接状态冲突 }
+        '413': { description: 请求体超过 320 KiB }
         '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
@@ -1364,6 +1408,21 @@ components:
     RunID: { type: string, pattern: '^run-[0-9a-f-]{36}$' }
     Lease: { type: string, pattern: '^[A-Z2-7]{26}$' }
     AgentKind: { type: string, enum: [dsh, codex] }
+    DispatchStep:
+      type: object
+      additionalProperties: false
+      required: [project_id, title, prompt]
+      properties:
+        project_id: { type: string, format: uuid }
+        binding_id: { type: string, format: uuid, description: 缺省取项目默认绑定。 }
+        title: { type: string, description: 不超过 240 UTF-8 字节 }
+        prompt: { type: string, description: 不超过 6000 UTF-8 字节 }
+        depends_on:
+          type: array
+          uniqueItems: true
+          maxItems: 7
+          description: 前置步骤在同一计划中的位置，从 1 开始，只可引用排在本步骤前面的步骤。
+          items: { type: integer, minimum: 1, maximum: 7 }
     SHA256: { type: string, pattern: '^[0-9a-f]{64}$' }
     TransferID: { type: string, pattern: '^transfer-[0-9a-f-]{36}$' }
     TransferIDs:
@@ -1561,16 +1620,30 @@ components:
       required: [id, project_id, project_name, device_id, directory_id, status, title, report_pending, updated_at]
       properties:
         id: { $ref: '#/components/schemas/TaskID' }
-        project_id: { type: string, format: uuid }
+        project_id:
+          description: 组合根任务为空字符串。
+          oneOf: [{ type: string, format: uuid, minLength: 1 }, { const: '' }]
         project_name: { type: string }
-        device_id: { $ref: '#/components/schemas/DeviceID' }
-        directory_id: { $ref: '#/components/schemas/DirectoryID' }
+        device_id:
+          description: 组合根任务为空字符串。
+          oneOf: [{ $ref: '#/components/schemas/DeviceID' }, { const: '' }]
+        directory_id:
+          description: 组合根任务为空字符串。
+          oneOf: [{ $ref: '#/components/schemas/DirectoryID' }, { const: '' }]
         parent_task_id: { $ref: '#/components/schemas/TaskID' }
         root_task_id: { $ref: '#/components/schemas/TaskID' }
         binding_id: { type: string, format: uuid }
-        agent_kind: { $ref: '#/components/schemas/AgentKind' }
-        waiting_reason: { type: string, enum: [children, delivery, transfers] }
-        current_run_generation: { type: integer, format: int64, minimum: 1 }
+        agent_kind:
+          description: 组合根任务为空字符串。
+          oneOf: [{ $ref: '#/components/schemas/AgentKind' }, { const: '' }]
+        center_group: { type: boolean, description: 为 true 时由中心汇总子任务状态，设备运行记录在各子任务上。 }
+        depends_on_task_ids:
+          type: array
+          uniqueItems: true
+          description: 中心计划定义的直接前置任务 ID 列表。
+          items: { $ref: '#/components/schemas/TaskID' }
+        waiting_reason: { type: string, enum: [children, delivery, transfers, prerequisites] }
+        current_run_generation: { type: integer, format: int64, minimum: 0, description: 组合根任务为 0。 }
         git_policy_revision: { type: integer, format: int64, minimum: 1, description: 托管 Git 任务冻结的规则版本 }
         git_publish: { type: boolean, description: 任务要求确认远端目标包含候选提交。 }
         wait_generation: { type: integer, format: int64, minimum: 1 }
@@ -1811,6 +1884,7 @@ components:
         project_id: { type: string, format: uuid }
         attempt: { type: integer, minimum: 1 }
         usage_supported: { type: boolean, description: 为 true 时完成回执可携带中心轮次用量。 }
+        plan_supported: { type: boolean, description: 为 true 时当前 Hub 接受带 steps 的中心组合派发。 }
     DeviceID:
       type: string
       pattern: '^d-[0-9a-f]{32}$'

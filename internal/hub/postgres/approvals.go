@@ -127,6 +127,9 @@ func saveApprovalAnswer(ctx context.Context, tx pgx.Tx, value *workspace.Approva
 		return err
 	}
 	value.Answer, value.AnsweredAt, value.Status = answer, &answeredAt, "answered"
+	if err := reconcileCenterGroupForStep(ctx, tx, value.TaskID); err != nil {
+		return err
+	}
 	return advanceWorkspace(ctx, tx)
 }
 

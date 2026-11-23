@@ -144,21 +144,26 @@ test('a user follow-up carries the selected task ID before and after a retry', (
   }
 })
 
-test('the center exposes only its four registered Muster tools to execution', () => {
-  for (const name of ['muster_list_projects', 'muster_dispatch', 'muster_resume_task', 'muster_get_task']) {
+test('the center exposes only its registered Muster tools to execution', () => {
+  for (const name of ['muster_list_projects', 'muster_dispatch', 'muster_dispatch_plan', 'muster_resume_task', 'muster_get_task']) {
     assert.equal(toolAllowed(name), true)
   }
   assert.equal(toolAllowed('subagent'), false)
   assert.equal(toolAllowed('bash'), false)
 })
 
-test('dispatch only opts in to Git publication with the dedicated workflow', async () => {
+function toolAgent() {
   const tools = new Map()
   const agent = { ctx: { tools: {
     register(tool) { tools.set(tool.name, tool); return () => tools.delete(tool.name) },
     restrict: () => () => {},
     guard: () => () => {},
   } } }
+  return { tools, agent }
+}
+
+test('dispatch only opts in to Git publication with the dedicated workflow', async () => {
+  const { tools, agent } = toolAgent()
   const signal = new AbortController().signal
   let current = delivery
   const hub = { dispatch: async (_delivery, input) => JSON.parse(JSON.stringify(input)) }
@@ -175,6 +180,59 @@ test('dispatch only opts in to Git publication with the dedicated workflow', asy
   } finally {
     dispose()
   }
+})
+
+test('group dispatch submits ordered steps once and rejects unsupported deliveries or invalid dependencies', async (t) => {
+  const { tools, agent } = toolAgent()
+  const signal = new AbortController().signal
+  const requests = []
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    requests.push({ path: url.pathname, input: JSON.parse(options.body) })
+    return Response.json({ task_id: 'task-root' })
+  })
+  const hub = new Hub('http://127.0.0.1', 'test-token')
+  const compatible = { ...delivery, id: 'message-id', lease: 'lease', plan_supported: true }
+  let current = compatible
+  const dispose = bindTools(agent, hub, () => ({ delivery: current, signal }))
+  const title = '整理素材'
+  const steps = [
+    { project_id: 'materials', title: '建立索引', prompt: '整理素材并给出索引。' },
+    { project_id: 'docs', binding_id: 'home', title: '撰写说明', prompt: '根据索引写一份说明。', depends_on: [1] },
+  ]
+  const input = { title, steps }
+  try {
+    const execute = tools.get('muster_dispatch_plan').execute
+    assert.deepEqual(await execute(input, { agent, signal }), { task_id: 'task-root' })
+    await assert.rejects(() => execute({ title, steps: steps.slice(0, 1) }, { agent, signal }), /2 至 8/)
+    for (const depends_on of [[0], [2], [1, 1], ['1']]) {
+      const malformed = [steps[0], { ...steps[1], depends_on }]
+      await assert.rejects(() => execute({ title, steps: malformed }, { agent, signal }), /前序步骤编号/)
+    }
+    current = { ...compatible, plan_supported: undefined }
+    await assert.rejects(() => execute(input, { agent, signal }), /请使用 muster_dispatch/)
+    current = { ...compatible, kind: 'report' }
+    await assert.rejects(() => execute(input, { agent, signal }), /只允许查询/)
+    current = { ...compatible, task_id: 'task-existing' }
+    await assert.rejects(() => execute(input, { agent, signal }), /请使用 muster_resume_task/)
+    assert.deepEqual(requests, [{ path: '/api/v1/plugin/deliveries/message-id/dispatch', input: { lease: 'lease', ...input } }])
+  } finally {
+    dispose()
+  }
+})
+
+test('the native input advertises group dispatch only for a supported new user request', () => {
+  function inputText(delivery) {
+    let input
+    deliver({
+      ...native([]), inbox: { nextTurn: [] }, followup: item => { input = item },
+    }, delivery)
+    return input.content[0].text
+  }
+  const compatible = { ...delivery, plan_supported: true }
+  assert.equal(inputText(delivery), delivery.text)
+  assert.match(inputText(compatible), /支持分组派发/)
+  assert.doesNotMatch(inputText({ ...compatible, kind: 'report' }), /支持分组派发/)
+  assert.doesNotMatch(inputText({ ...compatible, task_id: 'task-existing' }), /支持分组派发/)
 })
 
 test('an interrupted report can be generated after re-claim', () => {

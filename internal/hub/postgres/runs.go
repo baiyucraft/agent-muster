@@ -244,7 +244,7 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 				}
 			}
 		}
-		if run.ParentTaskID != "" {
+		if run.ParentDeviceID != "" {
 			event.Text = ""
 		}
 		event.Lease = ""
@@ -335,7 +335,7 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 				return err
 			}
 		case "completed", "failed", "interrupted":
-			if event.Kind == "completed" && run.ParentTaskID != "" && len(event.TransferIDs) == 0 {
+			if event.Kind == "completed" && run.ParentDeviceID != "" && len(event.TransferIDs) == 0 {
 				return workspace.ErrConflict
 			}
 			if err := recordResultTransfers(ctx, tx, run, id, event.TransferIDs); err != nil {
@@ -358,6 +358,11 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 		}
 		if run.CurrentRun == id && event.Kind != "approval_requested" {
 			if err := updateTaskFromRun(ctx, tx, run, id, status, sessionID, event.Text, terminal, len(event.WaitForTaskIDs) > 0); err != nil {
+				return err
+			}
+		}
+		if run.ParentTaskID != "" && run.ParentDeviceID == "" {
+			if err := reconcileCenterTaskGroup(ctx, tx, run.ParentTaskID); err != nil {
 				return err
 			}
 		}
@@ -408,11 +413,15 @@ func updateTaskFromRun(ctx context.Context, tx pgx.Tx, run runState, runID, stat
 		if _, err := tx.Exec(ctx, `
 			UPDATE muster_runs SET status='interrupted',outcome=CASE WHEN $3 THEN '' ELSE '上一轮的结果待核对，本轮尚未启动' END,
 				updated_at=clock_timestamp()
-			WHERE task_id=$1 AND id<>$2 AND status='queued'`, run.TaskID, runID, run.ParentTaskID != ""); err != nil {
+			WHERE task_id=$1 AND id<>$2 AND status='queued'`, run.TaskID, runID, run.ParentDeviceID != ""); err != nil {
 			return err
 		}
 	}
 	if run.ParentTaskID != "" {
+		if run.ParentDeviceID == "" {
+			// 中心步骤由运行事件统一汇总，设备子任务则更新父任务的等待记录。
+			return nil
+		}
 		return reconcileParent(ctx, tx, run.TaskID)
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO muster_deliveries(id,kind,body,task_id)

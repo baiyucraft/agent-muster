@@ -10,10 +10,12 @@ export interface Delivery {
   project_id?: string
   /** Hub 声明接受完成回执中的中心轮次用量。 */
   usage_supported?: boolean
+  /** Hub 声明当前派发接口接受包含前后依赖的任务组。 */
+  plan_supported?: boolean
 }
 
-/** 派发新工作或续接原任务的输入，续接时以 task_id 指定目标。 */
-export interface Dispatch {
+/** 创建或续接单项工作的输入，续接时以 task_id 指定目标。 */
+interface SingleDispatch {
   project_id?: string
   binding_id?: string
   task_id?: string
@@ -23,6 +25,25 @@ export interface Dispatch {
   /** 用户明确要求交付到项目预设远端时设为 true，仅用于新建根任务。 */
   git_publish?: boolean
 }
+
+/** 任务组中的设备步骤，执行绑定在首次派发时冻结。 */
+export interface DispatchStep {
+  project_id: string
+  binding_id?: string
+  title: string
+  prompt: string
+  /** 从 1 开始编号，只能引用本组更早的步骤。 */
+  depends_on?: number[]
+}
+
+/** 创建包含二至八项设备步骤的根任务，标题用于看板和最终汇报。 */
+export interface PlanDispatch {
+  title: string
+  steps: DispatchStep[]
+}
+
+/** 一次投递对应一个派发操作，可提交单项工作或任务组。 */
+export type Dispatch = SingleDispatch | PlanDispatch
 
 /** dsh 对本次已完成原生轮次中所有模型请求确认的 Token 计数。 */
 export interface CenterTurnUsage {
@@ -126,11 +147,14 @@ export class Hub {
   /**
    * 在当前投递租约下向 Hub 创建或续接任务。
    * @param delivery 允许发起操作的投递及租约。
-   * @param input 目标绑定或待续接任务及送给 Agent 的提示。
+   * @param input 单项任务、续接要求或包含各自目标绑定的任务组。
    * @param signal 取消任务提交请求。
    * @returns Hub 受理后返回的任务 JSON。
    */
   async dispatch(delivery: Delivery, input: Dispatch, signal: AbortSignal): Promise<unknown> {
+    if ('steps' in input && delivery.plan_supported !== true) {
+      throw new Error('当前 Hub 支持单项派发，请使用 muster_dispatch。')
+    }
     const response = await this.request('POST', this.route(delivery, 'dispatch'), signal, { lease: delivery.lease, ...input })
     return response.json()
   }

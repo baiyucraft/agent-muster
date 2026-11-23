@@ -87,6 +87,8 @@ type Task struct {
 	ControlActions       []string  `json:"control_actions,omitempty"`
 	GitPolicyRevision    int64     `json:"git_policy_revision,omitempty"`
 	GitPublish           bool      `json:"git_publish,omitempty"`
+	CenterGroup          bool      `json:"center_group,omitempty"`        // 中心聚合任务没有设备运行。
+	DependsOnTaskIDs     []string  `json:"depends_on_task_ids,omitempty"` // 中心计划定义的固定前置步骤。
 }
 
 // TaskControl 是管理员任务操作。请求 ID 在同一任务下去重，重复时返回当前状态。
@@ -255,20 +257,32 @@ type Delivery struct {
 	Attempt   int    `json:"attempt"`
 	// UsageSupported 表示当前 Hub 接受带中心轮次用量的完成回执。
 	UsageSupported bool `json:"usage_supported,omitempty"`
+	// PlanSupported 表示当前 Hub 支持在一次派发中保存带依赖的任务组。
+	PlanSupported bool `json:"plan_supported,omitempty"`
 }
 
 // Dispatch 表示中心插件依据消息租约创建任务或追加运行的请求。
 type Dispatch struct {
-	Lease     string `json:"lease"`
-	ProjectID string `json:"project_id,omitempty"`
-	TaskID    string `json:"task_id,omitempty"`
-	Title     string `json:"title,omitempty"`
-	Prompt    string `json:"prompt"`
-	BindingID string `json:"binding_id,omitempty"`
+	Lease     string         `json:"lease"`
+	ProjectID string         `json:"project_id,omitempty"`
+	TaskID    string         `json:"task_id,omitempty"`
+	Title     string         `json:"title,omitempty"`
+	Prompt    string         `json:"prompt"`
+	BindingID string         `json:"binding_id,omitempty"`
+	Steps     []DispatchStep `json:"steps,omitempty"`
 	// GitDelivery 请求为新根任务冻结已配置的项目 Git 规则。
 	GitDelivery bool `json:"git_delivery,omitempty"`
 	// GitPublish 明确请求向冻结规则中的目标分支推送。
 	GitPublish bool `json:"git_publish,omitempty"`
+}
+
+// DispatchStep 描述一项设备工作。DependsOn 从 1 开始引用前面的步骤。
+type DispatchStep struct {
+	ProjectID string `json:"project_id"`
+	BindingID string `json:"binding_id,omitempty"`
+	Title     string `json:"title"`
+	Prompt    string `json:"prompt"`
+	DependsOn []int  `json:"depends_on,omitempty"`
 }
 
 // Peer 保存设备直连接收端点的地址及证书指纹。

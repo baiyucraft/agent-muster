@@ -145,6 +145,9 @@ export function deliver(agent: Agent, delivery: Delivery): void {
   const userRequest = delivery.task_id && delivery.kind === 'message' ? [
     '用户提交了与以下任务关联的消息。若用户明确要求继续执行，续接工具必须使用这个任务 ID。',
     JSON.stringify({ task_id: delivery.task_id, text: delivery.text }),
+  ].join('\n') : delivery.kind === 'message' && delivery.plan_supported === true ? [
+    '当前 Hub 支持分组派发。以下 JSON 中的 text 是用户请求。',
+    JSON.stringify({ text: delivery.text }),
   ].join('\n') : delivery.text
   const text = delivery.kind === 'message' && !continuation ? userRequest : delivery.kind === 'message' ? [
     '继续处理本条对话中最后一条尚未完成的用户请求。结合已有会话记录继续工作，不要重做已经完成的操作。',

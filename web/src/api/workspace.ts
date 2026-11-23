@@ -33,7 +33,11 @@ export type Task = {
   root_task_id?: string
   binding_id?: string
   agent_kind?: string
-  waiting_reason?: 'children' | 'delivery' | 'transfers'
+  /** 聚合根由中心管理执行状态，工作绑定记录在各个子任务上。 */
+  center_group?: boolean
+  /** 中心派发时冻结的直接前置任务 ID。 */
+  depends_on_task_ids?: string[]
+  waiting_reason?: 'children' | 'delivery' | 'transfers' | 'prerequisites'
   current_run_generation?: number
   wait_generation?: number
   git_policy_revision?: number

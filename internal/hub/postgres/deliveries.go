@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -112,14 +113,19 @@ func (store *InventoryStore) Dispatch(ctx context.Context, id string, input work
 	if input.TaskID != "" && (input.GitDelivery || input.GitPublish) || input.GitPublish && !input.GitDelivery {
 		return "", workspace.ErrConflict
 	}
+	digest, err := dispatchPlanDigest(input)
+	if err != nil {
+		return "", err
+	}
 	err = store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		var kind, messageID, selectedTask string
 		var done, leased bool
+		var savedDigest []byte
 		err := tx.QueryRow(ctx, `
 			SELECT kind,COALESCE(message_id,''),COALESCE(task_id,''),COALESCE(dispatch_task_id,''),done,
-				COALESCE(lease=$2 AND lease_until>=clock_timestamp(),false)
+				COALESCE(lease=$2 AND lease_until>=clock_timestamp(),false),plan_digest
 			FROM muster_deliveries WHERE id=$1`, id, input.Lease).
-			Scan(&kind, &messageID, &selectedTask, &taskID, &done, &leased)
+			Scan(&kind, &messageID, &selectedTask, &taskID, &done, &leased, &savedDigest)
 		if err != nil {
 			return notFound(err)
 		}
@@ -127,6 +133,9 @@ func (store *InventoryStore) Dispatch(ctx context.Context, id string, input work
 			return workspace.ErrConflict
 		}
 		if taskID != "" {
+			if !bytes.Equal(savedDigest, digest) {
+				return workspace.ErrConflict
+			}
 			// The native turn can be replayed with a newly generated tool call ID.
 			// Its first persisted dispatch owns the source message.
 			return nil
@@ -135,12 +144,18 @@ func (store *InventoryStore) Dispatch(ctx context.Context, id string, input work
 			return workspace.ErrConflict
 		}
 		runID := "run-" + messageID
-		if input.TaskID == "" {
+		switch {
+		case digest != nil:
+			taskID = "task-" + messageID
+			if err := createCenterTaskGroup(ctx, tx, taskID, input); err != nil {
+				return err
+			}
+		case input.TaskID == "":
 			taskID = "task-" + messageID
 			if err := createTask(ctx, tx, taskID, runID, input); err != nil {
 				return err
 			}
-		} else {
+		default:
 			taskID = input.TaskID
 			if err := appendRun(ctx, tx, taskID, runID); err != nil {
 				return err
@@ -150,13 +165,15 @@ func (store *InventoryStore) Dispatch(ctx context.Context, id string, input work
 		if input.TaskID != "" {
 			priority = priorityFollowUp
 		}
-		if err := nextRun(ctx, tx, taskID, runID, input.Prompt, "", priority); err != nil {
-			return err
+		if digest == nil {
+			if err := nextRun(ctx, tx, taskID, runID, input.Prompt, "", priority); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.Exec(ctx, "UPDATE muster_messages SET task_id=$2,status='handled' WHERE id=$1", messageID, taskID); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, "UPDATE muster_deliveries SET dispatch_task_id=$2 WHERE id=$1", id, taskID); err != nil {
+		if _, err := tx.Exec(ctx, "UPDATE muster_deliveries SET dispatch_task_id=$2,plan_digest=$3 WHERE id=$1", id, taskID, digest); err != nil {
 			return err
 		}
 		if input.TaskID != "" {
