@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"testing"
+
+	"github.com/baiyucraft/agent-muster/internal/gitdelivery"
 )
 
 func TestRunProtocolAuthenticatesAndParsesNoWork(t *testing.T) {
@@ -31,6 +33,9 @@ func TestRunProtocolAuthenticatesAndParsesNoWork(t *testing.T) {
 			}
 			if enabled := r.Header.Get("Muster-Git-Publish") == "1"; enabled != (runtime.GOOS == "windows") {
 				t.Errorf("Git 推送协商能力不符当前设备平台：%t", enabled)
+			}
+			if enabled := r.Header.Get(gitdelivery.CandidateCommitHeader) == "1"; enabled != (runtime.GOOS == "windows") {
+				t.Errorf("候选提交协商能力不符当前设备平台：%t", enabled)
 			}
 			w.WriteHeader(http.StatusNoContent)
 		default:

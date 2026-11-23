@@ -12,7 +12,11 @@ import (
 )
 
 func git(ctx context.Context, dir string, args ...string) (string, error) {
-	output, code, err := runGit(ctx, dir, args...)
+	return gitWithOutputLimit(ctx, dir, 64<<10, args...)
+}
+
+func gitWithOutputLimit(ctx context.Context, dir string, limit int, args ...string) (string, error) {
+	output, code, err := runGitWithOutputLimit(ctx, dir, limit, args...)
 	if err == nil && code != 0 {
 		err = fmt.Errorf("Git 命令退出码 %d", code)
 	}
@@ -20,10 +24,14 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 }
 
 func runGit(ctx context.Context, dir string, args ...string) (string, uint32, error) {
+	return runGitWithOutputLimit(ctx, dir, 64<<10, args...)
+}
+
+func runGitWithOutputLimit(ctx context.Context, dir string, limit int, args ...string) (string, uint32, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	var output bytes.Buffer
-	bounded := limitedOutput{destination: &output, left: 64 << 10}
+	bounded := limitedOutput{destination: &output, left: limit}
 	// Git 输出可能携带设备路径或远端凭据。这里只向调用方返回有上限的 stdout。
 	code, err := runner.RunProjectCommandStreams(ctx, dir, "git", append([]string{"--no-replace-objects"}, args...), &bounded, nil)
 	if bounded.truncated {

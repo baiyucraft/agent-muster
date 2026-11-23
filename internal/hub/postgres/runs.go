@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/baiyucraft/agent-muster/internal/artifact"
+	"github.com/baiyucraft/agent-muster/internal/gitdelivery"
 	"github.com/baiyucraft/agent-muster/internal/hub/registry"
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
 	"github.com/baiyucraft/agent-muster/internal/inputreceipt"
@@ -80,6 +81,13 @@ func (store *InventoryStore) ClaimRunWithGitPublication(ctx context.Context, dev
 // ClaimRunWithInputReceipts 协商轮次处理回执能力并在首次领取时冻结输入清单。
 // 同一轮次再次领取时保留已协商的能力、输入和租约身份。
 func (store *InventoryStore) ClaimRunWithInputReceipts(ctx context.Context, device string, token [32]byte, controlSupported, gitVerificationSupported, gitPublishSupported, inputReceiptSupported bool) (claim workspace.RunClaim, err error) {
+	return store.ClaimCompatibleRun(ctx, device, token, workspace.RunClaimCapabilities{
+		Control: controlSupported, GitVerification: gitVerificationSupported, GitPublish: gitPublishSupported, InputReceipt: inputReceiptSupported,
+	})
+}
+
+// ClaimCompatibleRun 按设备声明的能力领取本次运行，首次领取时冻结输入清单。
+func (store *InventoryStore) ClaimCompatibleRun(ctx context.Context, device string, token [32]byte, capabilities workspace.RunClaimCapabilities) (claim workspace.RunClaim, err error) {
 	err = store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		if err := authenticateDevice(ctx, tx, device, token); err != nil {
 			return err
@@ -101,6 +109,7 @@ func (store *InventoryStore) ClaimRunWithInputReceipts(ctx context.Context, devi
 				AND (NOT t.git_publish OR ($3 AND $4 AND $5))
 				AND (COALESCE(t.git_policy->>'review_agent','')='' OR $5 OR (r.claimed_at IS NOT NULL AND NOT r.git_review_supported))
 				AND (NOT r.input_receipt_supported OR $7)
+				AND (COALESCE(t.git_policy->>'candidate_commit','')<>$9 OR $8)
 				AND NOT EXISTS (SELECT 1 FROM muster_runs active WHERE active.device_id=$1
 					AND active.id<>r.id AND active.status IN ('queued','running') AND active.claimed_at IS NOT NULL)
 				ORDER BY (r.claimed_at IS NOT NULL) DESC,
@@ -120,7 +129,8 @@ func (store *InventoryStore) ClaimRunWithInputReceipts(ctx context.Context, devi
 				r.lease,r.lease_until,t.binding_id,COALESCE(t.parent_id,''),COALESCE(parent.device_id,''),t.root_id,
 				r.prompt_transfer_id,r.dependency_results,choice.first_claim,r.control_supported,t.git_policy,t.git_publish,
 				r.input_receipt_supported,r.input_receipts_frozen,choice.freeze_inputs`,
-			device, rand.Text(), controlSupported, gitVerificationSupported, gitPublishSupported, priorityDependency, inputReceiptSupported).
+			device, rand.Text(), capabilities.Control, capabilities.GitVerification, capabilities.GitPublish, priorityDependency, capabilities.InputReceipt,
+			capabilities.GitCandidateCommit, gitdelivery.CandidateCommitDaemon).
 			Scan(&claim.ID, &claim.TaskID, &claim.DirectoryID, &claim.Prompt, &claim.SessionID, &claim.AgentKind,
 				&claim.ProjectID, &claim.Generation, &claim.Lease, &claim.LeaseUntil, &claim.BindingID, &claim.ParentTaskID,
 				&claim.ParentDeviceID, &claim.RootTaskID, &claim.PromptTransferID, &claim.DependencyResults, &firstClaim, &claim.ControlSupported, &claim.GitPolicy, &claim.GitPublish,

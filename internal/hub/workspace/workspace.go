@@ -165,6 +165,15 @@ type RunClaim struct {
 	GitPublish                 bool                `json:"git_publish,omitempty"`
 }
 
+// RunClaimCapabilities 记录设备在领取请求中声明支持的运行协议。
+type RunClaimCapabilities struct {
+	Control            bool
+	GitVerification    bool
+	GitPublish         bool
+	InputReceipt       bool
+	GitCandidateCommit bool
+}
+
 // DependencyResult 记录父任务续接时收到的子任务标识和状态。
 type DependencyResult struct {
 	TaskID string `json:"task_id"`
@@ -414,7 +423,7 @@ type Store interface {
 	ClaimRun(context.Context, string, [32]byte) (RunClaim, error)
 	ClaimRunWithControl(context.Context, string, [32]byte, bool) (RunClaim, error)
 	ClaimRunWithCapabilities(context.Context, string, [32]byte, bool, bool) (RunClaim, error)
-	ClaimRunWithInputReceipts(context.Context, string, [32]byte, bool, bool, bool, bool) (RunClaim, error)
+	ClaimCompatibleRun(context.Context, string, [32]byte, RunClaimCapabilities) (RunClaim, error)
 	AuthorizeGitPush(context.Context, string, [32]byte, string, gitdelivery.PushRequest) (gitdelivery.PushIntent, error)
 	ObserveGitPush(context.Context, string, [32]byte, string, string, gitdelivery.Observation) (gitdelivery.PushIntent, error)
 	RunControl(context.Context, string, [32]byte, string, int64, string) (bool, error)

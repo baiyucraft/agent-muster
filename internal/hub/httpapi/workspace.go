@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/baiyucraft/agent-muster/internal/artifact"
+	"github.com/baiyucraft/agent-muster/internal/gitdelivery"
 	"github.com/baiyucraft/agent-muster/internal/hub/registry"
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
 	"github.com/baiyucraft/agent-muster/internal/inputreceipt"
@@ -233,12 +234,15 @@ func (api workspaceAPI) claimRun(w http.ResponseWriter, r *http.Request, device 
 	defer cancel()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	controlSupported := r.Header.Get("Muster-Run-Control") == "1"
-	gitVerificationSupported := r.Header.Get("Muster-Git-Verification") == "1"
-	gitPublishSupported := r.Header.Get("Muster-Git-Publish") == "1"
-	inputReceiptSupported := r.Header.Get(inputreceipt.Header) == "1"
+	capabilities := workspace.RunClaimCapabilities{
+		Control:            r.Header.Get("Muster-Run-Control") == "1",
+		GitVerification:    r.Header.Get("Muster-Git-Verification") == "1",
+		GitPublish:         r.Header.Get("Muster-Git-Publish") == "1",
+		InputReceipt:       r.Header.Get(inputreceipt.Header) == "1",
+		GitCandidateCommit: r.Header.Get(gitdelivery.CandidateCommitHeader) == "1",
+	}
 	for {
-		run, err := api.store.ClaimRunWithInputReceipts(ctx, device, token, controlSupported, gitVerificationSupported, gitPublishSupported, inputReceiptSupported)
+		run, err := api.store.ClaimCompatibleRun(ctx, device, token, capabilities)
 		if ctx.Err() != nil {
 			w.WriteHeader(http.StatusNoContent)
 			return

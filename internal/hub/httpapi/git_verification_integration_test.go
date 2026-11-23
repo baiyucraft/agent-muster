@@ -52,7 +52,8 @@ func TestManagedGitDispatchFreezesPolicyAndRequiresVerification(t *testing.T) {
 	}
 	dispatch("00000000-0000-4000-8000-000000000002", true, 409)
 	policy := gitdelivery.Policy{BaseRef: "refs/heads/main", Remote: "origin", MaxRepairs: 1,
-		Test: gitdelivery.Command{Program: "go", Args: []string{"test", "./..."}, TimeoutSeconds: 30}}
+		CandidateCommit: gitdelivery.CandidateCommitDaemon,
+		Test:            gitdelivery.Command{Program: "go", Args: []string{"test", "./..."}, TimeoutSeconds: 30}}
 	project["git_policy"] = policy
 	do(http.MethodPut, projectPath, testAdmin, project, 200, nil)
 	managed := dispatch("00000000-0000-4000-8000-000000000003", true, 200)
@@ -74,25 +75,35 @@ func TestManagedGitDispatchFreezesPolicyAndRequiresVerification(t *testing.T) {
 		TestExitCode: &zero, TestLogRef: "test-123/output.log", TestStatus: "passed"}
 	record(oldRun, 1, "completed", evidence, 400)
 	record(oldRun, 1, "completed", nil, 204)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/"+prefix+"runs/claim", nil)
-	if err != nil {
-		t.Fatal(err)
+	claim := func(candidateCommit bool, want int) (run workspace.RunClaim) {
+		t.Helper()
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/"+prefix+"runs/claim", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+device.Token)
+		request.Header.Set("Muster-Run-Control", "1")
+		request.Header.Set("Muster-Git-Verification", "1")
+		if candidateCommit {
+			request.Header.Set(gitdelivery.CandidateCommitHeader, "1")
+		}
+		response, err := server.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != want {
+			t.Fatalf("托管任务领取 HTTP %d，期望 %d", response.StatusCode, want)
+		}
+		if want == http.StatusOK {
+			if err := json.NewDecoder(response.Body).Decode(&run); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return run
 	}
-	request.Header.Set("Authorization", "Bearer "+device.Token)
-	request.Header.Set("Muster-Run-Control", "1")
-	request.Header.Set("Muster-Git-Verification", "1")
-	response, err := server.Client().Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	var run workspace.RunClaim
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("托管任务领取 HTTP %d", response.StatusCode)
-	}
-	if err := json.NewDecoder(response.Body).Decode(&run); err != nil {
-		t.Fatal(err)
-	}
+	claim(false, http.StatusNoContent)
+	run := claim(true, http.StatusOK)
 	policy.Revision = 1
 	if run.TaskID != managed || run.GitPolicy == nil || !reflect.DeepEqual(*run.GitPolicy, policy) {
 		t.Fatalf("托管任务未保持派发时的项目规则: %+v", run)

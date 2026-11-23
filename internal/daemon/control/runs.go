@@ -152,6 +152,7 @@ func (client *Client) ClaimRun(ctx context.Context, identity Identity) (*Run, er
 	if runtime.GOOS == "windows" {
 		headers.Set("Muster-Git-Verification", "1")
 		headers.Set("Muster-Git-Publish", "1")
+		headers.Set(gitdelivery.CandidateCommitHeader, "1")
 	}
 	response, err := client.sendWithHeaders(ctx, http.MethodPost, endpoint, identity.Token, headers, nil,
 		http.StatusOK, http.StatusNoContent)

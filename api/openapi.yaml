@@ -587,6 +587,10 @@ paths:
           in: header
           description: 支持独立审查、推送和回读的设备发送值 1，并同时声明支持停止指令和候选验证。
           schema: { type: string, enum: ['1'] }
+        - name: Muster-Git-Candidate-Commit
+          in: header
+          description: 支持创建候选提交的设备发送值 1。冻结为 daemon 提交的 Git 任务仅由声明此能力及候选验证能力的设备领取。
+          schema: { type: string, enum: ['1'] }
         - name: Muster-Input-Receipt
           in: header
           description: 支持按输入 ID 提交处理回执的设备发送值 1。
@@ -1866,6 +1870,10 @@ components:
         base_ref: { type: string, description: 完整的 refs/heads/ 本地分支或 refs/remotes/ 远端跟踪引用。 }
         remote: { type: string, description: 设备仓库已配置的 Git 远端别名。 }
         target_branch: { type: string, description: 完整的 refs/heads/ 目标引用。留空使用任务分支。 }
+        candidate_commit:
+          type: string
+          enum: ['', daemon]
+          description: 为空或省略时由修复 Agent 创建候选提交。daemon 允许设备端创建候选提交。
         test:
           type: object
           additionalProperties: false

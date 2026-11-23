@@ -19,6 +19,7 @@ type GitPolicyDraft = {
   baseRef: string
   remote: string
   targetBranch: string
+  candidateCommit: NonNullable<GitPolicy['candidate_commit']>
   program: string
   args: { id: string; value: string }[]
   timeoutSeconds: string
@@ -36,6 +37,7 @@ function gitPolicyDraft(policy?: GitPolicy): GitPolicyDraft {
     baseRef: policy?.base_ref ?? 'refs/remotes/origin/main',
     remote: policy?.remote ?? 'origin',
     targetBranch: policy?.target_branch?.replace(/^refs\/heads\//, '') ?? '',
+    candidateCommit: policy?.candidate_commit ?? '',
     program: policy?.test.program ?? '',
     args: (policy?.test.args ?? []).map((value) => ({ id: newID(), value })),
     timeoutSeconds: String(policy?.test.timeout_seconds ?? 120),
@@ -65,6 +67,7 @@ function gitPolicyInput(policy: GitPolicyDraft): Omit<GitPolicy, 'revision'> | n
     base_ref: policy.baseRef.trim(),
     remote: policy.remote.trim(),
     target_branch: targetBranch ? `${branchPrefix}${targetBranch}` : undefined,
+    candidate_commit: policy.candidateCommit || undefined,
     test: { program: policy.program.trim(), args: policy.args.map(({ value }) => value), timeout_seconds: Number(policy.timeoutSeconds) },
     review_agent: policy.reviewAgent || undefined,
     max_repairs: Number(policy.maxRepairs),
@@ -94,6 +97,12 @@ function GitDeliveryFields({ policy, saving, onChange }: { policy: GitPolicyDraf
       <label>基准引用<input value={policy.baseRef} onChange={(event) => onChange({ ...policy, baseRef: event.target.value })} placeholder="refs/remotes/origin/main" required /></label>
       <label>远程仓库别名<input value={policy.remote} onChange={(event) => onChange({ ...policy, remote: event.target.value })} placeholder="origin" required /></label>
       <label>目标分支<input value={policy.targetBranch} onChange={(event) => onChange({ ...policy, targetBranch: event.target.value })} placeholder="留空时按任务生成" /></label>
+      <label>候选提交方式<select value={policy.candidateCommit} onChange={(event) => {
+        onChange({ ...policy, candidateCommit: event.target.value === 'daemon' ? 'daemon' : '' })
+      }}>
+        <option value="">Agent 提交</option>
+        <option value="daemon">设备端提交</option>
+      </select></label>
       <label>测试程序<input value={policy.program} onChange={(event) => onChange({ ...policy, program: event.target.value })} placeholder="go" required /></label>
       <label>测试超时（秒）<input type="number" min={1} max={3600} step={1} value={policy.timeoutSeconds} onChange={(event) => onChange({ ...policy, timeoutSeconds: event.target.value })} required /></label>
       <label>Review Agent<select value={policy.reviewAgent} onChange={(event) => {

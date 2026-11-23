@@ -35,15 +35,16 @@ func (worker *Worker) invokeGit(ctx context.Context, run control.Run, peer *coll
 		}
 	}
 	acceptance := run.Prompt + inputMessageContext(run.InputMessages)
-	run.Prompt += "\n\n请在本轮提供的 Git 工作树内完成修改，并逐个暂存和提交修改的项目文件。.muster-inbox 是设备收件目录，请留在本机。设备会在独立检出中测试候选提交，请将推送留给交付流程。"
+	daemonCommit := run.GitPolicy.CandidateCommit == gitdelivery.CandidateCommitDaemon
 	for repairs := 0; ; repairs++ {
 		event.GitVerification = nil
 		event.Kind = "failed"
-		event, err = worker.invoke(ctx, run, service, checkout.FixDir, execute, event)
+		var confirmedCandidate string
+		event, confirmedCandidate, err = worker.invokeGitFix(ctx, run, service, checkout, execute, event, daemonCommit)
 		if err != nil || event.Kind != "completed" {
 			return event, err
 		}
-		evidence, feedback, verifyErr := worker.verifyGitCandidate(ctx, checkout, run, acceptance, execute, repairs)
+		evidence, feedback, verifyErr := worker.verifyGitCandidate(ctx, checkout, run, confirmedCandidate, acceptance, execute, repairs)
 		event.GitVerification = &evidence
 		if verifyErr != nil {
 			event.Kind = "failed"
@@ -76,11 +77,14 @@ func (worker *Worker) invokeGit(ctx context.Context, run control.Run, peer *coll
 	}
 }
 
-func (worker *Worker) verifyGitCandidate(ctx context.Context, checkout gitwork.Workspace, run control.Run, acceptance string, execute agentExecutor, repairs int) (gitdelivery.Verification, string, error) {
+func (worker *Worker) verifyGitCandidate(ctx context.Context, checkout gitwork.Workspace, run control.Run, confirmedCandidate, acceptance string, execute agentExecutor, repairs int) (gitdelivery.Verification, string, error) {
 	evidence := gitdelivery.Verification{BaseOID: checkout.BaseOID, TestStatus: "unverified", RepairAttempts: repairs}
 	candidate, err := checkout.Candidate(ctx)
 	if err != nil {
 		return evidence, "", err
+	}
+	if confirmedCandidate != "" && candidate != confirmedCandidate {
+		return evidence, "", errors.New("Git 修复工作区的 HEAD 与本轮确认的候选提交不一致")
 	}
 	evidence.CandidateOID = candidate
 	test, err := checkout.Test(ctx, candidate, run.GitPolicy.Test)
@@ -171,7 +175,7 @@ func (worker *Worker) runGitReview(ctx context.Context, checkout gitwork.Workspa
 }
 
 func gitRepairPrompt(feedback string, evidence gitdelivery.Verification, dir string) string {
-	prompt := "验证发现以下问题。请在当前修复工作树内处理并提交对应项目文件，保留设备收件目录。修改后的候选将重新测试和审查。\n\n" + feedback
+	prompt := "验证发现以下问题。请在当前修复工作树内处理，保留设备收件目录。修改后的候选将重新测试和审查。\n\n" + feedback
 	if evidence.TestLogRef != "" {
 		log, err := os.Open(filepath.Join(dir, filepath.FromSlash(evidence.TestLogRef)))
 		if err == nil {

@@ -18,6 +18,12 @@ import (
 )
 
 func TestWorkerRepairsReviewsAndPublishesGitCandidateThroughHub(t *testing.T) {
+	t.Run("agent commit", func(t *testing.T) { verifyGitPublication(t, "") })
+	t.Run("daemon commit", func(t *testing.T) { verifyGitPublication(t, gitdelivery.CandidateCommitDaemon) })
+}
+
+func verifyGitPublication(t *testing.T, candidateCommit string) {
+	t.Helper()
 	dsn := os.Getenv("MUSTER_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("MUSTER_TEST_DATABASE_URL is required")
@@ -81,7 +87,7 @@ func TestWorkerRepairsReviewsAndPublishesGitCandidateThroughHub(t *testing.T) {
 	const messageID = "10000000-0000-4000-8000-000000000032"
 	const initial = "修复并推送示例"
 	const repairNote = "将样例改成 final candidate"
-	policy := &gitdelivery.Policy{BaseRef: "refs/heads/main", Remote: "origin", ReviewAgent: "codex", MaxRepairs: 1,
+	policy := &gitdelivery.Policy{BaseRef: "refs/heads/main", Remote: "origin", CandidateCommit: candidateCommit, ReviewAgent: "codex", MaxRepairs: 1,
 		Test: gitdelivery.Command{Program: "git", Args: []string{"diff", "--exit-code", "HEAD"}, TimeoutSeconds: 20}}
 	if _, err := store.SaveProject(ctx, workspace.Project{ID: projectID, Name: "Git fixture", AgentKind: "dsh",
 		DeviceID: identity.DeviceID, DirectoryID: dir.ID, GitPolicy: policy}); err != nil {
@@ -133,6 +139,12 @@ func TestWorkerRepairsReviewsAndPublishesGitCandidateThroughHub(t *testing.T) {
 				}
 				if err := write(checkout, "example.txt", body); err != nil {
 					return "", err
+				}
+				if candidateCommit == gitdelivery.CandidateCommitDaemon {
+					if !strings.Contains(prompt, gitCandidateMarker) {
+						return "", fmt.Errorf("daemon 提交模式的任务和返修都须要求候选清单")
+					}
+					return "已修复示例。\n" + gitCandidateMarker + "\n" + `{"files":["example.txt"],"message":"fix: 修复示例"}`, nil
 				}
 				_, err := git(ctx, checkout, "commit", "-am", strings.TrimSpace(body))
 				return "已修复示例。", err
@@ -211,6 +223,9 @@ func TestWorkerRepairsReviewsAndPublishesGitCandidateThroughHub(t *testing.T) {
 		if !strings.Contains(report.Text, want) {
 			t.Fatalf("汇报缺少 %q: %s", want, report.Text)
 		}
+	}
+	if strings.Contains(report.Text, gitCandidateMarker) || strings.Contains(report.Text, `"files"`) {
+		t.Fatalf("汇报带有本机提交清单: %s", report.Text)
 	}
 	completion := workspace.Completion{Lease: report.Lease, Status: "handled", Text: report.Text}
 	for range 2 {

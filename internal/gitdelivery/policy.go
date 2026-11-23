@@ -14,6 +14,12 @@ var (
 	programName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.+-]*$`)
 )
 
+// CandidateCommitDaemon 允许设备端根据修复结果创建候选提交。
+const CandidateCommitDaemon = "daemon"
+
+// CandidateCommitHeader 供设备在领取运行时声明它支持创建候选提交。
+const CandidateCommitHeader = "Muster-Git-Candidate-Commit"
+
 // Policy 是管理员保存并在交付任务首次派发时冻结的项目设置。
 type Policy struct {
 	// Revision 由 Hub 写入。未保存的配置可使用零值。
@@ -25,6 +31,8 @@ type Policy struct {
 	// TargetBranch 是完整的目标分支引用。空值使用由任务 ID 确定的分支。
 	TargetBranch string  `json:"target_branch,omitempty"`
 	Test         Command `json:"test"`
+	// CandidateCommit 为空时由修复 Agent 自行创建候选提交。
+	CandidateCommit string `json:"candidate_commit,omitempty"`
 	// ReviewAgent 为空时仅执行测试。dsh 或 codex 表示另开该 CLI 的审查会话。
 	ReviewAgent string `json:"review_agent,omitempty"`
 	// MaxRepairs 是首个候选验证失败后允许的额外修复次数。
@@ -53,6 +61,9 @@ func (policy Policy) Validate() error {
 	}
 	if policy.TargetBranch != "" && !validBranchRef(policy.TargetBranch) {
 		return errors.New("Git 交付目标须为完整的 refs/heads/ 分支引用")
+	}
+	if policy.CandidateCommit != "" && policy.CandidateCommit != CandidateCommitDaemon {
+		return errors.New("Git 交付候选提交方式须为空或 daemon")
 	}
 	if !programName.MatchString(policy.Test.Program) || strings.HasSuffix(policy.Test.Program, ".") {
 		return errors.New("Git 交付测试程序须为可执行文件名")

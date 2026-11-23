@@ -60,6 +60,8 @@ export type GitPolicy = {
   remote: string
   /** 目标分支的完整 refs/heads 引用。 */
   target_branch?: string
+  /** 省略时由修复 Agent 创建候选提交。 */
+  candidate_commit?: '' | 'daemon'
   /** 测试程序及按原顺序传入的独立参数，超时单位为秒。 */
   test: { program: string; args: string[]; timeout_seconds: number }
   review_agent?: 'dsh' | 'codex'

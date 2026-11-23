@@ -20,6 +20,7 @@ func TestPolicyAcceptsLiteralReferencesAndArguments(t *testing.T) {
 	policy.BaseRef = "refs/heads/团队/主线"
 	policy.TargetBranch = "refs/heads/release/next"
 	policy.Remote = "company-1.upstream"
+	policy.CandidateCommit = CandidateCommitDaemon
 	policy.Test = Command{
 		Program: "npm.cmd", Args: []string{"test", "--", "", "with spaces", "a&b", `x"y`}, TimeoutSeconds: 3600,
 	}
@@ -58,6 +59,7 @@ func TestPolicyRejectsInvalidDeliveryConfiguration(t *testing.T) {
 		{"空目标分支", func(p *Policy) { p.TargetBranch = "refs/heads/" }},
 		{"目标控制符", func(p *Policy) { p.TargetBranch = "refs/heads/main\x7f" }},
 		{"目标反斜杠", func(p *Policy) { p.TargetBranch = `refs/heads/team\main` }},
+		{"未知候选提交方式", func(p *Policy) { p.CandidateCommit = "agent" }},
 		{"空程序", func(p *Policy) { p.Test.Program = "" }},
 		{"带参数的程序", func(p *Policy) { p.Test.Program = "go test" }},
 		{"相对程序路径", func(p *Policy) { p.Test.Program = `tools\test.exe` }},
