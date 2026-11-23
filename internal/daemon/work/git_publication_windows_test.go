@@ -171,6 +171,15 @@ func TestWorkerRepairsReviewsAndPublishesGitCandidateThroughHub(t *testing.T) {
 		evidence.RepairAttempts != 1 || evidence.ReviewAgent != "codex" || evidence.ReviewStatus != "passed" || run.SessionID != nativeSession {
 		t.Fatalf("测试、返修及独立 Review 回执不完整: %+v", evidence)
 	}
+	if run.Diagnostics == nil || len(run.Diagnostics.Reviews) != 2 {
+		t.Fatalf("任务详情应持久化两次独立 Review: %+v", run.Diagnostics)
+	}
+	first, last := run.Diagnostics.Reviews[0], run.Diagnostics.Reviews[1]
+	if first.CandidateOID != firstOID || first.Status != "changes_requested" || first.RepairIndex != 0 ||
+		last.CandidateOID != evidence.CandidateOID || last.Status != "passed" || last.RepairIndex != 1 ||
+		first.AgentKind != evidence.ReviewAgent || last.AgentKind != evidence.ReviewAgent {
+		t.Fatalf("Review 证据与候选归属不符: %+v", run.Diagnostics.Reviews)
+	}
 	ref := "refs/heads/muster/" + taskID
 	if publication == nil || publication.Status != "same_commit" || publication.TargetRef != ref ||
 		publication.CandidateOID != evidence.CandidateOID || publication.ObservedOID != evidence.CandidateOID || publication.Remote != "origin" {

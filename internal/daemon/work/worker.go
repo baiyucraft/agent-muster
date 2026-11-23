@@ -367,7 +367,7 @@ func (worker *Worker) execute(ctx context.Context, run control.Run, peer *collab
 	}
 	if err == nil {
 		if run.GitPolicy != nil {
-			event, err = worker.invokeGit(runCtx, run, peer, service, dir, execute, event)
+			event, err = worker.invokeGit(runCtx, run, peer, service, dir, execute, event, readDiagnostics)
 		} else {
 			event, err = worker.invoke(runCtx, run, service, dir, execute, event)
 		}

@@ -7,13 +7,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/baiyucraft/agent-muster/internal/daemon/control"
 	"github.com/baiyucraft/agent-muster/internal/daemon/gitwork"
+	"github.com/baiyucraft/agent-muster/internal/daemon/runner"
 	"github.com/baiyucraft/agent-muster/internal/gitdelivery"
+	"github.com/baiyucraft/agent-muster/internal/runreport"
 )
 
-func (worker *Worker) invokeGit(ctx context.Context, run control.Run, peer *collaboration, service *localHelper, dir string, execute agentExecutor, event control.RunEvent) (control.RunEvent, error) {
+func (worker *Worker) invokeGit(ctx context.Context, run control.Run, peer *collaboration, service *localHelper, dir string, execute agentExecutor, event control.RunEvent, readDiagnostics func() *runreport.Diagnostics) (control.RunEvent, error) {
 	if !taskStorageID.MatchString(run.TaskID) {
 		return event, errors.New("Git 任务标识无效")
 	}
@@ -40,7 +43,7 @@ func (worker *Worker) invokeGit(ctx context.Context, run control.Run, peer *coll
 		if err != nil || event.Kind != "completed" {
 			return event, err
 		}
-		evidence, feedback, verifyErr := verifyGitCandidate(ctx, checkout, run, acceptance, execute, repairs)
+		evidence, feedback, verifyErr := worker.verifyGitCandidate(ctx, checkout, run, acceptance, execute, repairs)
 		event.GitVerification = &evidence
 		if verifyErr != nil {
 			event.Kind = "failed"
@@ -48,6 +51,12 @@ func (worker *Worker) invokeGit(ctx context.Context, run control.Run, peer *coll
 		}
 		if feedback == "" {
 			if run.GitPublish {
+				// 推送待核对时由本机记录恢复终态，先保留当前已确认的修复诊断。
+				if run.DiagnosticsSupported {
+					if report := readDiagnostics(); report.Valid() {
+						event.Diagnostics = report
+					}
+				}
 				return event, worker.publishGitCandidate(ctx, run, peer, dir, checkout, fingerprint, event)
 			}
 			event.Text = fmt.Sprintf("候选提交 %s 已通过项目验证。\n\n%s", evidence.CandidateOID, event.Text)
@@ -62,7 +71,7 @@ func (worker *Worker) invokeGit(ctx context.Context, run control.Run, peer *coll
 	}
 }
 
-func verifyGitCandidate(ctx context.Context, checkout gitwork.Workspace, run control.Run, acceptance string, execute agentExecutor, repairs int) (gitdelivery.Verification, string, error) {
+func (worker *Worker) verifyGitCandidate(ctx context.Context, checkout gitwork.Workspace, run control.Run, acceptance string, execute agentExecutor, repairs int) (gitdelivery.Verification, string, error) {
 	evidence := gitdelivery.Verification{BaseOID: checkout.BaseOID, TestStatus: "unverified", RepairAttempts: repairs}
 	candidate, err := checkout.Candidate(ctx)
 	if err != nil {
@@ -87,15 +96,33 @@ func verifyGitCandidate(ctx context.Context, checkout gitwork.Workspace, run con
 		return evidence, "", nil
 	}
 	evidence.ReviewAgent = run.GitPolicy.ReviewAgent
-	evidence.ReviewStatus = "unverified"
-	var reviewStatus, feedback string
-	err = checkout.Review(ctx, candidate, func(ctx context.Context, dir, base, sha string) error {
-		prompt := fmt.Sprintf("独立审查候选提交 %s 相对基线 %s 的改动。验收要求如下。检查相关差异与风险，保持审查工作树原样。首行只使用 MUSTER_REVIEW_PASS 或 MUSTER_REVIEW_CHANGES，后者在后续行写明须修的问题。\n\n%s", sha, base, acceptance)
-		text, err := execute(ctx, evidence.ReviewAgent, dir, prompt, "", nil, func() error { return nil }, func(string) error { return nil })
-		if err != nil {
-			return err
+	attempt, feedback, err := worker.runGitReview(ctx, checkout, run, acceptance, execute, runreport.ReviewAttempt{
+		CandidateOID: candidate, RepairIndex: repairs, AgentKind: evidence.ReviewAgent, Status: "unverified",
+	})
+	evidence.ReviewStatus = attempt.Status
+	return evidence, feedback, err
+}
+
+// runGitReview 为候选创建独立 CLI 诊断。仅在 Git 工作树和候选重核通过后确认审查结论。
+func (worker *Worker) runGitReview(ctx context.Context, checkout gitwork.Workspace, run control.Run, acceptance string, execute agentExecutor, attempt runreport.ReviewAttempt) (runreport.ReviewAttempt, string, error) {
+	reviewCtx, invocation, readDiagnostics := runner.WithReviewDiagnostics(ctx, worker.runLogDirectory(run.ID))
+	if run.ReviewDiagnosticsSupported {
+		attempt.LogInvocation = invocation
+		attempt.Diagnostics = &runreport.Diagnostics{ErrorKind: "interrupted", CaptureIncomplete: true}
+		if err := worker.saveGitReview(ctx, run.ID, attempt); err != nil {
+			return attempt, "", err
 		}
-		line, note, _ := strings.Cut(strings.TrimSpace(text), "\n")
+	}
+	var invocationErr error
+	var reviewStatus, feedback string
+	err := checkout.Review(reviewCtx, attempt.CandidateOID, func(ctx context.Context, dir, base, sha string) error {
+		prompt := fmt.Sprintf("独立审查候选提交 %s 相对基线 %s 的改动。验收要求如下。检查相关差异与风险，保持审查工作树原样。首行只使用 MUSTER_REVIEW_PASS 或 MUSTER_REVIEW_CHANGES，后者在后续行写明须修的问题。\n\n%s", sha, base, acceptance)
+		var output string
+		output, invocationErr = execute(ctx, attempt.AgentKind, dir, prompt, "", nil, func() error { return nil }, func(string) error { return nil })
+		if invocationErr != nil {
+			return invocationErr
+		}
+		line, note, _ := strings.Cut(strings.TrimSpace(output), "\n")
 		switch strings.TrimSpace(line) {
 		case "MUSTER_REVIEW_PASS":
 			reviewStatus = "passed"
@@ -109,11 +136,33 @@ func verifyGitCandidate(ctx context.Context, checkout gitwork.Workspace, run con
 		}
 		return nil
 	})
-	if err != nil {
-		return evidence, "", err
+	if err == nil {
+		attempt.Status = reviewStatus
+	} else {
+		feedback = ""
 	}
-	evidence.ReviewStatus = reviewStatus
-	return evidence, feedback, nil
+	if run.ReviewDiagnosticsSupported {
+		attempt.Diagnostics = readDiagnostics()
+		if attempt.Diagnostics == nil && invocationErr != nil {
+			attempt.Diagnostics = &runreport.Diagnostics{ErrorKind: "setup"}
+		}
+		if attempt.Diagnostics != nil && attempt.Diagnostics.ErrorKind == "" && invocationErr != nil {
+			attempt.Diagnostics.ErrorKind = "output"
+		}
+		if attempt.Diagnostics == nil || attempt.Diagnostics.StdoutBytes == nil && attempt.Diagnostics.StderrBytes == nil {
+			attempt.LogInvocation = ""
+		}
+		if !attempt.Diagnostics.Valid() {
+			attempt.Diagnostics = nil
+		}
+		persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if saveErr := worker.saveGitReview(persist, run.ID, attempt); saveErr != nil {
+			attempt.Status = "unverified"
+			return attempt, "", errors.Join(err, saveErr)
+		}
+	}
+	return attempt, feedback, err
 }
 
 func gitRepairPrompt(feedback string, evidence gitdelivery.Verification, dir string) string {

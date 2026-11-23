@@ -66,6 +66,9 @@ func TestRunLogDeviceAuthorizationAndDelivery(t *testing.T) {
 	}
 	do(http.MethodGet, adminPath, testAdmin, nil, http.StatusGatewayTimeout, nil)
 	do(http.MethodPost, "devices/"+device+"/heartbeat", token, nil, http.StatusNoContent, nil)
+	for _, query := range []string{"?invocation=cli-1", "?invocation=review-1&invocation=review-2", "?invocation=review-%2F"} {
+		do(http.MethodGet, adminPath+query, testAdmin, nil, http.StatusBadRequest, nil)
+	}
 
 	poll := func(path, credential string) []runreport.LogRequest {
 		t.Helper()
@@ -92,11 +95,11 @@ func TestRunLogDeviceAuthorizationAndDelivery(t *testing.T) {
 		response *http.Response
 		err      error
 	}
-	startRead := func() (context.CancelFunc, <-chan readResult) {
+	startRead := func(query string) (context.CancelFunc, <-chan readResult) {
 		t.Helper()
 		requestCtx, cancel := context.WithCancel(ctx)
 		t.Cleanup(cancel)
-		request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, server.URL+"/api/v1/"+adminPath, nil)
+		request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, server.URL+"/api/v1/"+adminPath+query, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -108,7 +111,7 @@ func TestRunLogDeviceAuthorizationAndDelivery(t *testing.T) {
 		}()
 		return cancel, completion
 	}
-	_, completion := startRead()
+	_, completion := startRead("")
 	queued := waitFor(1)[0]
 	if queued.RunID != runID || queued.Validate() != nil || len(poll(otherPath, otherToken)) != 0 {
 		t.Fatalf("日志请求未绑定当前运行和执行设备 (%+v)", queued)
@@ -116,7 +119,11 @@ func TestRunLogDeviceAuthorizationAndDelivery(t *testing.T) {
 	want := runreport.LogResponse{Status: runreport.LogAvailable, Files: []runreport.LogFile{{
 		Invocation: "cli-1", Stream: "stdout", Text: "本机 CLI 输出\n", Truncated: true,
 	}}}
+	review := runreport.LogResponse{Status: runreport.LogAvailable, Files: []runreport.LogFile{{
+		Invocation: "review-2", Stream: "stdout", Text: "独立 Review 输出\n",
+	}}}
 	do(http.MethodPut, otherPath+"/"+queued.ID, otherToken, want, http.StatusNotFound, nil)
+	do(http.MethodPut, ownerPath+"/"+queued.ID, token, review, http.StatusBadRequest, nil)
 	do(http.MethodPut, ownerPath+"/"+queued.ID, token,
 		runreport.LogResponse{Status: runreport.LogAvailable}, http.StatusBadRequest, nil)
 	tooLarge := want
@@ -139,7 +146,24 @@ func TestRunLogDeviceAuthorizationAndDelivery(t *testing.T) {
 	}
 	do(http.MethodPut, ownerPath+"/"+queued.ID, token, want, http.StatusNotFound, nil)
 
-	cancel, completion := startRead()
+	_, completion = startRead("?invocation=review-2")
+	queued = waitFor(1)[0]
+	if queued.RunID != runID || queued.Invocation != "review-2" || queued.Validate() != nil {
+		t.Fatalf("日志请求未绑定指定的 Review (%+v)", queued)
+	}
+	do(http.MethodPut, ownerPath+"/"+queued.ID, token, want, http.StatusBadRequest, nil)
+	do(http.MethodPut, ownerPath+"/"+queued.ID, token, review, http.StatusNoContent, nil)
+	result = <-completion
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	defer result.response.Body.Close()
+	response = runreport.LogResponse{}
+	if err := json.NewDecoder(result.response.Body).Decode(&response); result.response.StatusCode != http.StatusOK || err != nil || !reflect.DeepEqual(response, review) {
+		t.Fatalf("Review 日志转发不正确 (%d, %+v, %v)", result.response.StatusCode, response, err)
+	}
+
+	cancel, completion := startRead("")
 	queued = waitFor(1)[0]
 	cancel()
 	cancelled := <-completion
@@ -149,7 +173,7 @@ func TestRunLogDeviceAuthorizationAndDelivery(t *testing.T) {
 	waitFor(0)
 	do(http.MethodPut, ownerPath+"/"+queued.ID, token, want, http.StatusNotFound, nil)
 
-	cancel, completion = startRead()
+	cancel, completion = startRead("")
 	queued = waitFor(1)[0]
 	do(http.MethodDelete, "devices/"+device, testAdmin, nil, http.StatusNoContent, nil)
 	do(http.MethodGet, ownerPath, token, nil, http.StatusUnauthorized, nil)

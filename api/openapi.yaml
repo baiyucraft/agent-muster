@@ -283,7 +283,13 @@ paths:
         '404': { description: 任务不存在 }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/tasks/{id}/runs/{run_id}/logs:
-    parameters: [{ $ref: '#/components/parameters/TaskID' }, { $ref: '#/components/parameters/RunLogRunID' }]
+    parameters:
+      - $ref: '#/components/parameters/TaskID'
+      - $ref: '#/components/parameters/RunLogRunID'
+      - name: invocation
+        in: query
+        required: false
+        schema: { $ref: '#/components/schemas/ReviewLogInvocation' }
     get:
       operationId: getRunLogs
       security: [{ adminBearer: [] }]
@@ -516,6 +522,9 @@ paths:
                   diagnostics_supported:
                     type: boolean
                     description: 为 true 时设备可随本轮终态上报诊断摘要。字段缺省视为未启用。
+                  review_diagnostics_supported:
+                    type: boolean
+                    description: 为 true 时设备可随终态为独立 Review 上报候选、用量与设备日志引用。字段缺省视为未启用。
                   git_policy:
                     description: 托管 Git 任务首次派发时保存的交付规则快照。
                     $ref: '#/components/schemas/GitDeliveryPolicy'
@@ -1638,6 +1647,33 @@ components:
         capture_incomplete: { type: boolean, description: 设备未能完整保存输出流。 }
         error_kind: { type: string, enum: [native_exit, interrupted, output, setup] }
         usage: { $ref: '#/components/schemas/RunUsage' }
+        reviews:
+          type: array
+          maxItems: 6
+          description: 按返修序号递增，每个候选最多一次。缺失表示旧记录没有独立审查诊断。
+          items: { $ref: '#/components/schemas/ReviewDiagnostics' }
+    ReviewDiagnostics:
+      type: object
+      additionalProperties: false
+      required: [candidate_oid, repair_index, agent_kind, status]
+      properties:
+        candidate_oid: { type: string, pattern: '^(?:[0-9a-f]{40}|[0-9a-f]{64})$' }
+        repair_index: { type: integer, minimum: 0, maximum: 5, description: 从零开始，对应返修次数 }
+        agent_kind: { $ref: '#/components/schemas/AgentKind' }
+        status: { type: string, enum: [passed, changes_requested, unverified] }
+        diagnostics: { $ref: '#/components/schemas/ReviewRunDiagnostics' }
+        log_invocation: { $ref: '#/components/schemas/ReviewLogInvocation' }
+    ReviewRunDiagnostics:
+      type: object
+      additionalProperties: false
+      description: 单次独立审查调用采集的诊断，不包含主修复轮次与其他审查。
+      properties:
+        stdout_bytes: { $ref: '#/components/schemas/RunDiagnosticCount' }
+        stderr_bytes: { $ref: '#/components/schemas/RunDiagnosticCount' }
+        exit_code: { type: integer, format: int64, minimum: 0, maximum: 4294967295 }
+        capture_incomplete: { type: boolean }
+        error_kind: { type: string, enum: [native_exit, interrupted, output, setup] }
+        usage: { $ref: '#/components/schemas/RunUsage' }
     CenterTurnUsage:
       type: object
       description: 已完成的中心 dsh 原生轮次用量。只随 handled 回执提交。输入计数不含缓存读写。
@@ -1653,6 +1689,9 @@ components:
     RunLogRequestID:
       type: string
       pattern: '^log-[0-9a-f]{32}$'
+    ReviewLogInvocation:
+      type: string
+      pattern: '^review-[0-9]{1,10}$'
     RunLogRunID:
       type: string
       pattern: '^run-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
@@ -1663,6 +1702,7 @@ components:
       properties:
         id: { $ref: '#/components/schemas/RunLogRequestID' }
         run_id: { $ref: '#/components/schemas/RunLogRunID' }
+        invocation: { $ref: '#/components/schemas/ReviewLogInvocation' }
     RunLogResponse:
       type: object
       additionalProperties: false
@@ -1678,7 +1718,7 @@ components:
             additionalProperties: false
             required: [invocation, stream, text, truncated]
             properties:
-              invocation: { type: string, pattern: '^cli-[0-9]{1,10}$' }
+              invocation: { type: string, pattern: '^(?:cli-[0-9]{1,10}|review-[0-9]{1,10})$' }
               stream: { type: string, enum: [stdout, stderr] }
               text: { type: string, description: 日志文件末尾的 UTF-8 文本。所有文件正文合计不超过 64 KiB。 }
               truncated: { type: boolean }

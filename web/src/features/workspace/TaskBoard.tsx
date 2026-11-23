@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AdminTokenError, readDevices } from '../../api/devices'
-import { latestApproval, readTask, type Approval, type Run, type Task, type TaskDetail, type TaskInput, type Transfer } from '../../api/workspace'
+import { latestApproval, readTask, type Approval, type InvocationDiagnostics, type Run, type RunReviewAttempt, type Task, type TaskDetail, type TaskInput, type Transfer } from '../../api/workspace'
 import { messageFor } from '../../useWorkspace'
 import { ApprovalCard, type ApprovalActions } from './ApprovalCard'
 import { MessageItem, Time } from './Conversation'
@@ -233,6 +233,8 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
             {run.session_id && <p><span>会话</span> <code>{run.session_id}</code></p>}
             <GitRunEvidence verification={run.git_verification} publication={run.git_publication} />
             <RunDiagnostics diagnostics={run.diagnostics} />
+            <RunReviewAttempts reviews={run.diagnostics?.reviews} token={token} taskID={taskID} runID={run.id}
+              logsEnabled={runsOpen && run.status !== 'queued' && run.status !== 'running'} onLock={onLock} />
             {runsOpen && run.status !== 'queued' && run.status !== 'running' &&
               <RunLogs token={token} taskID={taskID} runID={run.id} onLock={onLock} />}
             {run.text && <p className="message-text">{run.text}</p>}
@@ -283,6 +285,43 @@ const gitPublicationStatus = {
   diverged: '远端历史分叉',
   unavailable: '远端暂不可读',
 }
+/**
+ * 展示每轮独立 Review 的候选、执行 Agent、诊断和本次调用日志。
+ * @param props Review 记录、关联运行与令牌、外层展开状态及会话锁定回调。
+ * @returns Review 证据列表，没有记录时返回空值。
+ */
+function RunReviewAttempts({ reviews, token, taskID, runID, logsEnabled, onLock }: {
+  reviews?: RunReviewAttempt[]
+  token: string
+  taskID: string
+  runID: string
+  logsEnabled: boolean
+  onLock: (reason: string) => void
+}) {
+  if (!reviews?.length) return null
+  return (
+    <section className="run-review-attempts" aria-label="独立 Review">
+      <h3>独立 Review</h3>
+      {reviews.map((review) => (
+        <article className="run-review-attempt" key={`${review.candidate_oid}/${review.repair_index}`}>
+          <header>
+            <strong data-status={review.status}>{gitReviewStatus[review.status] ?? gitReviewStatus.unverified}</strong>
+            <span>{agentName(review.agent_kind)} · {review.repair_index === 0 ? '首审' : `返修 ${review.repair_index}`}</span>
+          </header>
+          <div className="run-review-candidate"><span>候选</span>
+            <details>
+              <summary><code>{review.candidate_oid.slice(0, 12)}</code></summary>
+              <code>{review.candidate_oid}</code>
+            </details>
+          </div>
+          <RunDiagnostics diagnostics={review.diagnostics} />
+          {logsEnabled && review.log_invocation && <RunLogs key={review.log_invocation}
+            token={token} taskID={taskID} runID={runID} invocation={review.log_invocation} onLock={onLock} />}
+        </article>
+      ))}
+    </section>
+  )
+}
 
 /** 在对应运行内展示设备报告的测试、Review 和远端读回证据。 */
 function GitRunEvidence({ verification, publication }: { verification?: Run['git_verification']; publication?: Run['git_publication'] }) {
@@ -319,8 +358,8 @@ const runErrorText = {
 }
 const usageSourceText = { dsh_headless: 'dsh', codex_exec: 'Codex' }
 
-/** 展示 CLI 已确认的本轮诊断。缺失用量单独标记，已知零值照常显示。 */
-function RunDiagnostics({ diagnostics }: { diagnostics?: Run['diagnostics'] }) {
+/** 展示本次 CLI 调用的诊断。缺失用量单独标记，已知零值照常显示。 */
+function RunDiagnostics({ diagnostics }: { diagnostics?: InvocationDiagnostics }) {
   const usage = diagnostics?.usage
   const executionFacts = [
     ['退出码', diagnostics?.exit_code],

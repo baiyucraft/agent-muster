@@ -55,6 +55,12 @@ CREATE TABLE IF NOT EXISTS git_push_attempts (
 	data BLOB NOT NULL,
 	next_check INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS git_review_attempts (
+	run_id TEXT NOT NULL REFERENCES runs(id),
+	repair_index INTEGER NOT NULL,
+	data BLOB NOT NULL,
+	PRIMARY KEY (run_id, repair_index)
+);
 CREATE TABLE IF NOT EXISTS peer_credentials (
 	id INTEGER PRIMARY KEY CHECK(id=1),
 	cert BLOB NOT NULL,
@@ -311,15 +317,20 @@ func (worker *Worker) stageTerminalEvent(ctx context.Context, run control.Run, e
 }
 
 func (worker *Worker) stageEventWithResult(ctx context.Context, runID string, event control.RunEvent, manifest control.Manifest, body []byte, clearPush bool) error {
-	data, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
 	tx, err := worker.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if event.Kind != "started" && event.Kind != "session" {
+		if err := collectGitReviews(ctx, tx, runID, &event); err != nil {
+			return err
+		}
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
 	if manifest.ID != "" {
 		if err := saveTransfer(ctx, tx, runID, manifest, body); err != nil {
 			return err

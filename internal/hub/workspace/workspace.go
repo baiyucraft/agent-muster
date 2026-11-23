@@ -114,29 +114,31 @@ type Run struct {
 
 // RunClaim 是设备领取运行后的数据，包含执行上下文、租约、输入和可委派目标。
 type RunClaim struct {
-	ID                   string              `json:"id"`
-	TaskID               string              `json:"task_id"`
-	DirectoryID          string              `json:"directory_id"`
-	Prompt               string              `json:"prompt"`
-	SessionID            string              `json:"session_id"`
-	AgentKind            string              `json:"agent_kind"`
-	ProjectID            string              `json:"project_id"`
-	Generation           int64               `json:"generation"`
-	Lease                string              `json:"lease"`
-	LeaseUntil           time.Time           `json:"lease_until"`
-	BindingID            string              `json:"binding_id"`
-	ParentTaskID         string              `json:"parent_task_id,omitempty"`
-	ParentDeviceID       string              `json:"parent_device_id,omitempty"`
-	RootTaskID           string              `json:"root_task_id"`
-	PromptTransferID     string              `json:"prompt_transfer_id,omitempty"`
-	Attachments          []Transfer          `json:"attachments,omitempty"`
-	DependencyResults    []DependencyResult  `json:"dependency_results,omitempty"`
-	DelegationTargets    []DelegationTarget  `json:"delegation_targets,omitempty"`
-	ApprovalSupported    bool                `json:"approval_supported,omitempty"`
-	ControlSupported     bool                `json:"control_supported,omitempty"`
-	DiagnosticsSupported bool                `json:"diagnostics_supported,omitempty"`
-	GitPolicy            *gitdelivery.Policy `json:"git_policy,omitempty"`
-	GitPublish           bool                `json:"git_publish,omitempty"`
+	ID                   string             `json:"id"`
+	TaskID               string             `json:"task_id"`
+	DirectoryID          string             `json:"directory_id"`
+	Prompt               string             `json:"prompt"`
+	SessionID            string             `json:"session_id"`
+	AgentKind            string             `json:"agent_kind"`
+	ProjectID            string             `json:"project_id"`
+	Generation           int64              `json:"generation"`
+	Lease                string             `json:"lease"`
+	LeaseUntil           time.Time          `json:"lease_until"`
+	BindingID            string             `json:"binding_id"`
+	ParentTaskID         string             `json:"parent_task_id,omitempty"`
+	ParentDeviceID       string             `json:"parent_device_id,omitempty"`
+	RootTaskID           string             `json:"root_task_id"`
+	PromptTransferID     string             `json:"prompt_transfer_id,omitempty"`
+	Attachments          []Transfer         `json:"attachments,omitempty"`
+	DependencyResults    []DependencyResult `json:"dependency_results,omitempty"`
+	DelegationTargets    []DelegationTarget `json:"delegation_targets,omitempty"`
+	ApprovalSupported    bool               `json:"approval_supported,omitempty"`
+	ControlSupported     bool               `json:"control_supported,omitempty"`
+	DiagnosticsSupported bool               `json:"diagnostics_supported,omitempty"`
+	// ReviewDiagnosticsSupported 声明当前 Hub 可接收独立 Review 诊断。
+	ReviewDiagnosticsSupported bool                `json:"review_diagnostics_supported,omitempty"`
+	GitPolicy                  *gitdelivery.Policy `json:"git_policy,omitempty"`
+	GitPublish                 bool                `json:"git_publish,omitempty"`
 }
 
 // DependencyResult 记录父任务续接时收到的子任务标识和状态。

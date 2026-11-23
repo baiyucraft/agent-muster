@@ -73,7 +73,7 @@ func (worker *Worker) loadRunLogs(ctx context.Context, request runreport.LogRequ
 		return runreport.LogResponse{Status: runreport.LogFailed}
 	}
 	worker.logMu.Lock()
-	logs, err := readLocalRunLogs(worker.root, request.RunID)
+	logs, err := readLocalRunLogs(worker.root, request.RunID, request.Invocation)
 	worker.logMu.Unlock()
 	if errors.Is(err, fs.ErrNotExist) {
 		return runreport.LogResponse{Status: runreport.LogMissing}

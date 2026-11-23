@@ -230,6 +230,20 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 			(run.ManagedGit && event.Kind == "completed" && (event.GitVerification == nil || event.GitVerification.TestStatus != "passed")) {
 			return workspace.ErrInvalidGitVerification
 		}
+		if event.Diagnostics != nil && len(event.Diagnostics.Reviews) != 0 {
+			if !run.ManagedGit {
+				return workspace.ErrInvalidRunDiagnostics
+			}
+			// 有独立 Review 结论的终态必须与同一候选的最后一次审查一致。
+			// 旧设备及中断恢复允许仅上报摘要或已持久化的审查记录。
+			if summary := event.GitVerification; summary != nil && summary.ReviewStatus != "" {
+				last := event.Diagnostics.Reviews[len(event.Diagnostics.Reviews)-1]
+				if last.CandidateOID != summary.CandidateOID || last.RepairIndex != summary.RepairAttempts ||
+					last.AgentKind != summary.ReviewAgent || last.Status != summary.ReviewStatus {
+					return workspace.ErrInvalidRunDiagnostics
+				}
+			}
+		}
 		if run.ParentTaskID != "" {
 			event.Text = ""
 		}

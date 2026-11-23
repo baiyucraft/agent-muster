@@ -99,8 +99,8 @@ type GitPublication = {
   observed_oid?: string
 }
 
-/** 设备为该轮运行上报的诊断摘要。缺失字段表示设备未能确认对应数据。 */
-type RunDiagnostics = {
+/** 一次 CLI 调用的进程和用量摘要，缺失字段表示设备未能确认对应数据。 */
+export type InvocationDiagnostics = {
   stdout_bytes?: number
   stderr_bytes?: number
   exit_code?: number
@@ -108,6 +108,19 @@ type RunDiagnostics = {
   error_kind?: 'native_exit' | 'interrupted' | 'output' | 'setup'
   usage?: RunUsage
 }
+
+/** 独立 Review 对候选提交的证据。返修序号从零开始，日志引用只定位本次调用。 */
+export type RunReviewAttempt = {
+  candidate_oid: string
+  repair_index: number
+  agent_kind: 'dsh' | 'codex'
+  status: 'passed' | 'changes_requested' | 'unverified'
+  diagnostics?: InvocationDiagnostics
+  log_invocation?: `review-${number}`
+}
+
+/** 设备为该轮运行上报的诊断摘要，独立 Review 的诊断按调用记录。 */
+type RunDiagnostics = InvocationDiagnostics & { reviews?: RunReviewAttempt[] }
 
 /** CLI 为本轮执行报告的 Token 计数。可选字段的统计口径由来源决定。 */
 export type RunUsage = {

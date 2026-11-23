@@ -34,13 +34,35 @@ func TestRunLogsReadsRecentInvocationTails(t *testing.T) {
 	if err := os.Chtimes(old, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	logs, err := readLocalRunLogs(root, logFixtureRunID)
+	logs, err := readLocalRunLogs(root, logFixtureRunID, "")
 	if err != nil || logs.Validate() != nil || len(logs.Files) != 2 {
 		t.Fatalf("本机日志状态为 %q，片段 %d，错误 %v", logs.Status, len(logs.Files), err)
 	}
 	file := logs.Files[0]
 	if file.Invocation != "cli-111" || file.Stream != "stdout" || !file.Truncated || file.UpdatedAt == nil || !strings.HasSuffix(file.Text, "�"+suffix) {
 		t.Fatalf("最新片段的标识、时间或截断状态无效：%s %s %t %v", file.Invocation, file.Stream, file.Truncated, file.UpdatedAt)
+	}
+}
+
+func TestRunLogsSelectsExactReviewInvocation(t *testing.T) {
+	root := t.TempDir()
+	for name, content := range map[string]string{
+		"review-1": "first review",
+		"review-2": "second review",
+		"cli-1":    "repair output",
+	} {
+		dir := filepath.Join(root, "logs", logFixtureRunID, name)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "stdout.log"), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logs, err := readLocalRunLogs(root, logFixtureRunID, "review-2")
+	if err != nil || logs.Validate() != nil || len(logs.Files) != 1 ||
+		logs.Files[0].Invocation != "review-2" || logs.Files[0].Text != "second review" {
+		t.Fatalf("精确 Review 日志查询读到了其他调用：%+v，错误 %v", logs, err)
 	}
 }
 
@@ -101,7 +123,7 @@ func TestRunLogsRefusesReparsePointInInvocationPath(t *testing.T) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("创建 Windows 目录联接失败：%v\n%s", err, output)
 	}
-	logs, err := readLocalRunLogs(root, logFixtureRunID)
+	logs, err := readLocalRunLogs(root, logFixtureRunID, "")
 	if err == nil || len(logs.Files) != 0 {
 		t.Fatal("重解析点不得返回日志")
 	}

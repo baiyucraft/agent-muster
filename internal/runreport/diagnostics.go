@@ -4,6 +4,7 @@ package runreport
 import (
 	"encoding/json"
 	"errors"
+	"regexp"
 )
 
 const (
@@ -47,12 +48,52 @@ func (usage *Usage) UnmarshalJSON(data []byte) error {
 // Diagnostics 记录运行结束时设备能确认的退出码、已落盘字节数和用量。
 // 缺失字段表示未知。日志正文和本机路径保存在设备。
 type Diagnostics struct {
-	StdoutBytes       *int64  `json:"stdout_bytes,omitempty"`
-	StderrBytes       *int64  `json:"stderr_bytes,omitempty"`
-	ExitCode          *uint32 `json:"exit_code,omitempty"`
-	CaptureIncomplete bool    `json:"capture_incomplete,omitempty"`
-	ErrorKind         string  `json:"error_kind,omitempty"`
-	Usage             *Usage  `json:"usage,omitempty"`
+	StdoutBytes       *int64          `json:"stdout_bytes,omitempty"`
+	StderrBytes       *int64          `json:"stderr_bytes,omitempty"`
+	ExitCode          *uint32         `json:"exit_code,omitempty"`
+	CaptureIncomplete bool            `json:"capture_incomplete,omitempty"`
+	ErrorKind         string          `json:"error_kind,omitempty"`
+	Usage             *Usage          `json:"usage,omitempty"`
+	Reviews           []ReviewAttempt `json:"reviews,omitempty"`
+}
+
+var reviewCandidateOID = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+
+// ReviewAttempt 记录独立审查对指定候选提交的一次验证。RepairIndex 从零开始，
+// 对应产生候选的返修次数。诊断及日志引用仅归属本次审查调用。
+type ReviewAttempt struct {
+	CandidateOID  string       `json:"candidate_oid"`
+	RepairIndex   int          `json:"repair_index"`
+	AgentKind     string       `json:"agent_kind"`
+	Status        string       `json:"status"`
+	Diagnostics   *Diagnostics `json:"diagnostics,omitempty"`
+	LogInvocation string       `json:"log_invocation,omitempty"`
+}
+
+// Valid 校验候选、返修序号、审查状态及一次 CLI 调用的诊断范围。
+func (attempt ReviewAttempt) Valid() bool {
+	switch attempt.Status {
+	case "passed", "changes_requested", "unverified":
+	default:
+		return false
+	}
+	var source string
+	switch attempt.AgentKind {
+	case "codex":
+		source = CodexExec
+	case "dsh":
+		source = DSHHeadless
+	default:
+		return false
+	}
+	diagnostics := attempt.Diagnostics
+	if diagnostics != nil && (len(diagnostics.Reviews) != 0 || !diagnostics.Valid() ||
+		diagnostics.Usage != nil && diagnostics.Usage.Source != source) {
+		return false
+	}
+	return reviewCandidateOID.MatchString(attempt.CandidateOID) &&
+		attempt.RepairIndex >= 0 && attempt.RepairIndex <= 5 &&
+		(attempt.LogInvocation == "" || ValidReviewLogInvocation(attempt.LogInvocation))
 }
 
 // Valid 校验诊断枚举和浏览器可精确呈现的非负整数范围。
@@ -67,6 +108,15 @@ func (report *Diagnostics) Valid() bool {
 	}
 	if !validQuantity(report.StdoutBytes) || !validQuantity(report.StderrBytes) {
 		return false
+	}
+	lastRepair := -1
+	seenLogs := make(map[string]bool, len(report.Reviews))
+	for _, review := range report.Reviews {
+		if !review.Valid() || review.RepairIndex <= lastRepair || review.LogInvocation != "" && seenLogs[review.LogInvocation] {
+			return false
+		}
+		lastRepair = review.RepairIndex
+		seenLogs[review.LogInvocation] = true
 	}
 	u := report.Usage
 	if u == nil {

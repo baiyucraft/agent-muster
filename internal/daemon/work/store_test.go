@@ -2,16 +2,58 @@ package work
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/baiyucraft/agent-muster/internal/daemon/control"
+	"github.com/baiyucraft/agent-muster/internal/runreport"
 )
+
+func TestInterruptedRunRecoversDurableGitReviewDiagnostics(t *testing.T) {
+	worker, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Close()
+	ctx := context.Background()
+	const runID = "run-11111111-2222-3333-4444-555555555555"
+	if _, err := worker.db.ExecContext(ctx, `INSERT INTO runs (id,task_id,directory_id,prompt,session_id,requested_session_id,state)
+		VALUES (?, 'task-1', 'dir-1', '', '', '', 'started')`, runID); err != nil {
+		t.Fatal(err)
+	}
+	attempt := runreport.ReviewAttempt{
+		CandidateOID: strings.Repeat("a", 40), RepairIndex: 1, AgentKind: "codex", Status: "unverified",
+		Diagnostics: &runreport.Diagnostics{ErrorKind: "interrupted", CaptureIncomplete: true}, LogInvocation: "review-1",
+	}
+	if err := worker.saveGitReview(ctx, runID, attempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.recoverInterrupted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var payload string
+	if err := worker.db.QueryRowContext(ctx, `SELECT payload FROM outbox WHERE run_id=?`, runID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	var event control.RunEvent
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Diagnostics == nil || len(event.Diagnostics.Reviews) != 1 || !reflect.DeepEqual(event.Diagnostics.Reviews[0], attempt) {
+		t.Fatalf("中断回执缺少已保存的 Review 归属：%+v", event.Diagnostics)
+	}
+	var remaining int
+	if err := worker.db.QueryRowContext(ctx, `SELECT count(*) FROM git_review_attempts WHERE run_id=?`, runID).Scan(&remaining); err != nil || remaining != 0 {
+		t.Fatalf("已提交的 outbox 回执应原子清理暂存诊断，remaining=%d err=%v", remaining, err)
+	}
+}
 
 func TestRegisterDirectoryCreatesStableOpaqueBinding(t *testing.T) {
 	root := t.TempDir()

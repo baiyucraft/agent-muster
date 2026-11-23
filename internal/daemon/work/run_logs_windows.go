@@ -21,8 +21,8 @@ const (
 	maxLogDirectories       = 256
 )
 
-func readLocalRunLogs(root, runID string) (runreport.LogResponse, error) {
-	if !logRunID.MatchString(runID) {
+func readLocalRunLogs(root, runID, invocation string) (runreport.LogResponse, error) {
+	if !logRunID.MatchString(runID) || invocation != "" && !runreport.ValidReviewLogInvocation(invocation) {
 		return runreport.LogResponse{}, fs.ErrInvalid
 	}
 	directory, err := openRunLogDirectory(filepath.Join(root, "logs", runID))
@@ -30,6 +30,10 @@ func readLocalRunLogs(root, runID string) (runreport.LogResponse, error) {
 		return runreport.LogResponse{}, err
 	}
 	defer directory.Close()
+	if invocation != "" {
+		files, err := readLogInvocation(directory, invocation, runreport.MaxLogFiles)
+		return runLogResponse(files), err
+	}
 	entries, err := directory.Readdir(maxLogDirectories + 1)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return runreport.LogResponse{}, err
@@ -48,7 +52,7 @@ func readLocalRunLogs(root, runID string) (runreport.LogResponse, error) {
 		if len(files) == runreport.MaxLogFiles {
 			break
 		}
-		if !runreport.IsLogInvocation(entry.Name()) {
+		if !runreport.IsLogInvocation(entry.Name()) || runreport.ValidReviewLogInvocation(entry.Name()) {
 			continue
 		}
 		streams, err := readLogInvocation(directory, entry.Name(), runreport.MaxLogFiles-len(files))
@@ -57,10 +61,14 @@ func readLocalRunLogs(root, runID string) (runreport.LogResponse, error) {
 		}
 		files = append(files, streams...)
 	}
+	return runLogResponse(files), nil
+}
+
+func runLogResponse(files []runreport.LogFile) runreport.LogResponse {
 	if len(files) == 0 {
-		return runreport.LogResponse{Status: runreport.LogMissing}, nil
+		return runreport.LogResponse{Status: runreport.LogMissing}
 	}
-	return runreport.LogResponse{Status: runreport.LogAvailable, Files: files}, nil
+	return runreport.LogResponse{Status: runreport.LogAvailable, Files: files}
 }
 
 func readLogInvocation(directory *os.File, name string, remaining int) ([]runreport.LogFile, error) {

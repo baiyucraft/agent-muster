@@ -12,7 +12,7 @@ import (
 
 const runLogPlatformSupported = false
 
-func readLocalRunLogs(string, string) (runreport.LogResponse, error) {
+func readLocalRunLogs(string, string, string) (runreport.LogResponse, error) {
 	return runreport.LogResponse{}, fs.ErrNotExist
 }
 

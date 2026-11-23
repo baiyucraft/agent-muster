@@ -34,29 +34,30 @@ type Directory struct {
 
 // Run 携带 Hub 领取结果中的任务关系、冻结绑定、输入和执行租约。
 type Run struct {
-	ID                   string              `json:"id"`
-	TaskID               string              `json:"task_id"`
-	RootTaskID           string              `json:"root_task_id"`
-	ParentTaskID         string              `json:"parent_task_id"`
-	ParentDeviceID       string              `json:"parent_device_id"`
-	ProjectID            string              `json:"project_id"`
-	BindingID            string              `json:"binding_id"`
-	AgentKind            string              `json:"agent_kind"`
-	DirectoryID          string              `json:"directory_id"`
-	Prompt               string              `json:"prompt"`
-	SessionID            string              `json:"session_id"`
-	PromptTransferID     string              `json:"prompt_transfer_id"`
-	Generation           int64               `json:"generation"`
-	Lease                string              `json:"lease"`
-	LeaseUntil           string              `json:"lease_until"`
-	Attachments          []TransferReference `json:"attachments"`
-	DependencyResults    []DependencyResult  `json:"dependency_results,omitempty"`
-	DelegationTargets    []DelegationTarget  `json:"delegation_targets,omitempty"`
-	ApprovalSupported    bool                `json:"approval_supported,omitempty"`
-	ControlSupported     bool                `json:"control_supported,omitempty"`     // Hub 可向该运行下发停止指令。
-	DiagnosticsSupported bool                `json:"diagnostics_supported,omitempty"` // Hub 接受终态诊断字段。
-	GitPolicy            *gitdelivery.Policy `json:"git_policy,omitempty"`            // Git 任务首次派发时冻结的规则。
-	GitPublish           bool                `json:"git_publish,omitempty"`           // 创建根任务时明确启用了推送交付。
+	ID                         string              `json:"id"`
+	TaskID                     string              `json:"task_id"`
+	RootTaskID                 string              `json:"root_task_id"`
+	ParentTaskID               string              `json:"parent_task_id"`
+	ParentDeviceID             string              `json:"parent_device_id"`
+	ProjectID                  string              `json:"project_id"`
+	BindingID                  string              `json:"binding_id"`
+	AgentKind                  string              `json:"agent_kind"`
+	DirectoryID                string              `json:"directory_id"`
+	Prompt                     string              `json:"prompt"`
+	SessionID                  string              `json:"session_id"`
+	PromptTransferID           string              `json:"prompt_transfer_id"`
+	Generation                 int64               `json:"generation"`
+	Lease                      string              `json:"lease"`
+	LeaseUntil                 string              `json:"lease_until"`
+	Attachments                []TransferReference `json:"attachments"`
+	DependencyResults          []DependencyResult  `json:"dependency_results,omitempty"`
+	DelegationTargets          []DelegationTarget  `json:"delegation_targets,omitempty"`
+	ApprovalSupported          bool                `json:"approval_supported,omitempty"`
+	ControlSupported           bool                `json:"control_supported,omitempty"`            // Hub 可向该运行下发停止指令。
+	DiagnosticsSupported       bool                `json:"diagnostics_supported,omitempty"`        // Hub 接受终态诊断字段。
+	ReviewDiagnosticsSupported bool                `json:"review_diagnostics_supported,omitempty"` // Hub 接受独立 Review 诊断及日志引用。
+	GitPolicy                  *gitdelivery.Policy `json:"git_policy,omitempty"`                   // Git 任务首次派发时冻结的规则。
+	GitPublish                 bool                `json:"git_publish,omitempty"`                  // 创建根任务时明确启用了推送交付。
 }
 
 // DependencyResult 记录父任务续接时可见的依赖任务标识与状态。

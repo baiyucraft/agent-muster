@@ -233,6 +233,7 @@ func (api workspaceAPI) claimRun(w http.ResponseWriter, r *http.Request, device 
 			return
 		}
 		if err != nil || run.ID != "" {
+			run.ReviewDiagnosticsSupported = true
 			workspaceJSON(w, http.StatusOK, run, err)
 			return
 		}

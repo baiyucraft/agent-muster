@@ -504,12 +504,24 @@ select {
 .run-row > p { margin: 7px 0 0; font-size: 13px; }
 .run-row > p span { color: var(--muted); }
 .run-row code { overflow-wrap: anywhere; }
+.run-review-attempts { display: grid; gap: var(--space-2); margin-top: var(--space-2); }
+.run-review-attempts h3 { margin: 0; font-size: var(--text-small); }
+.run-review-attempt { min-width: 0; display: grid; gap: 4px; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-control); font-size: var(--text-small); }
+.run-review-attempt > header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-2); }
+.run-review-attempt > header span, .run-review-candidate > span { color: var(--muted); }
+.run-review-attempt [data-status='passed'] { color: var(--green); }
+.run-review-attempt [data-status='changes_requested'] { color: var(--amber); }
+.run-review-attempt [data-status='unverified'] { color: var(--muted); }
+.run-review-candidate { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); margin: 0; }
+.run-review-candidate details { min-width: 0; }
+.run-review-candidate summary { width: fit-content; cursor: pointer; }
+.run-review-candidate details > code { display: block; overflow-wrap: anywhere; }
 .run-git-verification { display: grid; gap: 4px; margin: 8px 0 0; padding: var(--space-2); border-radius: var(--radius-control); background: var(--inset); font-size: var(--text-small); }
 .run-git-verification > div { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: var(--space-2); align-items: baseline; }
 
 .run-logs { margin-top: var(--space-3); color: var(--muted); font-size: var(--text-small); }
 .run-logs summary { width: fit-content; cursor: pointer; }
-.run-logs summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.run-logs summary:focus-visible, .run-review-candidate summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .run-log-content { display: grid; gap: var(--space-2); margin-top: var(--space-2); }
 .run-log-content .quiet-button { justify-self: start; }
 .run-log-file { min-width: 0; }

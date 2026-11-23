@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -45,6 +46,16 @@ func (api *runLogAPI) read(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "run not found")
 		return
 	}
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	invocations, filtered := query["invocation"]
+	var invocation string
+	if err != nil || filtered && (len(invocations) != 1 || !runreport.ValidReviewLogInvocation(invocations[0])) {
+		writeError(w, http.StatusBadRequest, "invalid review log invocation")
+		return
+	}
+	if filtered {
+		invocation = invocations[0]
+	}
 	device, err := api.store.RunLogDevice(r.Context(), taskID, runID)
 	switch {
 	case errors.Is(err, registry.ErrNotFound):
@@ -66,7 +77,7 @@ func (api *runLogAPI) read(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pending := &pendingRunLog{
-		request: runreport.LogRequest{ID: "log-" + hex.EncodeToString(id), RunID: runID},
+		request: runreport.LogRequest{ID: "log-" + hex.EncodeToString(id), RunID: runID, Invocation: invocation},
 		ctx:     r.Context(), device: device, reply: make(chan runreport.LogResponse, 1),
 	}
 	if !api.enqueue(pending) {
@@ -150,6 +161,13 @@ func (api *runLogAPI) submit(w http.ResponseWriter, r *http.Request, device stri
 	if err := response.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	for _, file := range response.Files {
+		wanted := pending.request.Invocation
+		if wanted != "" && file.Invocation != wanted || wanted == "" && runreport.ValidReviewLogInvocation(file.Invocation) {
+			writeError(w, http.StatusBadRequest, "device returned another log invocation")
+			return
+		}
 	}
 	// 上传可能持续数秒。完整读取后重新鉴权，避免转发读取期间撤销的设备回执。
 	if err := api.store.AuthenticateRunLogDevice(r.Context(), device, token); err != nil {

@@ -71,6 +71,9 @@ func TestTaskControlStopsAndResumesClaimedRun(t *testing.T) {
 		if !run.DiagnosticsSupported {
 			t.Fatal("Diagnostics capability missing from claimed run")
 		}
+		if !run.ReviewDiagnosticsSupported {
+			t.Fatal("Review diagnostics capability missing from claimed run")
+		}
 		return run
 	}
 	run := claimRun()
