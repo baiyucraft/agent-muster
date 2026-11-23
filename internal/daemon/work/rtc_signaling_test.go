@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/baiyucraft/agent-muster/internal/daemon/control"
 	"github.com/baiyucraft/agent-muster/internal/peer"
+	"github.com/google/uuid"
 	"github.com/pion/turn/v5"
 	"github.com/pion/webrtc/v4"
 )
@@ -95,24 +97,36 @@ func TestRTCSignedSignaling(t *testing.T) {
 	}
 }
 
-type testSignedRTCHub struct {
+type testRTCHub struct {
 	rtcHub
 	testTransferHub
+	config peer.RTCConfig
+	signed bool
 	offer  chan peer.RTCOffer
 	answer chan peer.RTCAnswer
 }
 
-func (hub *testSignedRTCHub) PutRTCOffer(_ context.Context, _ control.Identity, transfer string, signal peer.RTCSignal) error {
+func (hub *testRTCHub) RegisterRTC(context.Context, control.Identity) (peer.RTCConfig, error) {
+	return hub.config, nil
+}
+
+func (hub *testRTCHub) PutRTCOffer(_ context.Context, _ control.Identity, transfer string, signal peer.RTCSignal) error {
+	if strings.Contains(signal.SDP, rtcSignatureFooter) != hub.signed {
+		return errors.New("连接提议的签名状态与测试场景不符")
+	}
 	hub.offer <- peer.RTCOffer{TransferID: transfer, RTCSignal: signal}
 	return nil
 }
 
-func (hub *testSignedRTCHub) PutRTCAnswer(_ context.Context, _ control.Identity, _ string, signal peer.RTCSignal) error {
+func (hub *testRTCHub) PutRTCAnswer(_ context.Context, _ control.Identity, _ string, signal peer.RTCSignal) error {
+	if strings.Contains(signal.SDP, rtcSignatureFooter) != hub.signed {
+		return errors.New("连接应答的签名状态与测试场景不符")
+	}
 	hub.answer <- peer.RTCAnswer{SDP: signal.SDP}
 	return nil
 }
 
-func (hub *testSignedRTCHub) RTCAnswer(ctx context.Context, _ control.Identity, _, _ string) (peer.RTCAnswer, error) {
+func (hub *testRTCHub) RTCAnswer(ctx context.Context, _ control.Identity, _, _ string) (peer.RTCAnswer, error) {
 	select {
 	case answer := <-hub.answer:
 		return answer, nil
@@ -123,18 +137,23 @@ func (hub *testSignedRTCHub) RTCAnswer(ctx context.Context, _ control.Identity, 
 
 func TestRTCSignedTransfer(t *testing.T) {
 	t.Run("direct", func(t *testing.T) {
-		testRTCSignedTransfer(t, "direct", nil)
+		testRTCTransfers(t, "direct", nil, true, 1)
 	})
 	t.Run("relay", func(t *testing.T) {
 		server := startTestTURN(t)
-		testRTCSignedTransfer(t, "relay", &server)
+		testRTCTransfers(t, "relay", &server, true, 1)
 	})
+}
+
+func TestRTCStandardTransfersUseTURN(t *testing.T) {
+	server := startTestTURN(t)
+	testRTCTransfers(t, "relay", &server, false, 2)
 }
 
 const testTURNRelayAddress = "127.0.0.2"
 
 // startTestTURN 启动只接受本机流量的临时 TURN 服务器。
-func startTestTURN(t *testing.T) webrtc.ICEServer {
+func startTestTURN(t *testing.T) peer.ICEServer {
 	t.Helper()
 	const realm, username, password = "muster.test", "muster", "test-credential"
 	listener, err := net.ListenPacket("udp4", "127.0.0.1:0")
@@ -162,39 +181,28 @@ func startTestTURN(t *testing.T) webrtc.ICEServer {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = server.Close() })
-	return webrtc.ICEServer{
+	return peer.ICEServer{
 		URLs: []string{"turn:" + listener.LocalAddr().String() + "?transport=udp"}, Username: username, Credential: password,
 	}
 }
 
-// testRTCSignedTransfer 检查双方选中的候选类型、发给 Hub 的回执和落盘正文。
-func testRTCSignedTransfer(t *testing.T, wantPath string, relay *webrtc.ICEServer) {
+// testRTCTransfers 用真实本机数据通道验证选路、收件落盘和向模拟 Hub 确认。
+func testRTCTransfers(t *testing.T, wantPath string, relay *peer.ICEServer, signed bool, count int) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	pubA, keyA, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pubB, keyB, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	const (
-		deviceA  = "d-11111111111111111111111111111111"
-		deviceB  = "d-22222222222222222222222222222222"
-		transfer = "transfer-71873540-3b5b-4f69-a81d-a4f348373cb4"
+		deviceA = "d-11111111111111111111111111111111"
+		deviceB = "d-22222222222222222222222222222222"
 	)
-	body := []byte("synthetic transfer")
-	hub := &testSignedRTCHub{offer: make(chan peer.RTCOffer, 1), answer: make(chan peer.RTCAnswer, 1)}
-	hub.manifest = control.Transfer{
-		ID: transfer, SourceDeviceID: deviceA, TargetDeviceID: deviceB,
-		Name: "fixture", Kind: "message", Size: int64(len(body)), SHA256: transferHash(body), Ticket: strings.Repeat("a", 64),
-		Peer: &control.Peer{DeviceID: deviceB, Address: "not-used"},
+	hub := &testRTCHub{signed: signed, offer: make(chan peer.RTCOffer, 1), answer: make(chan peer.RTCAnswer, 1)}
+	if relay != nil {
+		hub.config.ICEServers = []peer.ICEServer{*relay}
 	}
+	// 跳过共用投递夹具用于注入丢失回执的首次调用。
 	hub.ackCalls.Store(1)
-	open := func(local, remote string, key ed25519.PrivateKey, peerKey ed25519.PublicKey) (*collaboration, *string) {
+	open := func(local string) (*collaboration, *string) {
 		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		worker, err := Open(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
@@ -207,11 +215,10 @@ func testRTCSignedTransfer(t *testing.T, wantPath string, relay *webrtc.ICEServe
 		if err != nil {
 			t.Fatal(err)
 		}
-		device.rtc.live = true
-		device.rtc.pinned = rtcSigningScope{transfer: transfer, local: local, remote: remote, localKey: key.Public().(ed25519.PublicKey), peerKey: peerKey}
-		device.rtc.signingKey = key
+		if err := device.rtc.register(ctx); err != nil {
+			t.Fatal(err)
+		}
 		if relay != nil {
-			device.rtc.ice = []webrtc.ICEServer{*relay}
 			// 只接收远端中继地址，模拟设备间无法直连。连接仍使用普通 ICE 策略。
 			settings := rtcSettings(device.identity.HubURL)
 			relayIP := net.ParseIP(testTURNRelayAddress)
@@ -220,8 +227,46 @@ func testRTCSignedTransfer(t *testing.T, wantPath string, relay *webrtc.ICEServe
 		}
 		return device, &selected
 	}
-	sender, senderPath := open(deviceA, deviceB, keyA, pubB)
-	receiver, receiverPath := open(deviceB, deviceA, keyB, pubA)
+	sender, senderPath := open(deviceA)
+	receiver, receiverPath := open(deviceB)
+	for index := range count {
+		transfer := "transfer-" + uuid.NewString()
+		body := []byte("fixture " + transfer)
+		hub.manifest = control.Transfer{
+			ID: transfer, SourceDeviceID: deviceA, TargetDeviceID: deviceB,
+			Name: "fixture", Kind: "message", Size: int64(len(body)), SHA256: transferHash(body), Ticket: strings.Repeat("a", 64),
+		}
+		if signed {
+			pinRTCTransfer(t, sender, receiver, transfer)
+			hub.manifest.Peer = &control.Peer{DeviceID: deviceB, Address: "not-used"}
+		}
+		hub.received.Store(false)
+		*senderPath, *receiverPath = "", ""
+		checkRTCTransfer(t, hub, sender, receiver, body)
+		if *senderPath != wantPath || *receiverPath != wantPath {
+			t.Fatalf("预期双方选择 %s 路径，发送方 %q，接收方 %q", wantPath, *senderPath, *receiverPath)
+		}
+		if !hub.received.Load() || hub.ackCalls.Load() != int32(index+2) {
+			t.Fatal("中心应且只应收到一次对应投递的接收确认")
+		}
+	}
+}
+
+// pinRTCTransfer 为签名试点绑定本次投递和双方公钥，并验证拒绝 HTTPS 降级。
+func pinRTCTransfer(t *testing.T, sender, receiver *collaboration, transfer string) {
+	t.Helper()
+	pubA, keyA, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, keyB, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender.rtc.pinned = rtcSigningScope{transfer: transfer, local: sender.identity.DeviceID, remote: receiver.identity.DeviceID, localKey: pubA, peerKey: pubB}
+	sender.rtc.signingKey = keyA
+	receiver.rtc.pinned = rtcSigningScope{transfer: transfer, local: receiver.identity.DeviceID, remote: sender.identity.DeviceID, localKey: pubB, peerKey: pubA}
+	receiver.rtc.signingKey = keyB
 	request := httptest.NewRequest(http.MethodPut, "/peer/v1/transfers/"+transfer, nil)
 	request.SetPathValue("id", transfer)
 	response := httptest.NewRecorder()
@@ -229,29 +274,33 @@ func testRTCSignedTransfer(t *testing.T, wantPath string, relay *webrtc.ICEServe
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("签名投递应拒绝传统 HTTPS 入口，得到 %d", response.Code)
 	}
+}
+
+func checkRTCTransfer(t *testing.T, hub *testRTCHub, sender, receiver *collaboration, body []byte) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
 	sent := make(chan error, 1)
 	go func() { sent <- sender.push(ctx, hub.manifest, body) }()
 	select {
 	case offer := <-hub.offer:
 		if err := receiver.rtc.receive(ctx, offer); err != nil {
+			cancel()
+			<-sent
 			t.Fatal(err)
 		}
 	case err := <-sent:
 		t.Fatalf("发送方在发出提议前结束，得到 %v", err)
 	case <-ctx.Done():
+		<-sent
 		t.Fatal(ctx.Err())
 	}
 	if err := <-sent; err != nil {
 		t.Fatal(err)
 	}
-	if *senderPath != wantPath || *receiverPath != wantPath {
-		t.Fatalf("预期双方选择 %s 路径，发送方 %q，接收方 %q", wantPath, *senderPath, *receiverPath)
-	}
-	if !hub.received.Load() || hub.ackCalls.Load() != 2 {
-		t.Fatal("中心未收到设备对该投递的接收确认")
-	}
 	var saved string
-	if err := receiver.worker.db.QueryRowContext(ctx, "SELECT body FROM peer_inbox WHERE id=?", transfer).Scan(&saved); err != nil || saved != string(body) {
-		t.Fatalf("应通过已签名的信令建立连接并确认收件，得到 %q, %v", saved, err)
+	var digest string
+	if err := receiver.worker.db.QueryRowContext(ctx, "SELECT body,sha256 FROM peer_inbox WHERE id=?", hub.manifest.ID).Scan(&saved, &digest); err != nil || saved != string(body) || digest != transferHash(body) {
+		t.Fatalf("收件箱正文或摘要不符，得到 %q、%q 和 %v", saved, digest, err)
 	}
 }
