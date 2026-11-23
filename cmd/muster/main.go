@@ -20,14 +20,24 @@ func main() {
 	}
 }
 
-func run(args []string, stdin io.Reader, stdout io.Writer) error {
+func run(args []string, stdin io.ReadCloser, stdout io.Writer) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprintln(stdout, "用法: muster <status|delegate|send|receive|wait|artifact> [参数]，使用子命令 -h 查看参数")
+		_, err := fmt.Fprintln(stdout, "用法: muster <status|delegate|send|receive|wait|artifact|mcp> [参数]，使用子命令 -h 查看参数")
 		return err
 	}
 	if args[0] == "--version" || args[0] == "-version" {
 		_, err := fmt.Fprintln(stdout, "muster dev")
 		return err
+	}
+	if args[0] == "mcp" {
+		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
+			_, err := fmt.Fprintln(stdout, "用法: muster mcp（由 Agent 的 MCP stdio 客户端启动）")
+			return err
+		}
+		if len(args) != 1 {
+			return errors.New("muster mcp 不接受参数")
+		}
+		return serveMCP(stdin, stdout)
 	}
 	request := helper.Request{Command: args[0]}
 	flags := flag.NewFlagSet(request.Command, flag.ContinueOnError)

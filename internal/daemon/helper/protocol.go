@@ -74,13 +74,16 @@ func serveConnection(ctx context.Context, connection net.Conn, handle func(conte
 	_ = json.NewEncoder(connection).Encode(response{Result: data})
 }
 
-// Call 在本机端点执行单次协作请求，返回原始 JSON 结果或 daemon 报告的错误。
+// Call 在本机端点执行单次协作请求，返回 daemon 的 JSON 结果或错误。
+// ctx 取消时关闭本机连接，已由 daemon 接收的请求仍按原业务键核对。
 func Call(ctx context.Context, address string, request Request) (json.RawMessage, error) {
 	connection, err := dial(ctx, address)
 	if err != nil {
 		return nil, err
 	}
 	defer connection.Close()
+	stop := context.AfterFunc(ctx, func() { connection.Close() })
+	defer stop()
 	_ = connection.SetDeadline(time.Now().Add(30 * time.Second))
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return nil, err

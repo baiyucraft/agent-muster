@@ -216,6 +216,10 @@ Web 提交消息后，Go 中心将可见消息与待送中心 dsh 的记录一�
 - 设备 Agents 可以使用 CLI 自带的子 Agent，也能在运行中用 `muster` 本机命令请求派发可在看板追踪的子任务。`muster` 由 daemon 提供，识别当前任务和运行身份，支持派发、发送、收取和查询状态。发起方可以继续处理自己的工作，也可以在轮末声明需要等待哪些结果。父任务与子任务通过 ID 关联，调度拒绝循环依赖。
 - 同一 CLI 内的协作随原生 CLI 执行。跨设备的任务创建、状态和投递确认由中心记录。设备 Agents 通过各自的 daemon 交接内容，中心 dsh 无需逐条阅读或转述。需要父任务处理的报告或交接结果触发原会话续接。
 
+需要直接调用结构化工具时，可在设备上为 dsh 或 Codex 显式启用本机 MCP stdio。原生 CLI 使用安装目录中的 `muster.exe` 绝对路径启动 `muster.exe mcp`，通过 `mcp__muster__status`、`mcp__muster__delegate`、`mcp__muster__send`、`mcp__muster__receive`、`mcp__muster__wait` 和 `mcp__muster__artifact` 使用同一个本机服务。MCP 转发等候条件后，父运行仍须退出，设备才释放执行名额。
+
+daemon 为每轮向原生 CLI 提供 `MUSTER_PIPE` 和 `MUSTER_RUN_CAPABILITY`。MCP 子进程从父进程取得这两个变量，命名管道按当前运行校验能力，轮次退出后该能力失效。配置只引用变量名。文件范围、设备授权、任务归属及幂等规则与 `muster` 命令一致。dsh headless 使用设备端选择的配置补丁，Codex 使用设备用户选定的 MCP 配置，原生 CLI 的全局配置由其使用者管理。[设备配置](../.wiki/01-快速上手/INDEX.md#为设备-agent-启用-mcp)
+
 ### 5.2 控制与数据传输
 
 1. 发送设备请求创建子任务时，中心校验父任务、目标设备和项目绑定，登记子任务与待交付记录，并返回目标及投递标识。

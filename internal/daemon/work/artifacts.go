@@ -13,7 +13,7 @@ import (
 	"github.com/baiyucraft/agent-muster/internal/daemon/control"
 )
 
-const artifactInstructions = "\n\n要在任务详情交付文件，请在写完并关闭文件后运行 muster artifact -file <工作目录内的相对路径>。每轮最多登记 8 个文件，每个文件最多 32 MiB。"
+const artifactInstructions = "\n\n要在任务详情交付文件，请在写完并关闭文件后用 muster MCP 的 artifact 工具或运行 muster artifact -file <工作目录内的相对路径>。每轮最多登记 8 个文件，每个文件最多 32 MiB。"
 
 func allowsArtifacts(run control.Run) bool {
 	return artifactPlatformSupported && run.ArtifactsSupported && run.GitPolicy == nil && !run.GitPublish

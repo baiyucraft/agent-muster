@@ -55,6 +55,44 @@ Web 和中心插件由同一个 pnpm 工作区构建。设备端是独立的 Wai
 
 TURN 转发 DTLS 加密流量。普通设备构建信任 Hub 控制链路返回的信令，使用 HTTP 时，设备令牌、信令和 TURN 凭据都依赖该网络的可信性。固定公钥的验收包只对指定投递互验签名并使用 TURN。排查 Coturn 返回 `486` 时，同时检查用户分配数、总分配数和带宽配额。ICE 可能为每台设备同时申请 UDP 与 TCP 两条分配，单条配额乘以预期并发分配数应在总预算内。[设备间交接设计](../../.docs/agent-muster-v0.1.md#52-控制与数据传输)
 
+### 为设备 Agent 启用 MCP
+
+设备 Agent 可以使用 `muster` 命令，也可以在显式启用后使用本机 MCP 工具。两种入口共用设备 daemon 的本机服务。将示例中的程序路径替换为与设备应用一同安装的 `muster.exe` 绝对路径。当前用户版安装包默认放在 `%LOCALAPPDATA%\Programs\Agent Muster Device`。
+
+**dsh**　将以下 YAML 保存为设备用户维护的补丁文件，放在执行项目目录之外。为运行设备应用的 Windows 用户设置 `MUSTER_DSH_MCP_PATCH`，值为补丁文件的绝对路径。随后从托盘退出并重新启动设备应用。设备启动及续接 dsh headless 会话时加载该补丁。
+
+```yaml
+- insert:
+    - id: mcp-muster
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: muster
+        transport: stdio
+        command: 'C:/Users/Alice/AppData/Local/Programs/Agent Muster Device/muster.exe'
+        args: [mcp]
+        env:
+          MUSTER_PIPE: !!js process.env.MUSTER_PIPE
+          MUSTER_RUN_CAPABILITY: !!js process.env.MUSTER_RUN_CAPABILITY
+```
+
+**Codex**　在运行设备应用的用户所用的 Codex `config.toml` 中加入 `muster` 服务。后续 Codex 启动及续接时读取该配置。
+
+```toml
+[mcp_servers.muster]
+command = 'C:/Users/Alice/AppData/Local/Programs/Agent Muster Device/muster.exe'
+args = ['mcp']
+env_vars = ['MUSTER_PIPE', 'MUSTER_RUN_CAPABILITY']
+```
+
+Codex 在默认配置下可以执行只读的 `status`。需要审批的工具在设备的非交互运行中会返回工具错误。设备管理员可在同一份 Codex 配置中逐项指定允许非交互执行的工具。以下示例允许 `wait` 登记等待条件。配置对读取该文件的 Codex 进程生效，每次实际调用仍由 daemon 核对当前轮次和项目权限。[Codex MCP 配置](https://developers.openai.com/codex/config-reference)
+
+```toml
+[mcp_servers.muster.tools.wait]
+approval_mode = "approve"
+```
+
+启用后可发现 `mcp__muster__status`、`mcp__muster__delegate`、`mcp__muster__send`、`mcp__muster__receive`、`mcp__muster__wait` 和 `mcp__muster__artifact`。调用工具需要活动任务，可先用 `mcp__muster__status` 查看当前运行和可委派目标。MCP 子进程从父进程取得 `MUSTER_PIPE` 和 `MUSTER_RUN_CAPABILITY`。配置引用变量名，变量值随运行签发并在该轮退出后失效。设备应用读取使用者维护的配置，原生 CLI 的全局文件由使用者管理。[协作设计](../../.docs/agent-muster-v0.1.md#51-两层拆分)
+
 ### 让中心拆分一项工作
 
 在「对话」交办一个目标，并说明各部分的设备和先后顺序。例如「让家里电脑整理目录摘要，同时让公司电脑列出缺项，再请公司电脑根据两份结论写说明」。中心可在一次派发中创建一个根任务和二到八个常规设备步骤。步骤可使用不同项目的绑定，无前置依赖的步骤可按各设备名额并行执行。

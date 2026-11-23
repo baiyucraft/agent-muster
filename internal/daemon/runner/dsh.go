@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -30,13 +32,24 @@ func RunDSH(ctx context.Context, directory, prompt, sessionID string, started fu
 	return RunDSHWithEnvironment(ctx, directory, prompt, sessionID, nil, started, session)
 }
 
-// RunDSHWithEnvironment 在项目目录运行 dsh，并向命令进程注入许可的本机协作环境变量。
+// RunDSHWithEnvironment 在项目目录运行 dsh，并注入许可的本机协作变量。
+// 协作轮次可加载设备管理员设置的 headless profile 补丁，续接沿用同一配置入口。
 func RunDSHWithEnvironment(ctx context.Context, directory, prompt, sessionID string, env []string, started func() error, session func(string) error) (string, error) {
 	path, err := exec.LookPath("dsh")
 	if err != nil {
 		return "", errors.New("无法启动 dsh，请检查本机安装和 PATH")
 	}
-	args := []string{"--profile", "headless", "--json"}
+	args := []string{"--profile", "headless"}
+	if patch := os.Getenv("MUSTER_DSH_MCP_PATCH"); patch != "" && len(env) != 0 {
+		if !filepath.IsAbs(patch) {
+			return "", errors.New("MUSTER_DSH_MCP_PATCH 必须是绝对文件路径")
+		}
+		if info, err := os.Stat(patch); err != nil || !info.Mode().IsRegular() {
+			return "", errors.New("MUSTER_DSH_MCP_PATCH 指定的文件不可用")
+		}
+		args = append(args, "--patch", patch)
+	}
+	args = append(args, "--json")
 	if sessionID != "" {
 		if !sessionIDPattern.MatchString(sessionID) {
 			return "", errors.New("无效的 dsh 会话 ID")
