@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -87,7 +89,18 @@ func TestWorkerWithholdsStopReceiptIfProcessExitIsUnconfirmed(t *testing.T) {
 	peer := &collaboration{client: hub}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
+	var exitProofPath string
 	invoke := func(ctx context.Context, _, _, _, _ string, _ []string, _ func() error, _ func(string) error) (string, error) {
+		if worker.processProofs != nil {
+			pending, arm, err := worker.reserveProcessLaunch(ctx, run.ID, run.Generation, false)
+			if err != nil {
+				return "", err
+			}
+			if err := arm(); err != nil {
+				return "", err
+			}
+			exitProofPath = pending
+		}
 		<-ctx.Done()
 		return "", runner.ErrProcessExitUnconfirmed
 	}
@@ -109,6 +122,15 @@ func TestWorkerWithholdsStopReceiptIfProcessExitIsUnconfirmed(t *testing.T) {
 	worker, err = Open(profile)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if exitProofPath != "" {
+		if err := worker.recoverInterrupted(t.Context()); !errors.Is(err, runner.ErrProcessExitUnconfirmed) {
+			t.Fatalf("等待守护进程确认退出时不应恢复终态：%v", err)
+		}
+		marker := "muster-process-exit-v1\n" + filepath.Base(exitProofPath) + "\n"
+		if err := os.WriteFile(exitProofPath, []byte(marker), 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for range 2 {
 		if err := worker.recoverInterrupted(t.Context()); err != nil {

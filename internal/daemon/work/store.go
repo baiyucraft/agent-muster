@@ -46,6 +46,17 @@ CREATE TABLE IF NOT EXISTS run_claims (
 	id TEXT PRIMARY KEY REFERENCES runs(id),
 	data BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS process_runs (
+	run_id TEXT PRIMARY KEY REFERENCES runs(id),
+	generation INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS process_launches (
+	slot INTEGER PRIMARY KEY DEFAULT 1 CHECK(slot=1),
+	proof_name TEXT NOT NULL UNIQUE,
+	run_id TEXT NOT NULL REFERENCES runs(id),
+	generation INTEGER NOT NULL,
+	armed INTEGER NOT NULL DEFAULT 0 CHECK(armed IN (0,1))
+);
 CREATE TABLE IF NOT EXISTS run_artifacts (
 	run_id TEXT NOT NULL REFERENCES runs(id),
 	id TEXT NOT NULL,
@@ -135,6 +146,10 @@ type RunStatus struct {
 
 // Open 获取工作区独占锁并初始化本机 SQLite 存储。
 func Open(root string) (*Worker, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return nil, err
 	}
@@ -144,12 +159,7 @@ func Open(root string) (*Worker, error) {
 	}
 	// Forward slashes keep SQLite URI handling consistent on Windows. The URI
 	// also keeps spaces and '#' in a user profile directory out of the DSN.
-	databasePath, err := filepath.Abs(filepath.Join(root, "work.db"))
-	if err != nil {
-		lock.Close()
-		return nil, err
-	}
-	databasePath = filepath.ToSlash(databasePath)
+	databasePath := filepath.ToSlash(filepath.Join(root, "work.db"))
 	if !strings.HasPrefix(databasePath, "/") {
 		databasePath = "/" + databasePath
 	}
@@ -170,15 +180,25 @@ func Open(root string) (*Worker, error) {
 		lock.Close()
 		return nil, err
 	}
+	proofs, err := openProcessProofDirectory(root)
+	if err != nil {
+		db.Close()
+		lock.Close()
+		return nil, fmt.Errorf("无法打开本机进程退出凭据目录: %w", err)
+	}
 	return &Worker{
-		db: db, lock: lock, root: root, wake: make(chan struct{}, 1),
+		db: db, lock: lock, root: root, processProofs: proofs, wake: make(chan struct{}, 1),
 		artifactRegistration: make(chan struct{}, 1),
 	}, nil
 }
 
 // Close 关闭本机数据库并释放工作区独占锁。
 func (worker *Worker) Close() error {
-	return errors.Join(worker.db.Close(), worker.lock.Close())
+	var proofErr error
+	if worker.processProofs != nil {
+		proofErr = worker.processProofs.Close()
+	}
+	return errors.Join(proofErr, worker.db.Close(), worker.lock.Close())
 }
 
 // RegisterDirectory 登记规范化后的目录，已登记路径复用原目录 ID。
@@ -318,15 +338,30 @@ func (worker *Worker) nextClaim(ctx context.Context) (*control.Run, error) {
 }
 
 func (worker *Worker) markLaunching(ctx context.Context, runID string) error {
-	result, err := worker.db.ExecContext(ctx, `UPDATE runs SET state='starting' WHERE id=? AND state='claimed'`, runID)
+	tx, err := worker.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE runs SET state='starting' WHERE id=? AND state='claimed'`, runID)
 	if err != nil {
 		return err
 	}
 	count, err := result.RowsAffected()
-	if err == nil && count != 1 {
+	if err != nil {
+		return err
+	}
+	if count != 1 {
 		return errors.New("本机运行记录无法开始")
 	}
-	return err
+	if worker.processProofs != nil {
+		// 启动状态与保护记录一起提交。没有命令预约时，本轮尚未启动外部进程。
+		if _, err := tx.ExecContext(ctx, `INSERT INTO process_runs (run_id,generation)
+			SELECT ?,COALESCE((SELECT json_extract(CAST(data AS TEXT),'$.generation') FROM run_claims WHERE id=?),0)`, runID, runID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (worker *Worker) stageEvent(ctx context.Context, runID string, event control.RunEvent) error {
@@ -390,6 +425,13 @@ func (worker *Worker) stageEventWithResult(ctx context.Context, runID string, ev
 			return err
 		}
 	}
+	if event.Kind != "started" && event.Kind != "session" {
+		// Git 仍可能在终态后运行只读核对，保留该轮的保护来源供重启检查。
+		if _, err := tx.ExecContext(ctx, `DELETE FROM process_runs WHERE run_id=?
+			AND NOT EXISTS (SELECT 1 FROM git_push_attempts WHERE run_id=?)`, runID, runID); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -425,8 +467,10 @@ func verifyUnopenedSession(ctx context.Context, tx *sql.Tx, runID string, event 
 }
 
 func (worker *Worker) recoverInterrupted(ctx context.Context) error {
-	// The Windows Job Object terminates the previous worker's process tree.
-	// Preserve the announced session and record an interrupted result once.
+	if err := worker.checkProcessRecovery(ctx); err != nil {
+		return err
+	}
+	// 已核对进程树退出后，保留已上报的原生会话并补报一次中断。
 	rows, err := worker.db.QueryContext(ctx, `SELECT r.id,r.session_id,c.data FROM runs r LEFT JOIN run_claims c ON c.id=r.id
 		WHERE r.state IN ('starting','started') AND NOT EXISTS (SELECT 1 FROM git_push_attempts p WHERE p.run_id=r.id)`)
 	if err != nil {

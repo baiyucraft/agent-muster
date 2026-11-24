@@ -31,6 +31,8 @@ type Worker struct {
 	root string
 	wake chan struct{}
 
+	processProofs *os.File
+
 	logMu sync.Mutex
 
 	artifactRegistration chan struct{} // 限制同时读取和提交的产物快照数。
@@ -128,16 +130,38 @@ func (worker *Worker) runWithPeer(ctx context.Context, client collaborationHub, 
 		return err
 	}
 	defer service.listener.Close()
+	var errorMu sync.Mutex
+	var processBlocked bool
+	reportWorkError := func(err error) {
+		if onError == nil {
+			return
+		}
+		errorMu.Lock()
+		defer errorMu.Unlock()
+		processBlocked = errors.Is(err, runner.ErrProcessExitUnconfirmed)
+		onError(err)
+	}
+	reportPeerError := func(err error) {
+		if onError == nil {
+			return
+		}
+		errorMu.Lock()
+		defer errorMu.Unlock()
+		// 进程退出仍待确认时，传输错误不能覆盖执行名额被占用的原因。
+		if !processBlocked {
+			onError(err)
+		}
+	}
 	peerDone := make(chan struct{})
 	go func() {
 		defer close(peerDone)
-		peer.Run(ctx, onError)
+		peer.Run(ctx, reportPeerError)
 	}()
 	defer func() {
 		cancel()
 		<-peerDone
 	}()
-	return worker.run(ctx, client, identity, onError, peer, service, execute)
+	return worker.run(ctx, client, identity, reportWorkError, peer, service, execute)
 }
 
 type agentExecutor func(context.Context, string, string, string, string, []string, func() error, func(string) error) (string, error)
@@ -164,7 +188,10 @@ func (worker *Worker) run(ctx context.Context, client hub, identity control.Iden
 		}
 		background.Wait()
 	}()
-	if err := worker.recoverInterrupted(ctx); err != nil {
+	if err := worker.recoverProcessState(ctx, onError, false); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	}
 	if runLogPlatformSupported {
@@ -188,6 +215,15 @@ func (worker *Worker) run(ctx context.Context, client hub, identity control.Iden
 			select {
 			case err := <-active:
 				active = nil
+				if errors.Is(err, runner.ErrProcessExitUnconfirmed) && worker.processProofs != nil {
+					if onError != nil {
+						onError(err)
+					}
+					err = worker.recoverProcessState(ctx, onError, true)
+					if ctx.Err() != nil {
+						return nil
+					}
+				}
 				if err != nil {
 					return err
 				}
@@ -196,6 +232,19 @@ func (worker *Worker) run(ctx context.Context, client hub, identity control.Iden
 		}
 		drain := worker.pendingDrain()
 		err := worker.exchange(ctx, client, identity, &lastDirectories, active != nil, drain != nil, peer)
+		if errors.Is(err, runner.ErrProcessExitUnconfirmed) && worker.processProofs != nil {
+			if onError != nil {
+				onError(err)
+			}
+			err := worker.recoverProcessState(ctx, onError, true)
+			if ctx.Err() != nil {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			continue
+		}
 		if errors.Is(err, control.ErrUnauthorized) || errors.Is(err, runner.ErrProcessExitUnconfirmed) {
 			return err
 		}
@@ -358,6 +407,7 @@ func (worker *Worker) execute(ctx context.Context, run control.Run, peer *collab
 	runCtx, abandon := context.WithCancelCause(ctx)
 	defer abandon(nil)
 	runCtx, readDiagnostics := worker.captureRun(runCtx, run.ID)
+	runCtx = worker.withProcessRecovery(runCtx, run.ID, run.Generation, false)
 	var leaseErr error
 	if run.Lease != "" {
 		leaseErr = startLease(runCtx, run, peer, abandon)
@@ -423,6 +473,9 @@ func (worker *Worker) execute(ctx context.Context, run control.Run, peer *collab
 	// Persist terminal state and result body together, including on shutdown.
 	persist, stopPersist := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer stopPersist()
+	if err := worker.checkProcessLaunches(persist); err != nil {
+		return err
+	}
 	if run.ParentDeviceID != "" {
 		body := []byte(event.Text)
 		event.Text = ""

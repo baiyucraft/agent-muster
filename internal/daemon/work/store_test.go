@@ -25,7 +25,10 @@ func TestInterruptedRunRecoversDurableGitReviewDiagnostics(t *testing.T) {
 	ctx := context.Background()
 	const runID = "run-11111111-2222-3333-4444-555555555555"
 	if _, err := worker.db.ExecContext(ctx, `INSERT INTO runs (id,task_id,directory_id,prompt,session_id,requested_session_id,state)
-		VALUES (?, 'task-1', 'dir-1', '', '', '', 'started')`, runID); err != nil {
+	VALUES (?, 'task-1', 'dir-1', '', '', '', 'claimed')`, runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.markLaunching(ctx, runID); err != nil {
 		t.Fatal(err)
 	}
 	attempt := runreport.ReviewAttempt{
@@ -154,8 +157,11 @@ func TestInterruptedRunProducesOneRecoveryReceipt(t *testing.T) {
 	const original = "MUSTER_APPROVAL_V1\n\x00"
 	if _, err := worker.db.ExecContext(ctx, `
 		INSERT INTO runs (id,task_id,directory_id,prompt,session_id,requested_session_id,state,text)
-		VALUES ('run-1','task-1','dir-1','prompt','session-1','session-1','started',?)
+		VALUES ('run-1','task-1','dir-1','prompt','session-1','session-1','claimed',?)
 	`, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.markLaunching(ctx, "run-1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := worker.recoverInterrupted(ctx); err != nil {

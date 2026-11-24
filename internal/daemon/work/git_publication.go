@@ -231,8 +231,19 @@ func (worker *Worker) saveGitAttempt(ctx context.Context, runID string, attempt 
 }
 
 func (worker *Worker) clearGitAttempt(ctx context.Context, runID string) error {
-	_, err := worker.db.ExecContext(ctx, `DELETE FROM git_push_attempts WHERE run_id=?`, runID)
-	return err
+	tx, err := worker.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM git_push_attempts WHERE run_id=?`, runID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM process_runs WHERE run_id=?
+		AND EXISTS (SELECT 1 FROM runs WHERE id=? AND state NOT IN ('starting','started'))`, runID, runID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func gitAuthorizationRejected(err error) bool {
@@ -242,6 +253,9 @@ func gitAuthorizationRejected(err error) bool {
 }
 
 func (worker *Worker) recoverGitPush(ctx context.Context, peer *collaboration) (bool, error) {
+	if err := worker.checkProcessRecovery(ctx); err != nil {
+		return false, err
+	}
 	// 只恢复读回。上一进程可能已写入远端，即使本机未收到 Git 或 Hub 的响应。
 	var runID, state string
 	var data, claim []byte
@@ -299,10 +313,14 @@ func (worker *Worker) reconcileGitAttempt(ctx context.Context, peer *collaborati
 		}
 	}
 	check, cancel := context.WithTimeout(ctx, 15*time.Second)
+	check = worker.withProcessRecovery(check, runID, run.Generation, true)
 	dir, _ := worker.resolveDirectory(check, run.DirectoryID)
 	observation, err := readGitBranch(check, dir, attempt)
 	cancel()
 	if err != nil {
+		return err
+	}
+	if err := worker.checkProcessLaunches(ctx); err != nil {
 		return err
 	}
 	err = worker.confirmGitAttempt(ctx, peer, runID, attempt, observation)

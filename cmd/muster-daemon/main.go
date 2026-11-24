@@ -10,6 +10,7 @@ import (
 	"os"
 	"sync/atomic"
 
+	"github.com/baiyucraft/agent-muster/internal/daemon/runner"
 	"github.com/baiyucraft/agent-muster/internal/daemon/update"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -23,6 +24,13 @@ var assets embed.FS
 var trayIcon []byte
 
 func main() {
+	// 守护进程等待本轮 Job 结束，无需打开桌面或取得工作区锁。
+	if handled, err := runner.HandleProcessProofHelper(os.Args[1:]); handled {
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	// 更新辅助进程由同一程序启动，处理替换请求时无需初始化桌面窗口。
 	if handled, err := update.HandleHelper(os.Args[1:]); handled {
 		if err != nil {

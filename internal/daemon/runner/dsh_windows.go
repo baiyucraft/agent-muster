@@ -27,20 +27,15 @@ func runInJobWithStderr(ctx context.Context, cmd *exec.Cmd, prompt string, start
 	return runJob(ctx, cmd, prompt, started, read, stderr, nil)
 }
 
-func runJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() error, read func(io.Reader) error, stderr io.Writer, capture *runCapture) (uint32, error) {
+func runJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() error, read func(io.Reader) error, stderr io.Writer, capture *runCapture) (code uint32, runErr error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	job, err := windows.CreateJobObject(nil, nil)
+	job, err := createProcessJob()
 	if err != nil {
 		return 0, err
 	}
 	defer windows.CloseHandle(job)
-	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
-	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
-		return 0, err
-	}
 
 	stdinR, stdinW, err := os.Pipe()
 	if err != nil {
@@ -80,10 +75,47 @@ func runJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() er
 		defer stderrR.Close()
 	}
 
+	treeConfirmed := true // 创建 CLI 之前本轮 Job 没有进程。
+	if reserve, _ := ctx.Value(processProofKey{}).(func() (string, func() error, error)); reserve != nil {
+		path, arm, err := reserve()
+		if err != nil {
+			return 0, err
+		}
+		if err := validateProcessProofPath(path); err != nil {
+			return 0, errors.Join(ErrProcessExitUnconfirmed, err)
+		}
+		var guardian *processGuardian
+		defer func() {
+			var proofErr error
+			if treeConfirmed {
+				proofErr = writeProcessProof(path)
+			}
+			if guardian != nil {
+				if err := guardian.finish(treeConfirmed && proofErr == nil); err != nil {
+					runErr = errors.Join(runErr, err)
+				}
+			}
+			if proofErr != nil {
+				runErr = errors.Join(runErr, ErrProcessExitUnconfirmed, proofErr)
+			}
+		}()
+		guardian, err = startProcessGuardian(ctx, job, path)
+		if err != nil {
+			return 0, err
+		}
+		if arm == nil {
+			return 0, errors.New("缺少本轮退出证据的执行许可")
+		}
+		if err := arm(); err != nil {
+			return 0, err
+		}
+	}
+
 	process, err := startSuspended(cmd, job, stdinR, stdoutW, stderrW)
 	if err != nil {
 		return 0, fmt.Errorf("无法启动 Agent 进程: %w", err)
 	}
+	treeConfirmed = false
 	stdinR.Close()
 	stdoutW.Close()
 	stderrW.Close()
@@ -97,7 +129,9 @@ func runJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() er
 	windows.CloseHandle(process.Thread)
 	if startErr != nil {
 		windows.CloseHandle(process.Process)
-		return 0, errors.Join(startErr, stopProcessTree(job))
+		treeErr := stopProcessTree(job)
+		treeConfirmed = treeErr == nil
+		return 0, errors.Join(startErr, treeErr)
 	}
 	processCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -153,6 +187,7 @@ func runJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() er
 	// 释放本轮的主进程引用，使 Job 计数能够在进程退出后归零。
 	windows.CloseHandle(process.Process)
 	treeErr := stopProcessTree(job)
+	treeConfirmed = treeErr == nil
 	if treeErr != nil {
 		// 无法确认子进程退出时关闭本端管道，避免遗留进程占用管道阻塞设备。
 		_ = stdoutR.Close()
@@ -197,6 +232,21 @@ func runJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() er
 		stderrErr = nil
 	}
 	return exitCode, errors.Join(outputErr, inputErr, stderrErr, exitErr)
+}
+
+// createProcessJob 令 Job 的最后一个句柄关闭时终止其成员。
+func createProcessJob() (windows.Handle, error) {
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return 0, err
+	}
+	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
+		windows.CloseHandle(job)
+		return 0, err
+	}
+	return job, nil
 }
 
 func waitProcess(ctx context.Context, process windows.Handle) error {
