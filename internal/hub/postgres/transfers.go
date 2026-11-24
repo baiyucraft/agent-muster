@@ -163,8 +163,9 @@ func (store *InventoryStore) OutgoingTransfers(ctx context.Context, device strin
 	return
 }
 
-// AuthorizeTransfer 为认证发送设备刷新未签收投递的票据，目标须已登记可用接收端点。
+// AuthorizeTransfer 为认证发送设备刷新未签收投递的票据。若无可用接收端点，先记录失败再返回冲突。
 func (store *InventoryStore) AuthorizeTransfer(ctx context.Context, device string, token [32]byte, id string) (transfer workspace.Transfer, err error) {
+	unavailable := false
 	err = store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		if err := authenticateDevice(ctx, tx, device, token); err != nil {
 			return err
@@ -187,7 +188,8 @@ func (store *InventoryStore) AuthorizeTransfer(ctx context.Context, device strin
 				return err
 			}
 			if !active {
-				return workspace.ErrConflict
+				unavailable = true
+				return updateTransferError(ctx, tx, id, "peer_unavailable")
 			}
 		}
 		if err := mintTransferTicket(ctx, tx, &transfer); err != nil {
@@ -196,6 +198,9 @@ func (store *InventoryStore) AuthorizeTransfer(ctx context.Context, device strin
 		transfer.Status = "retrying"
 		return advanceWorkspace(ctx, tx)
 	})
+	if err == nil && unavailable {
+		err = workspace.ErrConflict
+	}
 	return
 }
 
@@ -259,14 +264,6 @@ func (store *InventoryStore) ReportTransferError(ctx context.Context, device str
 		if err := authenticateDevice(ctx, tx, device, token); err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `UPDATE muster_transfers SET last_error=$3 WHERE id=$1 AND source_device_id=$2
-			AND received_at IS NULL AND last_error<>$3`, id, device, reason)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() != 0 {
-			return advanceWorkspace(ctx, tx)
-		}
 		var owned bool
 		if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM muster_transfers WHERE id=$1 AND source_device_id=$2)", id, device).Scan(&owned); err != nil {
 			return err
@@ -274,6 +271,16 @@ func (store *InventoryStore) ReportTransferError(ctx context.Context, device str
 		if !owned {
 			return notFound(pgx.ErrNoRows)
 		}
-		return nil
+		return updateTransferError(ctx, tx, id, reason)
 	})
+}
+
+// updateTransferError 只在最近错误变化时发出工作区事件。调用方已在同一事务内验证发送设备和投递归属。
+func updateTransferError(ctx context.Context, tx pgx.Tx, id, reason string) error {
+	tag, err := tx.Exec(ctx, `UPDATE muster_transfers SET last_error=$2 WHERE id=$1
+		AND received_at IS NULL AND last_error<>$2`, id, reason)
+	if err != nil || tag.RowsAffected() == 0 {
+		return err
+	}
+	return advanceWorkspace(ctx, tx)
 }

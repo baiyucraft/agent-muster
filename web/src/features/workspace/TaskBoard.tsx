@@ -311,7 +311,7 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
             <span className="transfer-state" data-state={transfer.status}>{transferStatus(transfer)}{transfer.attempts > 1 ? ` · ${transfer.attempts} 次尝试` : ''}</span>
             <code className="transfer-hash">SHA-256 {transfer.sha256 || '待确认'}</code>
             <Time value={transfer.received_at ?? transfer.created_at} />
-            {transfer.last_error && <p className="transfer-error">{transfer.last_error}</p>}
+            {transfer.last_error && <p className="transfer-error">{transferErrorText(transfer.last_error)}</p>}
           </article>)}</div>
         </details>}
         {relatedMessages && relatedMessages.length > 0 && <section className="task-detail-panel related-messages" aria-labelledby="related-heading"><h2 id="related-heading">关联对话</h2>{relatedMessages.map((message) => <MessageItem key={message.id} message={message} task={task} />)}</section>}
@@ -543,4 +543,13 @@ function transferKind(kind: string): string {
 function transferStatus({ status, received_at }: Transfer): string {
   const labels: Record<string, string> = { pending: '待传输', sending: '正在传输', waiting_delivery: '等待接收', retrying: '重试中', received: '已确认接收', failed: '传输失败' }
   return labels[status] ?? (received_at ? '已确认接收' : '等待接收')
+}
+
+function transferErrorText(error: string): string {
+  const labels: Record<string, string> = {
+    peer_unavailable: '接收设备暂不可用',
+    verification_failed: '接收设备身份校验失败',
+    delivery_failed: '交接失败',
+  }
+  return labels[error] ?? error
 }

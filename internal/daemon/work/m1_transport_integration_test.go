@@ -19,6 +19,101 @@ type testTransferHub struct {
 	received atomic.Bool
 }
 
+type retryTransferHub struct {
+	collaborationHub
+	attempts map[string]int
+	ready    map[string]bool
+}
+
+func (hub *retryTransferHub) AuthorizeTransfer(_ context.Context, _ control.Identity, id string) (control.Transfer, error) {
+	hub.attempts[id]++
+	if hub.ready[id] {
+		return control.Transfer{ID: id, ReceivedAt: "confirmed"}, nil
+	}
+	return control.Transfer{}, errors.New("fixture receiver unavailable")
+}
+
+func TestPeerOutboxRetriesPersistAndAreIndependent(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	worker, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = worker.Close() })
+	hub := &retryTransferHub{attempts: make(map[string]int), ready: make(map[string]bool)}
+	peer := &collaboration{worker: worker, client: hub}
+	run := control.Run{ID: "run-fixture", TaskID: "task-fixture", Generation: 1, Lease: strings.Repeat("A", 26)}
+	if err := worker.saveClaim(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	put := func(id string) {
+		t.Helper()
+		if _, err := worker.db.ExecContext(ctx, `INSERT INTO peer_outbox(id,sha256,body) VALUES(?, 'fixture', x'01')`, id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := worker.db.ExecContext(ctx, `INSERT INTO peer_manifests(id,run_id,data,published) VALUES(?,?,x'01',1)`, id, run.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	retry := func(id string) (int, int64) {
+		t.Helper()
+		var count int
+		var after int64
+		if err := worker.db.QueryRowContext(ctx, `SELECT failures,retry_after_ms FROM peer_outbox_retry WHERE id=?`, id).Scan(&count, &after); err != nil {
+			t.Fatal(err)
+		}
+		return count, after
+	}
+	put("offline")
+	for i, delay := range []time.Duration{3, 6, 12, 24, 48, 60, 60} {
+		start := time.Now()
+		if err := peer.sendPending(ctx); err == nil {
+			t.Fatal("设备不可达应保留发送错误")
+		}
+		failures, after := retry("offline")
+		deadline := time.UnixMilli(after)
+		if failures != min(i+1, 5) || deadline.Before(start.Add(delay*time.Second-time.Millisecond)) || deadline.After(time.Now().Add(delay*time.Second)) {
+			t.Fatalf("第 %d 次失败的退避记录有误: %d, %v", i+1, failures, deadline)
+		}
+		if i < 6 {
+			if _, err := worker.db.ExecContext(ctx, `UPDATE peer_outbox_retry SET retry_after_ms=0 WHERE id='offline'`); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := worker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, peer.worker = reopened, reopened
+	put("ready")
+	hub.ready["ready"] = true
+	if err := peer.sendPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if hub.attempts["offline"] != 7 || hub.attempts["ready"] != 1 {
+		t.Fatalf("重启后应跳过仍在退避中的投递，仍发送其他投递: %v", hub.attempts)
+	}
+	hub.ready["offline"] = true
+	if _, err := worker.db.ExecContext(ctx, `UPDATE peer_outbox_retry SET retry_after_ms=0 WHERE id='offline'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.sendPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var pending int
+	if err := worker.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM peer_outbox)+(SELECT count(*) FROM peer_outbox_retry)`).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 || hub.attempts["offline"] != 8 {
+		t.Fatalf("签收后应清理发件和退避记录: %d, %v", pending, hub.attempts)
+	}
+}
+
 func (hub *testTransferHub) CreateTransfer(_ context.Context, _ control.Identity, _ string, request control.Manifest) (control.Transfer, error) {
 	hub.manifest.ID = request.ID
 	hub.manifest.SHA256 = request.SHA256

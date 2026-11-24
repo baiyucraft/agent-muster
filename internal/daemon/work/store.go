@@ -92,6 +92,11 @@ CREATE TABLE IF NOT EXISTS peer_outbox (
 	sha256 TEXT NOT NULL,
 	body BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS peer_outbox_retry (
+	id TEXT PRIMARY KEY REFERENCES peer_outbox(id) ON DELETE CASCADE,
+	failures INTEGER NOT NULL CHECK(failures BETWEEN 1 AND 5),
+	retry_after_ms INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS peer_manifests (
 	id TEXT PRIMARY KEY,
 	run_id TEXT NOT NULL REFERENCES runs(id),

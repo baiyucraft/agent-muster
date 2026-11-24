@@ -24,12 +24,14 @@ func TestCollaborationEndToEnd(t *testing.T) {
 		do("POST", "devices/enroll", "", map[string]string{
 			"code": pairing.Code, "hostname": name, "os": "windows", "arch": "amd64",
 		}, 201, &device)
-		do("PUT", "devices/"+device.ID+"/peer", device.Token, map[string]string{
-			"address": fmt.Sprintf("https://127.0.0.1:%d", port), "fingerprint": strings.Repeat("a", 64),
-		}, 204, nil)
+		if port > 0 {
+			do("PUT", "devices/"+device.ID+"/peer", device.Token, map[string]string{
+				"address": fmt.Sprintf("https://127.0.0.1:%d", port), "fingerprint": strings.Repeat("a", 64),
+			}, 204, nil)
+		}
 		return device
 	}
-	a, b := enroll("home", 19001), enroll("office", 19002)
+	a, b := enroll("home", 19001), enroll("office", 0)
 	dir := "dir-" + strings.Repeat("a", 32)
 	for _, device := range []identity{a, b} {
 		do("PUT", "devices/"+device.ID+"/directories", device.Token, map[string]any{
@@ -140,6 +142,26 @@ func TestCollaborationEndToEnd(t *testing.T) {
 	prompt := makeTransfer(a, b, parent, 30, "prompt")
 	file := makeTransfer(a, b, parent, 31, "file")
 	c := enroll("unrelated", 19003)
+	fileAuthorization := "devices/" + a.ID + "/transfers/" + file.ID + "/authorize"
+	var before, unavailable, replayed workspace.Snapshot
+	do("GET", "workspace", testAdmin, nil, 200, &before)
+	do("POST", fileAuthorization, a.Token, nil, 409, nil)
+	do("GET", "workspace", testAdmin, nil, 200, &unavailable)
+	do("POST", fileAuthorization, a.Token, nil, 409, nil)
+	do("GET", "workspace", testAdmin, nil, 200, &replayed)
+	if unavailable.Cursor != before.Cursor+1 || replayed.Cursor != unavailable.Cursor {
+		t.Fatalf("接收端不可用应只触发一次刷新: %d, %d, %d", before.Cursor, unavailable.Cursor, replayed.Cursor)
+	}
+	var offline workspace.Detail
+	do("GET", "tasks/"+parentID, testAdmin, nil, 200, &offline)
+	for _, value := range offline.Transfers {
+		if value.ID == file.ID {
+			file = value
+		}
+	}
+	if file.LastError != "peer_unavailable" || file.Status != "retrying" || file.ReceivedAt != nil {
+		t.Fatalf("投递应保留接收设备不可用的错误: %+v", file)
+	}
 	key := map[string]string{"public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE="}
 	otherKey := map[string]string{"public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAI="}
 	keyPath := "/rtc/public-key"
@@ -276,6 +298,16 @@ func TestCollaborationEndToEnd(t *testing.T) {
 		t.Fatalf("child available before file ACK: %+v", detail.Task)
 	}
 	ack(b, authorize(a, file))
+	var received workspace.Detail
+	do("GET", "tasks/"+child.ID, testAdmin, nil, 200, &received)
+	for _, value := range received.Transfers {
+		if value.ID == file.ID {
+			file = value
+		}
+	}
+	if file.LastError != "" || file.Status != "received" || file.ReceivedAt == nil {
+		t.Fatalf("投递签收后应清理最近错误: %+v", file)
+	}
 	run := claim(b)
 	if run.TaskID != child.ID || run.Prompt != "" || run.PromptTransferID != prompt.ID || run.ParentDeviceID != a.ID {
 		t.Fatalf("child received incorrect prompt routing: %+v", run)

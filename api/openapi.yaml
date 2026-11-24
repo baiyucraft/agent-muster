@@ -1246,6 +1246,7 @@ paths:
         '400': { description: 无效的投递 ID 或请求体 }
         '401': { $ref: '#/components/responses/DeviceUnauthorized' }
         '404': { description: 投递不存在 }
+        '409': { description: 接收设备无可用端点，投递记录保留最近错误 }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/devices/{device_id}/transfers/{transfer_id}/error:
     parameters:

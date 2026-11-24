@@ -352,30 +352,49 @@ func (peer *collaboration) sendPending(ctx context.Context) error {
 			pendingErr = errors.Join(pendingErr, err)
 		}
 	}
-	rows, err = peer.worker.db.QueryContext(ctx, `SELECT b.id FROM peer_outbox b JOIN peer_manifests m ON m.id=b.id WHERE m.published=1 ORDER BY b.rowid`)
+	rows, err = peer.worker.db.QueryContext(ctx, `SELECT b.id,COALESCE(r.failures,0)
+		FROM peer_outbox b JOIN peer_manifests m ON m.id=b.id LEFT JOIN peer_outbox_retry r ON r.id=b.id
+		WHERE m.published=1 AND (r.id IS NULL OR r.retry_after_ms<=?) ORDER BY b.rowid`, time.Now().UnixMilli())
 	if err != nil {
 		return errors.Join(pendingErr, err)
 	}
-	var ids []string
+	type pendingTransfer struct {
+		id       string
+		failures int
+	}
+	var due []pendingTransfer
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var transfer pendingTransfer
+		if err := rows.Scan(&transfer.id, &transfer.failures); err != nil {
 			rows.Close()
 			return err
 		}
-		ids = append(ids, id)
+		due = append(due, transfer)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return err
 	}
 	rows.Close()
-	for _, id := range ids {
-		if err := peer.sendOne(ctx, id); err != nil {
-			pendingErr = errors.Join(pendingErr, err)
+	for _, transfer := range due {
+		err := peer.sendOne(ctx, transfer.id)
+		if ctx.Err() != nil || errors.Is(err, control.ErrUnauthorized) {
+			return errors.Join(pendingErr, err)
+		}
+		if err != nil {
+			pendingErr = errors.Join(pendingErr, err, peer.deferTransfer(ctx, transfer.id, transfer.failures))
 		}
 	}
 	return pendingErr
+}
+
+// deferTransfer 从失败结束时开始退避。确认签收后，删除发件箱条目也会删除重试记录。
+func (peer *collaboration) deferTransfer(ctx context.Context, id string, failures int) error {
+	delay := min(60*time.Second, (3*time.Second)<<failures)
+	_, err := peer.worker.db.ExecContext(ctx, `INSERT INTO peer_outbox_retry(id,failures,retry_after_ms) VALUES(?,?,?)
+		ON CONFLICT(id) DO UPDATE SET failures=excluded.failures,retry_after_ms=excluded.retry_after_ms`,
+		id, min(failures+1, 5), time.Now().Add(delay).UnixMilli())
+	return err
 }
 
 func (peer *collaboration) sendOne(ctx context.Context, id string) error {
