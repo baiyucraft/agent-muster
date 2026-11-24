@@ -86,15 +86,17 @@ func TestSendAndUpdateOriginalMessage(t *testing.T) {
 		}
 	}
 	a.Status, a.Answer = "answered", "继续"
-	for range 2 {
+	for _, waiting := range []bool{true, false} {
+		a.WaitingDevice = waiting
 		if err := client.Update(t.Context(), testMessageID, a); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for range 2 {
+	for _, waiting := range []bool{true, false} {
 		select {
 		case payload := <-patches:
-			if strings.Contains(payload.Content, submitPrefix) || !strings.Contains(payload.Content, "已答复") {
+			if strings.Contains(payload.Content, submitPrefix) || !strings.Contains(payload.Content, "已答复") ||
+				strings.Contains(payload.Content, "等待设备上线") != waiting {
 				t.Fatalf("原卡片更新未反映已答复状态：%+v", payload)
 			}
 		default:

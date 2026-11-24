@@ -48,7 +48,7 @@ func TestApprovalNotificationSurvivesRestart(t *testing.T) {
 	// 发送响应丢失后，即使 Web 先保存答复，仍重试原始待答复卡片。
 	answer, err := store.AnswerApproval(ctx, approvalID, "实际答复")
 	checkNotification(t, err)
-	if answer.Status != "answered" {
+	if answer.Status != "answered" || !answer.WaitingDevice {
 		t.Fatalf("Web 答复状态不正确: %+v", answer)
 	}
 	_, err = store.pool.Exec(ctx, `UPDATE muster_approval_notifications
@@ -60,7 +60,7 @@ func TestApprovalNotificationSurvivesRestart(t *testing.T) {
 	t.Cleanup(store.Close)
 	checkNotification(t, store.EnableApprovalNotifications(ctx, recipient))
 	replayed := claimNotification(t, ctx, store, recipient, approvalID, "pending", "")
-	if replayed.Approval.Answer != "" || replayed.Approval.AnsweredAt != nil || replayed.Lease == second.Lease {
+	if replayed.Approval.Answer != "" || replayed.Approval.AnsweredAt != nil || replayed.Lease == second.Lease || replayed.Approval.WaitingDevice {
 		t.Fatalf("重试初始通知时没有保留原始卡片快照: %+v", replayed)
 	}
 	if err := store.CompleteApprovalNotification(ctx, recipient, second, providerID); !errors.Is(err, workspace.ErrConflict) {
@@ -68,7 +68,7 @@ func TestApprovalNotificationSurvivesRestart(t *testing.T) {
 	}
 	checkNotification(t, store.CompleteApprovalNotification(ctx, recipient, replayed, providerID))
 	answered := claimNotification(t, ctx, store, recipient, approvalID, "answered", providerID)
-	if answered.Approval.Answer != "实际答复" {
+	if answered.Approval.Answer != "实际答复" || !answered.Approval.WaitingDevice {
 		t.Fatalf("已答复卡片快照不正确: %+v", answered)
 	}
 	resumed, err := store.ClaimRun(ctx, "home", token)
@@ -168,6 +168,20 @@ func TestApprovalNotificationRecipientAndConcurrentAnswer(t *testing.T) {
 	t.Cleanup(store.Close)
 	newRecipient := im.Recipient{AppID: "app-2", OpenID: "user-2"}
 	checkNotification(t, store.EnableApprovalNotifications(ctx, newRecipient))
+	var channel string
+	var appID, openID *string
+	checkNotification(t, store.pool.QueryRow(ctx, `SELECT answered_via,answered_app_id,answered_open_id
+		FROM muster_approvals WHERE id=$1`, approvalID).Scan(&channel, &appID, &openID))
+	switch winners[0].Answer {
+	case "Web":
+		if channel != "web" || appID != nil || openID != nil {
+			t.Fatalf("Web 首答人的身份不正确: %s, %v, %v", channel, appID, openID)
+		}
+	case "JSON":
+		if channel != "feishu" || appID == nil || *appID != recipient.AppID || openID == nil || *openID != recipient.OpenID {
+			t.Fatalf("飞书首答人的身份不正确: %s, %v, %v", channel, appID, openID)
+		}
+	}
 	if empty, err := store.ClaimApprovalNotification(ctx, newRecipient); err != nil || empty.Lease != "" {
 		t.Fatalf("新配置领取了旧应用的通知: %+v, %v", empty, err)
 	}
@@ -194,6 +208,124 @@ func TestApprovalNotificationRecipientAndConcurrentAnswer(t *testing.T) {
 	checkNotification(t, err)
 	if empty, err := store.ClaimApprovalNotification(ctx, newRecipient); err != nil || empty.Lease != "" {
 		t.Fatalf("超过渠道去重窗口仍重新发送: %+v, %v", empty, err)
+	}
+}
+
+func TestApprovalNotificationTracksOfflineResume(t *testing.T) {
+	ctx, address := newTestSchema(t)
+	store, err := OpenInventory(ctx, address)
+	checkNotification(t, err)
+	t.Cleanup(store.Close)
+	recipient := im.Recipient{AppID: "app-1", OpenID: "user-1"}
+	checkNotification(t, store.EnableApprovalNotifications(ctx, recipient))
+	token := seedApprovalNotifications(t, ctx, store)
+	approvalID := requestNotificationApproval(t, ctx, store, token, "转为 CSV？")
+	const messageID = "message-1"
+	initial := claimNotification(t, ctx, store, recipient, approvalID, "pending", "")
+	checkNotification(t, store.CompleteApprovalNotification(ctx, recipient, initial, messageID))
+	reply := im.Reply{ApprovalID: approvalID, OpenID: recipient.OpenID, MessageID: messageID, Text: "转为 CSV"}
+	answered, err := store.AnswerApprovalFromIM(ctx, recipient, reply)
+	checkNotification(t, err)
+	if answered.Status != "answered" || !answered.WaitingDevice {
+		t.Fatalf("离线答复未等待设备: %+v", answered)
+	}
+	_, err = store.AnswerApproval(ctx, approvalID, "改为 JSON")
+	checkNotification(t, err)
+	var channel, appID, openID string
+	checkNotification(t, store.pool.QueryRow(ctx, `SELECT answered_via,answered_app_id,answered_open_id
+		FROM muster_approvals WHERE id=$1`, approvalID).Scan(&channel, &appID, &openID))
+	if channel != "feishu" || appID != recipient.AppID || openID != recipient.OpenID {
+		t.Fatal("重复的 Web 答复覆盖了飞书首答人")
+	}
+
+	assertWaiting := func(want bool) int64 {
+		t.Helper()
+		snapshot, err := store.Workspace(ctx)
+		checkNotification(t, err)
+		detail, err := store.TaskDetail(ctx, answered.TaskID)
+		checkNotification(t, err)
+		if snapshot.Approvals[0].WaitingDevice != want || detail.Approvals[0].WaitingDevice != want {
+			t.Fatalf("工作区与任务详情的设备状态不正确: %+v, %+v", snapshot.Approvals, detail.Approvals)
+		}
+		return snapshot.Cursor
+	}
+	revision := assertWaiting(true)
+	offline := claimNotification(t, ctx, store, recipient, approvalID, "answered", messageID)
+	if !offline.Approval.WaitingDevice {
+		t.Fatal("离线更新未标记等待设备")
+	}
+	checkNotification(t, store.CompleteApprovalNotification(ctx, recipient, offline, messageID))
+	empty, err := store.ClaimApprovalNotification(ctx, recipient)
+	checkNotification(t, err)
+	if empty.Lease != "" {
+		t.Fatal("已确认的等待状态被重复领取")
+	}
+	checkNotification(t, store.Heartbeat(ctx, "home", token))
+	if got := assertWaiting(false); got != revision {
+		t.Fatalf("仅设备心跳变化时更新了工作区游标: %d -> %d", revision, got)
+	}
+	online := claimNotification(t, ctx, store, recipient, approvalID, "answered", messageID)
+	if online.Approval.WaitingDevice {
+		t.Fatal("上线更新仍标记等待设备")
+	}
+	checkNotification(t, store.RetryApprovalNotification(ctx, recipient, online))
+	store.Close()
+	store, err = OpenInventory(ctx, address)
+	checkNotification(t, err)
+	t.Cleanup(store.Close)
+	checkNotification(t, store.EnableApprovalNotifications(ctx, recipient))
+	// 上线卡片的响应可能已丢失。即使设备重新离线，也须再次更新原卡片。
+	_, err = store.pool.Exec(ctx, `UPDATE muster_devices SET last_seen_at=statement_timestamp()-interval '91 seconds' WHERE device_id='home';
+		UPDATE muster_approval_notifications SET next_attempt_at=statement_timestamp()`)
+	checkNotification(t, err)
+	assertWaiting(true)
+	retried := claimNotification(t, ctx, store, recipient, approvalID, "answered", messageID)
+	if !retried.Approval.WaitingDevice || retried.Lease == online.Lease {
+		t.Fatalf("离线重试没有重新生成卡片快照: %+v", retried)
+	}
+	checkNotification(t, store.CompleteApprovalNotification(ctx, recipient, retried, messageID))
+	checkNotification(t, store.Heartbeat(ctx, "home", token))
+	resume, err := store.ClaimRun(ctx, "home", token)
+	checkNotification(t, err)
+	if resume.SessionID != "native" {
+		t.Fatalf("设备上线后未续接原生会话: %+v", resume)
+	}
+	checkNotification(t, store.RecordRunEvent(ctx, "home", token, resume.ID, 1, workspace.RunEvent{
+		Kind: "completed", Text: "已处理", Generation: resume.Generation, Lease: resume.Lease,
+	}))
+	assertWaiting(false)
+	handled := claimNotification(t, ctx, store, recipient, approvalID, "handled", messageID)
+	if handled.Approval.WaitingDevice {
+		t.Fatal("已处理卡片仍标记等待设备")
+	}
+	checkNotification(t, store.CompleteApprovalNotification(ctx, recipient, handled, messageID))
+}
+
+func TestApprovalResponderMigrationPreservesUnknownOrigins(t *testing.T) {
+	ctx, address := newTestSchema(t)
+	store, err := OpenInventory(ctx, address)
+	checkNotification(t, err)
+	t.Cleanup(store.Close)
+	token := seedApprovalNotifications(t, ctx, store)
+	id := requestNotificationApproval(t, ctx, store, token, "旧版本问题")
+	_, err = store.AnswerApproval(ctx, id, "旧答复")
+	checkNotification(t, err)
+	_, err = store.pool.Exec(ctx, `ALTER TABLE muster_approvals DROP COLUMN answered_via, DROP COLUMN answered_app_id, DROP COLUMN answered_open_id`)
+	checkNotification(t, err)
+	store.Close()
+	store, err = OpenInventory(ctx, address)
+	checkNotification(t, err)
+	t.Cleanup(store.Close)
+	got, err := store.AnswerApproval(ctx, id, "迟到的答复")
+	checkNotification(t, err)
+	if got.Answer != "旧答复" {
+		t.Fatalf("旧答复被覆盖: %+v", got)
+	}
+	var channel, appID, openID *string
+	checkNotification(t, store.pool.QueryRow(ctx, `SELECT answered_via,answered_app_id,answered_open_id
+		FROM muster_approvals WHERE id=$1`, id).Scan(&channel, &appID, &openID))
+	if channel != nil || appID != nil || openID != nil {
+		t.Fatal("旧答复被补入未经核验的来源")
 	}
 }
 

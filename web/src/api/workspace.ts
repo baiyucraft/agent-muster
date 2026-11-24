@@ -206,6 +206,8 @@ export type Approval = {
   options: string[]
   impact?: string
   status: 'pending' | 'answered' | 'handled' | 'cancelled'
+  /** Hub 确认已答复的续接正在排队，且执行设备离线。字段缺省时显示普通已答复状态。 */
+  waiting_device?: boolean
   answer?: string
   created_at: string
   answered_at?: string

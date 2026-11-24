@@ -62,7 +62,7 @@ func (store *InventoryStore) Workspace(ctx context.Context) (snapshot workspace.
 		if err != nil {
 			return err
 		}
-		snapshot.Approvals, err = selectRows(ctx, tx, "SELECT "+approvalColumns+" ORDER BY a.created_at,a.id", scanApproval)
+		snapshot.Approvals, err = selectRows(ctx, tx, "SELECT "+approvalColumns+" ORDER BY a.created_at,a.id", scanApproval, registry.OnlineWindow.Seconds())
 		if err != nil {
 			return err
 		}
@@ -124,7 +124,7 @@ func (store *InventoryStore) TaskDetail(ctx context.Context, id string) (detail 
 			return err
 		}
 		detail.Approvals, err = selectRows(ctx, tx, "SELECT "+approvalColumns+
-			" WHERE a.task_id=$1 OR t.root_id=$1 ORDER BY a.created_at,a.id", scanApproval, id)
+			" WHERE a.task_id=$2 OR t.root_id=$2 ORDER BY a.created_at,a.id", scanApproval, registry.OnlineWindow.Seconds(), id)
 		if err != nil {
 			return err
 		}

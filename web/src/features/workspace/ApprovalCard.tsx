@@ -28,6 +28,9 @@ export function ApprovalCard({ approval, task, actions }: { approval: Approval; 
   const submission = actions.submissions.get(approval.id)
   const invalidDraft = !withinTextLimit(draft, approvalAnswerBytes)
   const pending = submission?.pending ?? false
+  const status = approval.status === 'answered' && approval.waiting_device
+    ? '已答复，等待设备上线'
+    : statusText[approval.status]
 
   function sendDraft(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -38,7 +41,7 @@ export function ApprovalCard({ approval, task, actions }: { approval: Approval; 
   return (
     <article className="approval-card" data-status={approval.status} aria-labelledby={`${id}-question`}>
       <header className="approval-meta">
-        <span className="approval-status">{statusText[approval.status]}</span>
+        <span className="approval-status" aria-live="polite">{status}</span>
         {task && <a className="text-link approval-task" href={`#board/${task.id}`}>{task.title}</a>}
       </header>
       <p id={`${id}-question`} className="approval-question">{approval.question}</p>

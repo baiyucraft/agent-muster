@@ -118,8 +118,10 @@ export function TaskBoard({ token, tasks, approvals, approvalActions, taskContro
 
 function BoardApprovals({ approvals, tasks, actions }: { approvals: Approval[]; tasks?: Task[]; actions: ApprovalActions }) {
   const [answeredHere, setAnsweredHere] = useState(() => new Set<string>())
-  const visible = approvals.filter((approval) => approval.status === 'pending' || answeredHere.has(approval.id))
-  const pendingCount = visible.filter((approval) => approval.status === 'pending').length
+  const waiting = approvals.filter((approval) => approval.status === 'pending')
+  const visible = [...waiting, ...approvals.filter((approval) => approval.status !== 'pending' && (
+    answeredHere.has(approval.id) || (approval.status === 'answered' && approval.waiting_device)
+  ))]
   const tasksByID = new Map(tasks?.map((task) => [task.id, task]))
   const boardActions: ApprovalActions = {
     ...actions,
@@ -131,7 +133,7 @@ function BoardApprovals({ approvals, tasks, actions }: { approvals: Approval[]; 
   if (!visible.length) return null
   return (
     <section className="approval-board" aria-labelledby="board-approvals">
-      <h2 id="board-approvals">{pendingCount > 0 ? '待答复请示' : '请示答复'}</h2>
+      <h2 id="board-approvals">{waiting.length > 0 ? '待答复请示' : '请示答复'}</h2>
       {visible.map((approval) => <ApprovalCard key={approval.id} approval={approval} task={tasksByID.get(approval.task_id)} actions={boardActions} />)}
     </section>
   )

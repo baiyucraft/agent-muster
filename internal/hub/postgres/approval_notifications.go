@@ -40,35 +40,45 @@ func (store *InventoryStore) ClaimApprovalNotification(ctx context.Context, reci
 	}
 	err = pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
 		var approvalID, state string
+		var waitingDevice bool
 		lease := rand.Text()
+		// 心跳不写入工作区事件。领取时对照在线状态，任何未确认的原卡片更新都须重新核对。
 		err := tx.QueryRow(ctx, `WITH job AS (
-			SELECT approval_id FROM muster_approval_notifications
-			WHERE app_id=$1 AND open_id=$2 AND sent_status IS DISTINCT FROM desired_status
-			AND next_attempt_at<=clock_timestamp() AND (lease_until IS NULL OR lease_until<=clock_timestamp())
-			AND ((message_id IS NOT NULL AND first_send_at>clock_timestamp()-interval '336 hours'+interval '30 seconds')
-				OR (message_id IS NULL AND (
-					(first_send_at IS NULL AND desired_status='pending')
-					OR first_send_at>clock_timestamp()-interval '55 minutes'
+			SELECT n.approval_id,card.waiting_device`+approvalFrom+`
+			JOIN muster_approval_notifications n ON n.approval_id=a.id
+			CROSS JOIN LATERAL (SELECT `+approvalWaitingDevice+` AS waiting_device) card
+			WHERE n.app_id=$2 AND n.open_id=$3
+			AND (n.sent_status IS DISTINCT FROM n.desired_status OR
+				(n.desired_status='answered' AND n.sent_waiting_device IS DISTINCT FROM card.waiting_device))
+			AND n.next_attempt_at<=clock_timestamp() AND (n.lease_until IS NULL OR n.lease_until<=clock_timestamp())
+			AND ((n.message_id IS NOT NULL AND n.first_send_at>clock_timestamp()-interval '336 hours'+interval '30 seconds')
+				OR (n.message_id IS NULL AND (
+					(n.first_send_at IS NULL AND n.desired_status='pending')
+					OR n.first_send_at>clock_timestamp()-interval '55 minutes'
 				)))
-			ORDER BY next_attempt_at,approval_id LIMIT 1 FOR UPDATE SKIP LOCKED
+			ORDER BY n.next_attempt_at,n.approval_id LIMIT 1 FOR UPDATE OF n SKIP LOCKED
 		)
-		UPDATE muster_approval_notifications n SET lease=$3,lease_until=clock_timestamp()+interval '30 seconds',
-			leased_status=CASE WHEN message_id IS NULL THEN 'pending' ELSE desired_status END,
-			first_send_at=COALESCE(first_send_at,clock_timestamp())
+		UPDATE muster_approval_notifications n SET lease=$4,lease_until=clock_timestamp()+interval '30 seconds',
+			leased_status=CASE WHEN n.message_id IS NULL THEN 'pending' ELSE n.desired_status END,
+			leased_waiting_device=n.message_id IS NOT NULL AND n.desired_status='answered' AND job.waiting_device,
+			sent_waiting_device=CASE WHEN n.sent_status='answered' AND n.desired_status='answered' THEN NULL ELSE n.sent_waiting_device END,
+			first_send_at=COALESCE(n.first_send_at,clock_timestamp())
 		FROM job WHERE n.approval_id=job.approval_id
-		RETURNING n.approval_id,COALESCE(n.message_id,''),n.leased_status`, recipient.AppID, recipient.OpenID, lease).
-			Scan(&approvalID, &delivery.MessageID, &state)
+		RETURNING n.approval_id,COALESCE(n.message_id,''),n.leased_status,n.leased_waiting_device`,
+			registry.OnlineWindow.Seconds(), recipient.AppID, recipient.OpenID, lease).
+			Scan(&approvalID, &delivery.MessageID, &state, &waitingDevice)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		delivery.Approval, err = scanApproval(tx.QueryRow(ctx, "SELECT "+approvalColumns+" WHERE a.id=$1", approvalID))
+		delivery.Approval, err = scanApproval(tx.QueryRow(ctx, "SELECT "+approvalColumns+" WHERE a.id=$2", registry.OnlineWindow.Seconds(), approvalID))
 		if err != nil {
 			return err
 		}
 		delivery.Lease, delivery.Approval.Status = lease, state
+		delivery.Approval.WaitingDevice = waitingDevice
 		if state == "pending" || state == "cancelled" {
 			delivery.Approval.Answer, delivery.Approval.AnsweredAt = "", nil
 		}
@@ -80,18 +90,18 @@ func (store *InventoryStore) ClaimApprovalNotification(ctx context.Context, reci
 	return delivery, err
 }
 
-// CompleteApprovalNotification 记录本次租约实际发送的状态及消息 ID。
-// 此时若请示已有更新，下一轮继续投递新状态。
+// CompleteApprovalNotification 记录本次租约实际发送的状态、设备等待标记及消息 ID。
+// 此时若请示或设备已有更新，下一轮继续投递新状态。
 func (store *InventoryStore) CompleteApprovalNotification(ctx context.Context, recipient im.Recipient, delivery im.Delivery, messageID string) error {
 	if messageID == "" || recipient.AppID == "" || recipient != store.recipient {
 		return workspace.ErrConflict
 	}
 	tag, err := store.pool.Exec(ctx, `UPDATE muster_approval_notifications
-		SET message_id=$7,sent_status=leased_status,attempts=0,next_attempt_at=clock_timestamp(),
-			lease=NULL,lease_until=NULL,leased_status=NULL
+		SET message_id=$7,sent_status=leased_status,sent_waiting_device=leased_waiting_device,attempts=0,next_attempt_at=clock_timestamp(),
+			lease=NULL,lease_until=NULL,leased_status=NULL,leased_waiting_device=false
 		WHERE approval_id=$1 AND app_id=$2 AND open_id=$3 AND lease=$4 AND lease_until>clock_timestamp()
-		AND leased_status=$5 AND COALESCE(message_id,'')=$6 AND (message_id IS NULL OR message_id=$7)`,
-		delivery.Approval.ID, recipient.AppID, recipient.OpenID, delivery.Lease, delivery.Approval.Status, delivery.MessageID, messageID)
+		AND leased_status=$5 AND COALESCE(message_id,'')=$6 AND (message_id IS NULL OR message_id=$7) AND leased_waiting_device=$8`,
+		delivery.Approval.ID, recipient.AppID, recipient.OpenID, delivery.Lease, delivery.Approval.Status, delivery.MessageID, messageID, delivery.Approval.WaitingDevice)
 	if err == nil && tag.RowsAffected() == 0 {
 		return workspace.ErrConflict
 	}
@@ -105,10 +115,10 @@ func (store *InventoryStore) RetryApprovalNotification(ctx context.Context, reci
 	}
 	tag, err := store.pool.Exec(ctx, `UPDATE muster_approval_notifications
 		SET next_attempt_at=clock_timestamp()+LEAST(60,1 << LEAST(attempts,6))*interval '1 second',
-			attempts=LEAST(attempts+1,6),lease=NULL,lease_until=NULL,leased_status=NULL
+			attempts=LEAST(attempts+1,6),lease=NULL,lease_until=NULL,leased_status=NULL,leased_waiting_device=false
 		WHERE approval_id=$1 AND app_id=$2 AND open_id=$3 AND lease=$4 AND lease_until>clock_timestamp()
-		AND leased_status=$5 AND COALESCE(message_id,'')=$6`,
-		delivery.Approval.ID, recipient.AppID, recipient.OpenID, delivery.Lease, delivery.Approval.Status, delivery.MessageID)
+		AND leased_status=$5 AND COALESCE(message_id,'')=$6 AND leased_waiting_device=$7`,
+		delivery.Approval.ID, recipient.AppID, recipient.OpenID, delivery.Lease, delivery.Approval.Status, delivery.MessageID, delivery.Approval.WaitingDevice)
 	if err == nil && tag.RowsAffected() == 0 {
 		return workspace.ErrConflict
 	}
@@ -124,8 +134,8 @@ func (store *InventoryStore) AnswerApprovalFromIM(ctx context.Context, recipient
 	err = store.writeWorkspace(ctx, func(tx pgx.Tx) error {
 		value, err = scanApproval(tx.QueryRow(ctx, "SELECT "+approvalColumns+`
 			JOIN muster_approval_notifications n ON n.approval_id=a.id
-			WHERE n.app_id=$1 AND n.open_id=$2 AND n.message_id=$3 AND ($4='' OR a.id=$4)`,
-			recipient.AppID, recipient.OpenID, reply.MessageID, reply.ApprovalID))
+			WHERE n.app_id=$2 AND n.open_id=$3 AND n.message_id=$4 AND ($5='' OR a.id=$5)`,
+			registry.OnlineWindow.Seconds(), recipient.AppID, recipient.OpenID, reply.MessageID, reply.ApprovalID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return im.ErrReplyUnavailable
 		}
@@ -143,7 +153,7 @@ func (store *InventoryStore) AnswerApprovalFromIM(ctx context.Context, recipient
 		if err != nil {
 			return err
 		}
-		return saveApprovalAnswer(ctx, tx, &value, answer)
+		return saveApprovalAnswer(ctx, tx, &value, answer, approvalResponder{channel: "feishu", appID: recipient.AppID, openID: recipient.OpenID})
 	})
 	if errors.Is(err, workspace.ErrConflict) || errors.Is(err, registry.ErrNotFound) || errors.Is(err, workspace.ErrInvalidApproval) {
 		err = im.ErrReplyUnavailable

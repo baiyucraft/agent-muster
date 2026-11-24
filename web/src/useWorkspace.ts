@@ -67,6 +67,14 @@ export function useWorkspace(token: string, onLock: (reason: string) => void) {
     refresh()
   }, [refresh])
 
+  const hasAnsweredApproval = workspace?.approvals.some((approval) => approval.status === 'answered') ?? false
+  useEffect(() => {
+    if (!hasAnsweredApproval || streamState !== 'live') return
+    // 设备心跳和离线超时不产生工作区事件。请示仍待处理时定期刷新快照。
+    const timer = window.setInterval(refresh, 15_000)
+    return () => window.clearInterval(timer)
+  }, [hasAnsweredApproval, streamState, refresh])
+
   useEffect(() => {
     const controller = new AbortController()
     const { signal } = controller

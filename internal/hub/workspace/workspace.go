@@ -223,6 +223,8 @@ type Approval struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	AnsweredAt *time.Time `json:"answered_at,omitempty"`
 	HandledAt  *time.Time `json:"handled_at,omitempty"`
+	// WaitingDevice 说明首答已保存，原会话续接尚未被离线设备领取。
+	WaitingDevice bool `json:"waiting_device,omitempty"`
 }
 
 // Snapshot 是工作区在同一事件游标位置上的对话、任务、项目和目录快照。

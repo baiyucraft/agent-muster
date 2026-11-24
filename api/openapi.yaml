@@ -1936,6 +1936,9 @@ components:
           type: string
           enum: [pending, answered, handled, cancelled]
           description: 分别表示待答复、答复已保存、设备已处理和请示已取消。
+        waiting_device:
+          type: boolean
+          description: 为 true 时，答复已保存，当前续接轮次仍在排队，等待设备上线。设备心跳变化不会推进工作区游标。
         answer: { type: string }
         created_at: { type: string, format: date-time }
         answered_at: { type: string, format: date-time }

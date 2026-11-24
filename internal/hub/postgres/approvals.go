@@ -4,23 +4,33 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/baiyucraft/agent-muster/internal/approval"
+	"github.com/baiyucraft/agent-muster/internal/hub/registry"
 	"github.com/baiyucraft/agent-muster/internal/hub/workspace"
 	"github.com/jackc/pgx/v5"
 )
 
+// approvalWaitingDevice 判断确实可继续排程、但尚未被离线设备领取的答复续接。
+// $1 使用设备清单的在线窗口（秒），时间取自本条语句。
+const approvalWaitingDevice = `COALESCE(a.cancelled_at IS NULL AND a.handled_at IS NULL AND a.answered_at IS NOT NULL
+	AND t.status='queued' AND t.control_mode='' AND t.current_run_id=resume.id AND resume.status='queued' AND resume.claimed_at IS NULL
+	AND d.device_id IS NOT NULL AND d.revoked_at IS NULL
+	AND (d.last_seen_at IS NULL OR d.last_seen_at<=statement_timestamp()-($1::double precision*interval '1 second')),false)`
+
+const approvalFrom = ` FROM muster_approvals a JOIN muster_tasks t ON t.id=a.task_id
+	LEFT JOIN muster_runs resume ON resume.id=a.resume_run_id
+	LEFT JOIN muster_devices d ON d.device_id=resume.device_id`
+
 const approvalColumns = `a.id,a.task_id,t.root_id,a.run_id,a.question,a.options,a.impact,
 	CASE WHEN a.cancelled_at IS NOT NULL THEN 'cancelled' WHEN a.handled_at IS NOT NULL THEN 'handled'
 		WHEN a.answered_at IS NOT NULL THEN 'answered' ELSE 'pending' END,
-	a.answer,a.created_at,a.answered_at,a.handled_at
-	FROM muster_approvals a JOIN muster_tasks t ON t.id=a.task_id`
+	a.answer,a.created_at,a.answered_at,a.handled_at,` + approvalWaitingDevice + approvalFrom
 
 func scanApproval(row pgx.Row) (value workspace.Approval, err error) {
 	err = row.Scan(&value.ID, &value.TaskID, &value.RootTaskID, &value.RunID, &value.Question, &value.Options,
-		&value.Impact, &value.Status, &value.Answer, &value.CreatedAt, &value.AnsweredAt, &value.HandledAt)
+		&value.Impact, &value.Status, &value.Answer, &value.CreatedAt, &value.AnsweredAt, &value.HandledAt, &value.WaitingDevice)
 	return value, err
 }
 
@@ -54,7 +64,7 @@ func (store *InventoryStore) recordApproval(ctx context.Context, tx pgx.Tx, run 
 	return err
 }
 
-// AnswerApproval 在同一事务内保存首个答复并安排原生会话续接。
+// AnswerApproval 为已认证的 Web 管理员保存首个答复并在同一事务内安排原生会话续接。
 // 同一请示的后续有效提交返回已保存的答复，不再生成运行或游标。
 func (store *InventoryStore) AnswerApproval(ctx context.Context, id, answer string) (value workspace.Approval, err error) {
 	answer, err = normalizeApprovalAnswer(answer)
@@ -62,11 +72,11 @@ func (store *InventoryStore) AnswerApproval(ctx context.Context, id, answer stri
 		return value, err
 	}
 	err = store.writeWorkspace(ctx, func(tx pgx.Tx) error {
-		value, err = scanApproval(tx.QueryRow(ctx, "SELECT "+approvalColumns+" WHERE a.id=$1", id))
+		value, err = scanApproval(tx.QueryRow(ctx, "SELECT "+approvalColumns+" WHERE a.id=$2", registry.OnlineWindow.Seconds(), id))
 		if err != nil {
 			return notFound(err)
 		}
-		return saveApprovalAnswer(ctx, tx, &value, answer)
+		return saveApprovalAnswer(ctx, tx, &value, answer, approvalResponder{channel: "web"})
 	})
 	return value, err
 }
@@ -82,8 +92,13 @@ func normalizeApprovalAnswer(answer string) (string, error) {
 	return answer, nil
 }
 
+// approvalResponder 来自已认证的管理端或已核验消息绑定的飞书账号。
+type approvalResponder struct {
+	channel, appID, openID string
+}
+
 // saveApprovalAnswer 由 Web 和 IM 共用，调用方须持有工作区写入锁并已验证答复。
-func saveApprovalAnswer(ctx context.Context, tx pgx.Tx, value *workspace.Approval, answer string) error {
+func saveApprovalAnswer(ctx context.Context, tx pgx.Tx, value *workspace.Approval, answer string, responder approvalResponder) error {
 	if value.Status == "cancelled" {
 		return workspace.ErrConflict
 	}
@@ -116,18 +131,21 @@ func saveApprovalAnswer(ctx context.Context, tx pgx.Tx, value *workspace.Approva
 		SET status='queued',current_run_id=$2,updated_at=clock_timestamp() WHERE id=$1`, value.TaskID, runID); err != nil {
 		return err
 	}
-	var answeredAt time.Time
-	if err := tx.QueryRow(ctx, `UPDATE muster_approvals
-			SET answer=$2,resume_run_id=$3,answered_at=clock_timestamp()
-			WHERE id=$1 RETURNING answered_at`, value.ID, answer, runID).Scan(&answeredAt); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE muster_approvals
+			SET answer=$2,resume_run_id=$3,answered_at=clock_timestamp(),
+				answered_via=$4,answered_app_id=NULLIF($5,''),answered_open_id=NULLIF($6,'')
+			WHERE id=$1`, value.ID, answer, runID, responder.channel, responder.appID, responder.openID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE muster_approval_notifications SET desired_status='answered',
 		next_attempt_at=clock_timestamp() WHERE approval_id=$1`, value.ID); err != nil {
 		return err
 	}
-	value.Answer, value.AnsweredAt, value.Status = answer, &answeredAt, "answered"
 	if err := reconcileCenterGroupForStep(ctx, tx, value.TaskID); err != nil {
+		return err
+	}
+	*value, err = scanApproval(tx.QueryRow(ctx, "SELECT "+approvalColumns+" WHERE a.id=$2", registry.OnlineWindow.Seconds(), value.ID))
+	if err != nil {
 		return err
 	}
 	return advanceWorkspace(ctx, tx)

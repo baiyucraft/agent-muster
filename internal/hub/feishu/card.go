@@ -23,6 +23,9 @@ func renderCard(a workspace.Approval) (string, error) {
 		title, theme = "待答复", "blue"
 	case "answered":
 		title, theme = "已答复", "green"
+		if a.WaitingDevice {
+			title = "已答复，等待设备上线"
+		}
 	case "handled":
 		title, theme = "已处理", "grey"
 	case "cancelled":
