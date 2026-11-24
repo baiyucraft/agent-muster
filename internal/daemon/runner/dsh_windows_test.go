@@ -48,18 +48,25 @@ func TestJobRunsWithBoundDirectoryAndPromptOnStdin(t *testing.T) {
 	}
 }
 
-func TestJobCancellationWaitsForNativeProcessTree(t *testing.T) {
+func TestJobWaitsForNativeProcessTree(t *testing.T) {
+	for _, mode := range []string{"exit", "cancel"} {
+		t.Run(mode, func(t *testing.T) { verifyJobExit(t, mode) })
+	}
+}
+
+func verifyJobExit(t *testing.T, mode string) {
+	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(executable, "-test.run=^TestJobProcessFixture$")
 	cmd.Dir = t.TempDir()
-	cmd.Env = append(cmd.Environ(), "MUSTER_JOB_FIXTURE=parent")
+	cmd.Env = append(cmd.Environ(), "MUSTER_JOB_FIXTURE=parent-"+mode)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	var child windows.Handle
-	_, err = runInJob(ctx, cmd, "", func() error { return nil }, func(reader io.Reader) error {
+	code, err := runInJob(ctx, cmd, "", func() error { return nil }, func(reader io.Reader) error {
 		pidText, err := bufio.NewReader(reader).ReadString('\n')
 		if err != nil {
 			return err
@@ -69,15 +76,26 @@ func TestJobCancellationWaitsForNativeProcessTree(t *testing.T) {
 			return err
 		}
 		child, err = windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
-		cancel()
-		return err
+		if err != nil {
+			return err
+		}
+		if mode == "cancel" {
+			cancel()
+			return nil
+		}
+		// 先持有子进程的观察句柄，再允许主进程正常退出。
+		return os.WriteFile(filepath.Join(cmd.Dir, "child-observed"), nil, 0600)
 	})
 	if child == 0 {
 		t.Fatalf("未取得子进程句柄：%v", err)
 	}
 	defer windows.CloseHandle(child)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("进程树取消返回 %v", err)
+	if mode == "cancel" {
+		if !errors.Is(err, context.Canceled) || errors.Is(err, ErrProcessExitUnconfirmed) {
+			t.Fatalf("进程树取消返回 %v", err)
+		}
+	} else if code != 0 || err != nil {
+		t.Fatalf("主进程正常退出时返回退出码 %d 和错误 %v", code, err)
 	}
 	state, waitErr := windows.WaitForSingleObject(child, 0)
 	if waitErr != nil || state != windows.WAIT_OBJECT_0 {
@@ -129,7 +147,7 @@ func TestJobProcessFixture(t *testing.T) {
 		fmt.Fprint(os.Stderr, "设备本机 stderr\n")
 		fmt.Fprint(os.Stdout, strings.Repeat("本机 stdout\n", 1024))
 		os.Exit(7)
-	case "parent":
+	case "parent-exit", "parent-cancel":
 		// 子进程不继承本轮的标准流，单凭管道 EOF 无法证明它已退出。
 		child := exec.Command(os.Args[0], "-test.run=^TestJobProcessFixture$")
 		child.Env = append(child.Environ(), "MUSTER_JOB_FIXTURE=child")
@@ -138,6 +156,16 @@ func TestJobProcessFixture(t *testing.T) {
 			os.Exit(1)
 		}
 		fmt.Println(child.Process.Pid)
+		if os.Getenv("MUSTER_JOB_FIXTURE") == "parent-exit" {
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				if _, err := os.Stat("child-observed"); err == nil {
+					os.Exit(0)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			os.Exit(1)
+		}
 		time.Sleep(20 * time.Second)
 	case "child":
 		time.Sleep(20 * time.Second)

@@ -83,19 +83,20 @@ func runInJobWithStderr(ctx context.Context, cmd *exec.Cmd, prompt string, start
 	if err != nil {
 		return 0, fmt.Errorf("无法启动 Agent 进程: %w", err)
 	}
-	defer windows.CloseHandle(process.Process)
-	defer windows.CloseHandle(process.Thread)
 	stdinR.Close()
 	stdoutW.Close()
 	stderrW.Close()
-	if err := started(); err != nil {
-		return 0, errors.Join(err, stopProcessTree(job))
+	startErr := started()
+	if startErr == nil {
+		startErr = ctx.Err()
 	}
-	if err := ctx.Err(); err != nil {
-		return 0, errors.Join(err, stopProcessTree(job))
+	if startErr == nil {
+		_, startErr = windows.ResumeThread(process.Thread)
 	}
-	if _, err := windows.ResumeThread(process.Thread); err != nil {
-		return 0, errors.Join(err, stopProcessTree(job))
+	windows.CloseHandle(process.Thread)
+	if startErr != nil {
+		windows.CloseHandle(process.Process)
+		return 0, errors.Join(startErr, stopProcessTree(job))
 	}
 	processCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -138,11 +139,14 @@ func runInJobWithStderr(ctx context.Context, cmd *exec.Cmd, prompt string, start
 		}
 		output <- err
 	}()
-	waitErr := waitProcess(processCtx, process.Process)
-	// 主进程退出或被取消时，先处理仍持有本轮资源的子进程，再收回管道。
-	treeErr := stopProcessTree(job)
 	var exitCode uint32
-	exitErr := windows.GetExitCodeProcess(process.Process, &exitCode)
+	exitErr := waitProcess(processCtx, process.Process)
+	if exitErr == nil {
+		exitErr = windows.GetExitCodeProcess(process.Process, &exitCode)
+	}
+	// 释放本轮的主进程引用，使 Job 计数能够在进程退出后归零。
+	windows.CloseHandle(process.Process)
+	treeErr := stopProcessTree(job)
 	if treeErr != nil {
 		// 无法确认子进程退出时关闭本端管道，避免遗留进程占用管道阻塞设备。
 		_ = stdoutR.Close()
@@ -166,7 +170,7 @@ func runInJobWithStderr(ctx context.Context, cmd *exec.Cmd, prompt string, start
 		switch {
 		case treeErr != nil || ctx.Err() != nil:
 			capture.report.ErrorKind = "interrupted"
-		case waitErr != nil || exitErr != nil || outputErr != nil || inputErr != nil:
+		case exitErr != nil || outputErr != nil || inputErr != nil:
 			capture.report.ErrorKind = "output"
 		case exitCode != 0:
 			capture.report.ErrorKind = "native_exit"
@@ -179,10 +183,14 @@ func runInJobWithStderr(ctx context.Context, cmd *exec.Cmd, prompt string, start
 	if err := ctx.Err(); err != nil {
 		return exitCode, err
 	}
+	// 读取输出失败也会停止进程，只向调用方返回实际的读写错误。
+	if errors.Is(exitErr, context.Canceled) {
+		exitErr = nil
+	}
 	if capture != nil {
 		stderrErr = nil
 	}
-	return exitCode, errors.Join(waitErr, exitErr, outputErr, inputErr, stderrErr)
+	return exitCode, errors.Join(outputErr, inputErr, stderrErr, exitErr)
 }
 
 func waitProcess(ctx context.Context, process windows.Handle) error {
@@ -198,7 +206,7 @@ func waitProcess(ctx context.Context, process windows.Handle) error {
 			return fmt.Errorf("无法确认 Agent 退出状态 (%d)", state)
 		}
 	}
-	return nil
+	return ctx.Err()
 }
 
 // stopProcessTree 只终止本轮持有的 Job Object，并等待确认进程树退出。
@@ -212,14 +220,23 @@ func stopProcessTree(job windows.Handle) error {
 	if limitErr == nil {
 		members, listErr = openJobMembers(job)
 	}
+	terminateErr := windows.TerminateJobObject(job, 1)
+	deadline := time.Now().Add(5 * time.Second)
+	if listErr != nil && limitErr == nil && terminateErr == nil {
+		for _, member := range members {
+			windows.CloseHandle(member)
+		}
+		if err := waitForEmptyJob(job, deadline); err != nil {
+			return errors.Join(ErrProcessExitUnconfirmed, listErr, err)
+		}
+		return nil
+	}
 	for _, member := range members {
 		defer windows.CloseHandle(member)
 	}
-	terminateErr := windows.TerminateJobObject(job, 1)
 	if err := errors.Join(limitErr, listErr, terminateErr); err != nil {
 		return errors.Join(ErrProcessExitUnconfirmed, err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
 	for _, member := range members {
 		timeout := uint32(max(0, time.Until(deadline).Milliseconds()))
 		state, err := windows.WaitForSingleObject(member, timeout)
@@ -228,6 +245,31 @@ func stopProcessTree(job windows.Handle) error {
 		}
 	}
 	return nil
+}
+
+// waitForEmptyJob 供已禁止新增进程并成功终止的 Job 使用。内核释放全部进程关联后计数才归零。
+func waitForEmptyJob(job windows.Handle, deadline time.Time) error {
+	// 字段布局对应 Windows JOBOBJECT_BASIC_ACCOUNTING_INFORMATION。
+	var accounting struct {
+		TotalUserTime, TotalKernelTime                     int64
+		ThisPeriodTotalUserTime, ThisPeriodTotalKernelTime int64
+		TotalPageFaultCount, TotalProcesses                uint32
+		ActiveProcesses, TotalTerminatedProcesses          uint32
+	}
+	for {
+		if err := windows.QueryInformationJobObject(job, windows.JobObjectBasicAccountingInformation,
+			uintptr(unsafe.Pointer(&accounting)), uint32(unsafe.Sizeof(accounting)), nil); err != nil {
+			return fmt.Errorf("无法读取 Job 活动进程计数: %w", err)
+		}
+		if accounting.ActiveProcesses == 0 {
+			return nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("Job 仍有 %d 个活动进程关联", accounting.ActiveProcesses)
+		}
+		time.Sleep(min(remaining, 20*time.Millisecond))
+	}
 }
 
 var isProcessInJob = windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
@@ -251,7 +293,7 @@ func openJobMembers(job windows.Handle) ([]windows.Handle, error) {
 		}
 		header = *(*processListHeader)(unsafe.Pointer(&buffer[0]))
 		if header.Listed > uint32(capacity) || header.Assigned != header.Listed {
-			continue
+			return nil, fmt.Errorf("Job 进程清单不完整，已分配 %d，已列出 %d", header.Assigned, header.Listed)
 		}
 		members := make([]windows.Handle, 0, header.Listed)
 		for _, pid := range buffer[headerSlots : headerSlots+int(header.Listed)] {
