@@ -105,15 +105,16 @@ func (worker *Worker) verifyGitCandidate(ctx context.Context, checkout gitwork.W
 		return evidence, "", nil
 	}
 	evidence.ReviewAgent = run.GitPolicy.ReviewAgent
-	attempt, feedback, err := worker.runGitReview(ctx, checkout, run, acceptance, execute, runreport.ReviewAttempt{
+	attempt, feedback, err := worker.runGitReview(ctx, checkout, run, acceptance, *test.ExitCode, execute, runreport.ReviewAttempt{
 		CandidateOID: candidate, RepairIndex: repairs, AgentKind: evidence.ReviewAgent, Status: "unverified",
 	})
 	evidence.ReviewStatus = attempt.Status
 	return evidence, feedback, err
 }
 
-// runGitReview 为候选创建独立 CLI 诊断。仅在 Git 工作树和候选重核通过后确认审查结论。
-func (worker *Worker) runGitReview(ctx context.Context, checkout gitwork.Workspace, run control.Run, acceptance string, execute agentExecutor, attempt runreport.ReviewAttempt) (runreport.ReviewAttempt, string, error) {
+// runGitReview 在新会话中审查候选，测试证据仅包含该候选的退出码。
+// Git 工作树和候选重核通过后才确认审查结论。
+func (worker *Worker) runGitReview(ctx context.Context, checkout gitwork.Workspace, run control.Run, acceptance string, testExitCode uint32, execute agentExecutor, attempt runreport.ReviewAttempt) (runreport.ReviewAttempt, string, error) {
 	reviewCtx, invocation, readDiagnostics := runner.WithReviewDiagnostics(ctx, worker.runLogDirectory(run.ID))
 	if run.ReviewDiagnosticsSupported {
 		attempt.LogInvocation = invocation
@@ -125,7 +126,10 @@ func (worker *Worker) runGitReview(ctx context.Context, checkout gitwork.Workspa
 	var invocationErr error
 	var reviewStatus, feedback string
 	err := checkout.Review(reviewCtx, attempt.CandidateOID, func(ctx context.Context, dir, base, sha string) error {
-		prompt := fmt.Sprintf("独立审查候选提交 %s 相对基线 %s 的改动。验收要求如下。检查相关差异与风险，保持审查工作树原样。首行只使用 MUSTER_REVIEW_PASS 或 MUSTER_REVIEW_CHANGES，后者在后续行写明须修的问题。\n\n%s", sha, base, acceptance)
+		prompt := fmt.Sprintf("独立审查候选提交 %s 相对基线 %s 的改动。\n"+
+			"设备已在候选提交 %s 的独立工作区运行冻结的项目测试，退出码 %d。\n"+
+			"按下列验收要求检查差异与风险，保持审查工作树原样。首行只使用 MUSTER_REVIEW_PASS 或 MUSTER_REVIEW_CHANGES，后者在后续行写明须修的问题。\n\n%s",
+			sha, base, sha, testExitCode, acceptance)
 		var output string
 		output, invocationErr = execute(ctx, attempt.AgentKind, dir, prompt, "", nil, func() error { return nil }, func(string) error { return nil })
 		if invocationErr != nil {

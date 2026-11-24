@@ -87,8 +87,9 @@ func verifyGitPublication(t *testing.T, candidateCommit string) {
 	const messageID = "10000000-0000-4000-8000-000000000032"
 	const initial = "修复并推送示例"
 	const repairNote = "将样例改成 final candidate"
+	const localTestMarker = "local-fixture-review-evidence"
 	policy := &gitdelivery.Policy{BaseRef: "refs/heads/main", Remote: "origin", CandidateCommit: candidateCommit, ReviewAgent: "codex", MaxRepairs: 1,
-		Test: gitdelivery.Command{Program: "git", Args: []string{"diff", "--exit-code", "HEAD"}, TimeoutSeconds: 20}}
+		Test: gitdelivery.Command{Program: "git", Args: []string{"-c", "muster.testMarker=" + localTestMarker, "config", "--get", "muster.testMarker"}, TimeoutSeconds: 20}}
 	if _, err := store.SaveProject(ctx, workspace.Project{ID: projectID, Name: "Git fixture", AgentKind: "dsh",
 		DeviceID: identity.DeviceID, DirectoryID: dir.ID, GitPolicy: policy}); err != nil {
 		t.Fatal(err)
@@ -160,6 +161,10 @@ func verifyGitPublication(t *testing.T, candidateCommit string) {
 				if !strings.Contains(prompt, head) || !strings.Contains(prompt, base) || !strings.Contains(prompt, initial) {
 					return "", fmt.Errorf("Review 应收到候选提交、基线和验收要求")
 				}
+				testEvidence := "设备已在候选提交 " + head + " 的独立工作区运行冻结的项目测试，退出码 0。"
+				if !strings.Contains(prompt, testEvidence) || strings.Contains(prompt, localTestMarker) {
+					return "", fmt.Errorf("Review 应收到当前候选的测试退出码，且保留测试参数和原始日志在设备")
+				}
 				if reviews == 1 {
 					firstOID = head
 					return "MUSTER_REVIEW_CHANGES\n" + repairNote, nil
@@ -206,6 +211,12 @@ func verifyGitPublication(t *testing.T, candidateCommit string) {
 	logs, err := filepath.Glob(filepath.Join(worker.root, "git", taskID, "test-*", "output.log"))
 	if err != nil || len(logs) != 2 {
 		t.Fatalf("首次验证和返修应各有测试日志: %v，错误 %v", logs, err)
+	}
+	for _, log := range logs {
+		body, err := os.ReadFile(log)
+		if err != nil || !strings.Contains(string(body), localTestMarker) {
+			t.Fatalf("项目测试的完整输出应保存在设备日志，读取错误 %v", err)
+		}
 	}
 	for name, want := range map[string]string{"example.txt": "user changes\n", "draft.txt": "untracked user file\n"} {
 		if body, err := os.ReadFile(filepath.Join(root, name)); err != nil || string(body) != want {
