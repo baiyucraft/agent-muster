@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AdminTokenError, HubRequestError, request } from '../../api/devices'
+import { AdminSessionError, HubRequestError, request } from '../../api/request'
 import type { RunReviewAttempt } from '../../api/workspace'
 import { messageFor } from '../../useWorkspace'
 import { Time } from './Conversation'
@@ -23,11 +23,10 @@ const requestErrors: Record<number, string> = {
 
 /**
  * 按需读取已结束运行的设备日志，收起时释放正文。
- * @param props 管理员令牌、任务和运行标识、可选的 Review 调用引用及会话锁定回调。
+ * @param props 任务和运行标识、可选的 Review 调用引用及会话锁定回调。
  * @returns 按需展开的设备日志与读取错误。
  */
-export function RunLogs({ token, taskID, runID, invocation, onLock }: {
-  token: string
+export function RunLogs({ taskID, runID, invocation, onLock }: {
   taskID: string
   runID: string
   invocation?: RunReviewAttempt['log_invocation']
@@ -43,17 +42,17 @@ export function RunLogs({ token, taskID, runID, invocation, onLock }: {
     const controller = new AbortController()
     const path = `/api/v1/tasks/${encodeURIComponent(taskID)}/runs/${encodeURIComponent(runID)}/logs`
     const query = invocation ? `?${new URLSearchParams({ invocation })}` : ''
-    void request(token, path + query, { signal: controller.signal }, 15_000)
+    void request(path + query, { signal: controller.signal }, 15_000)
       .then((response) => response.json() as Promise<LogResult>)
       .then((data) => {
         if (!controller.signal.aborted) setResult(data)
       }).catch((failure: unknown) => {
         if (controller.signal.aborted) return
-        if (failure instanceof AdminTokenError) onLock(failure.message)
+        if (failure instanceof AdminSessionError) onLock(failure.message)
         else setError((failure instanceof HubRequestError && requestErrors[failure.status]) || messageFor(failure))
       })
     return () => controller.abort()
-  }, [open, retry, token, taskID, runID, invocation, onLock])
+  }, [open, retry, taskID, runID, invocation, onLock])
 
   function clearRead() {
     setResult(undefined)

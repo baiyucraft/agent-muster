@@ -21,11 +21,12 @@ import (
 	"github.com/baiyucraft/agent-muster/internal/inputreceipt"
 )
 
-// WorkspaceOptions 配置工作区存储和中心插件令牌。
+// WorkspaceOptions 配置工作区、中心插件令牌和管理员会话。
 // 令牌须通过格式校验，并与管理员令牌不同，工作区接口才能启用。
 type WorkspaceOptions struct {
 	Store       workspace.Store
 	PluginToken string
+	AdminAuth   AdminAuthOptions
 }
 
 type workspaceAPI struct {

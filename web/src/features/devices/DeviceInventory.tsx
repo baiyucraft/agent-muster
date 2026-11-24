@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { AdminTokenError, createPairingCode, readDevices, revokeDevice, type Agent, type Device, type Pairing } from '../../api/devices'
+import { createPairingCode, readDevices, revokeDevice, type Agent, type Device, type Pairing } from '../../api/devices'
+import { AdminSessionError } from '../../api/request'
 import './device-inventory.css'
 import { DeviceUpdates } from './DeviceUpdates'
 
@@ -22,7 +23,7 @@ const capabilityLabels = [
   ['resume', '续接会话'],
 ] as const
 
-export function DeviceInventory({ token, onLock }: { token: string; onLock: (error: string) => void }) {
+export function DeviceInventory({ onLock }: { onLock: (error: string) => void }) {
   const [devices, setDevices] = useState<Device[] | null>(null)
   const [loadError, setLoadError] = useState('')
   const [actionError, setActionError] = useState('')
@@ -39,13 +40,13 @@ export function DeviceInventory({ token, onLock }: { token: string; onLock: (err
 
     async function load() {
       try {
-        const snapshot = await readDevices(token, controller.signal)
+        const snapshot = await readDevices(controller.signal)
         if (controller.signal.aborted) return
         setDevices(snapshot)
         setLoadError('')
       } catch (error) {
         if (controller.signal.aborted) return
-        if (error instanceof AdminTokenError) {
+        if (error instanceof AdminSessionError) {
           onLock(error.message)
           return
         }
@@ -59,7 +60,7 @@ export function DeviceInventory({ token, onLock }: { token: string; onLock: (err
       controller.abort()
       window.clearTimeout(timer)
     }
-  }, [token, refresh, onLock])
+  }, [refresh, onLock])
 
   async function confirmRevocation(device: Device) {
     if (revocation.current || !window.confirm(`撤销「${device.name}」的接入权限？这台设备需要重新配对才能上报。`)) return
@@ -69,11 +70,11 @@ export function DeviceInventory({ token, onLock }: { token: string; onLock: (err
     setRevoking(true)
     setActionError('')
     try {
-      await revokeDevice(token, device.id, controller.signal)
+      await revokeDevice(device.id, controller.signal)
       if (!controller.signal.aborted) setRefresh((value) => value + 1)
     } catch (error) {
       if (controller.signal.aborted) return
-      if (error instanceof AdminTokenError) {
+      if (error instanceof AdminSessionError) {
         onLock(error.message)
       } else {
         setActionError(messageFor(error))
@@ -93,7 +94,7 @@ export function DeviceInventory({ token, onLock }: { token: string; onLock: (err
         <div><h1 id="device-heading">设备</h1>{devices && devices.length > 0 && <p className="view-count">{onlineCount} / {devices.length} 在线</p>}</div>
         <div className="form-actions">
           <button type="button" className="quiet-button" onClick={() => setRefresh((value) => value + 1)}>刷新</button>
-          <DevicePairing token={token} disabled={!devices} onLock={onLock} />
+          <DevicePairing disabled={!devices} onLock={onLock} />
         </div>
       </header>
       {actionError && <p className="read-error" role="alert">{actionError}</p>}
@@ -118,7 +119,7 @@ export function DeviceInventory({ token, onLock }: { token: string; onLock: (err
             </button>)}
           </section>
           <DeviceCard key={selected.id} device={selected} disabled={revoking} onRevoke={() => confirmRevocation(selected)}>
-            {!selected.revoked_at && selected.os === 'windows' && <DeviceUpdates token={token} deviceID={selected.id} onLock={onLock} />}
+            {!selected.revoked_at && selected.os === 'windows' && <DeviceUpdates deviceID={selected.id} onLock={onLock} />}
           </DeviceCard>
         </div>
       )}
@@ -133,7 +134,7 @@ function messageFor(error: unknown): string {
 }
 
 // 将配对请求与本次弹窗绑定。关闭或离开设备页时取消请求并清空表单。
-function DevicePairing({ token, disabled, onLock }: { token: string; disabled: boolean; onLock: (error: string) => void }) {
+function DevicePairing({ disabled, onLock }: { disabled: boolean; onLock: (error: string) => void }) {
   const [name, setName] = useState('')
   const [pairing, setPairing] = useState<Pairing | null>(null)
   const [generating, setGenerating] = useState(false)
@@ -163,7 +164,7 @@ function DevicePairing({ token, disabled, onLock }: { token: string; disabled: b
     setGenerating(true)
     setError('')
     try {
-      const next = await createPairingCode(token, deviceName, controller.signal)
+      const next = await createPairingCode(deviceName, controller.signal)
       if (controller.signal.aborted) return
       if (typeof next?.code !== 'string' || !next.code || !Number.isFinite(Date.parse(next.expires_at))) {
         throw new Error('Hub 返回了无法读取的配对码。')
@@ -171,7 +172,7 @@ function DevicePairing({ token, disabled, onLock }: { token: string; disabled: b
       setPairing(next)
     } catch (failure) {
       if (controller.signal.aborted) return
-      if (failure instanceof AdminTokenError) onLock(failure.message)
+      if (failure instanceof AdminSessionError) onLock(failure.message)
       else setError(messageFor(failure))
     } finally {
       if (!controller.signal.aborted) {

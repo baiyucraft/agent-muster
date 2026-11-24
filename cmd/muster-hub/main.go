@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -22,12 +23,18 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "admin" {
+		if err := runAdmin(os.Args[2:], os.Stdin, os.Stderr); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	address := flag.String("listen", "127.0.0.1:8080", "HTTP 监听地址")
 	webDir := flag.String("web-dir", "", "Web 构建产物目录")
 	version := flag.Bool("version", false, "显示版本")
 	flag.Parse()
 	if flag.NArg() != 0 {
-		log.Fatal("muster-hub 仅接受命令行选项")
+		log.Fatal("未知子命令，请使用 muster-hub admin -h 查看管理员命令")
 	}
 	if *version {
 		fmt.Println("muster-hub dev")
@@ -55,9 +62,20 @@ func serve(address, webDir string) error {
 	var store registry.Store
 	var workStore workspace.Store
 	var imStore im.Store
+	var auth httpapi.AdminAuthOptions
 	databaseURL := os.Getenv("MUSTER_DATABASE_URL")
 	adminToken := os.Getenv("MUSTER_ADMIN_TOKEN")
 	pluginToken := os.Getenv("MUSTER_DSH_PLUGIN_TOKEN")
+	if adminToken != "" && (databaseURL == "" || !httpapi.ValidAdminToken(adminToken)) {
+		return errors.New("启用管理员 API 令牌需要数据库连接和有效的 MUSTER_ADMIN_TOKEN")
+	}
+	if value := os.Getenv("MUSTER_ADMIN_COOKIE_SECURE"); value != "" {
+		secure, err := strconv.ParseBool(value)
+		if err != nil {
+			return errors.New("MUSTER_ADMIN_COOKIE_SECURE 须为 true 或 false")
+		}
+		auth.SecureCookie = secure
+	}
 	if pluginToken != "" && (!httpapi.ValidAdminToken(pluginToken) || pluginToken == adminToken || databaseURL == "") {
 		return errors.New("启用工作台需要数据库连接和独立的 MUSTER_DSH_PLUGIN_TOKEN")
 	}
@@ -65,10 +83,7 @@ func serve(address, webDir string) error {
 	if err != nil {
 		return err
 	}
-	if databaseURL != "" || adminToken != "" {
-		if databaseURL == "" || !httpapi.ValidAdminToken(adminToken) {
-			return errors.New("启用设备登记需要 MUSTER_DATABASE_URL 和有效的 MUSTER_ADMIN_TOKEN")
-		}
+	if databaseURL != "" {
 		initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		database, err := postgres.OpenInventory(initCtx, databaseURL)
 		cancel()
@@ -78,6 +93,7 @@ func serve(address, webDir string) error {
 		defer database.Close()
 		store = database
 		workStore = database
+		auth.Store = database
 		if feishuSecret != "" {
 			setup, finish := context.WithTimeout(ctx, 10*time.Second)
 			err := database.EnableApprovalNotifications(setup, recipient)
@@ -95,7 +111,7 @@ func serve(address, webDir string) error {
 	}
 	server := &http.Server{
 		Handler: httpapi.NewHandler(store, adminToken, web, httpapi.WorkspaceOptions{
-			Store: workStore, PluginToken: pluginToken,
+			Store: workStore, PluginToken: pluginToken, AdminAuth: auth,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,

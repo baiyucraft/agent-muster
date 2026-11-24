@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import musterIcon from '../../ui/muster-icon.svg'
-import { AdminTokenError, HubRequestError } from './api/devices'
+import { readAdminSession, signIn, signOut } from './api/auth'
+import { AdminSessionError, HubRequestError } from './api/request'
 import { answerApproval, approvalAnswerBytes, controlTask, decideBindingProposal, messageBytes, newID, sendMessage, withinTextLimit, type Task, type TaskControlRequest } from './api/workspace'
 import { DeviceInventory } from './features/devices/DeviceInventory'
 import type { ApprovalActions } from './features/workspace/ApprovalCard'
@@ -23,6 +24,11 @@ const views = [
 
 type View = typeof views[number]['id']
 
+type AdminSession =
+  | { state: 'checking' | 'active' }
+  | { state: 'signed-out', message?: string }
+  | { state: 'unavailable', message: string }
+
 function readRoute(): { view: View; taskID?: string } {
   const [page, taskID] = window.location.hash.slice(1).split('/')
   const view = views.find(({ id }) => id === page)?.id ?? 'conversation'
@@ -34,43 +40,92 @@ function Brand() {
 }
 
 export function App() {
-  const [token, setToken] = useState('')
-  const [draft, setDraft] = useState('')
-  const [authError, setAuthError] = useState('')
-  const lock = useCallback((reason = '') => {
-    setToken('')
-    setAuthError(reason)
+  const [session, setSession] = useState<AdminSession>({ state: 'checking' })
+  const [checks, setChecks] = useState(0)
+  const [signingIn, setSigningIn] = useState(false)
+  const [signInError, setSignInError] = useState('')
+  const [invalidCredentials, setInvalidCredentials] = useState(false)
+  const loginRequest = useRef<AbortController | null>(null)
+  const lock = useCallback((message?: string) => {
+    setSession({ state: 'signed-out', message })
   }, [])
 
-  function unlock(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    const controller = new AbortController()
+    const { signal } = controller
+    void readAdminSession(signal).then((active) => {
+      if (!signal.aborted) setSession({ state: active ? 'active' : 'signed-out' })
+    }).catch((failure: unknown) => {
+      if (!signal.aborted) setSession({ state: 'unavailable', message: messageFor(failure) })
+    })
+    return () => controller.abort()
+  }, [checks])
+  useEffect(() => () => loginRequest.current?.abort(), [])
+
+  async function submitLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const candidate = draft.trim()
-    if (!candidate) return
-    setToken(candidate)
-    setDraft('')
-    setAuthError('')
+    const form = event.currentTarget
+    if (loginRequest.current) return
+    const fields = new FormData(form)
+    const username = fields.get('username')
+    const password = fields.get('password')
+    if (typeof username !== 'string' || typeof password !== 'string') return
+
+    const controller = new AbortController()
+    loginRequest.current = controller
+    setSigningIn(true)
+    setInvalidCredentials(false)
+    setSignInError('')
+    lock()
+    try {
+      await signIn(username.trim(), password, controller.signal)
+      if (!controller.signal.aborted) setSession({ state: 'active' })
+    } catch (failure) {
+      if (controller.signal.aborted) return
+      setInvalidCredentials(failure instanceof AdminSessionError)
+      setSignInError(messageFor(failure))
+    } finally {
+      loginRequest.current = null
+      if (!controller.signal.aborted) setSigningIn(false)
+    }
   }
 
-  if (token) return <WorkspaceSession token={token} onLock={lock} />
+  if (session.state === 'active') return <WorkspaceSession onLock={lock} />
+
+  const loginMessage = signInError || (session.state === 'signed-out' ? session.message : '')
 
   return (
     <div className="workspace-login">
       <header><Brand /></header>
       <main className="workspace-login-main">
         <h1>进入工作台</h1>
-        <form className="token-form" onSubmit={unlock}>
-          <label htmlFor="admin-token">管理员令牌</label>
-          <input id="admin-token" type="password" value={draft} onChange={(event) => setDraft(event.target.value)} spellCheck={false} autoComplete="off" aria-invalid={authError ? true : undefined} aria-describedby={authError ? 'auth-error' : undefined} required />
-          {authError && <p id="auth-error" className="auth-error" role="alert">{authError}</p>}
-          <button type="submit" className="primary-button">解锁工作台</button>
-        </form>
+        {session.state === 'checking' && <p className="login-status" role="status">正在检查登录状态…</p>}
+        {session.state === 'unavailable' && <div className="login-form">
+          <p className="auth-error" role="alert">{session.message}</p>
+          <button type="button" className="primary-button" onClick={() => {
+            setSession({ state: 'checking' })
+            setChecks((previous) => previous + 1)
+          }}>重试</button>
+        </div>}
+        {session.state === 'signed-out' && <form className="login-form" method="post" onSubmit={submitLogin} aria-busy={signingIn}>
+          <label className="login-field">
+            用户名
+            <input name="username" autoComplete="username" autoCapitalize="none" spellCheck={false} readOnly={signingIn} aria-invalid={invalidCredentials || undefined} aria-describedby={invalidCredentials ? 'auth-error' : undefined} required />
+          </label>
+          <label className="login-field">
+            密码
+            <input name="password" type="password" autoComplete="current-password" readOnly={signingIn} aria-invalid={invalidCredentials || undefined} aria-describedby={invalidCredentials ? 'auth-error' : undefined} required />
+          </label>
+          {loginMessage && <p id="auth-error" className="auth-error" role="alert">{loginMessage}</p>}
+          <button type="submit" className="primary-button" disabled={signingIn}>{signingIn ? '登录中…' : '登录'}</button>
+        </form>}
       </main>
     </div>
   )
 }
 
-function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: string) => void }) {
-  const { workspace, streamState, error, refresh, acceptMessage, acceptApproval, acceptBindingProposal } = useWorkspace(token, onLock)
+function WorkspaceSession({ onLock }: { onLock: (reason?: string) => void }) {
+  const { workspace, streamState, error, refresh, acceptMessage, acceptApproval, acceptBindingProposal } = useWorkspace(onLock)
   const [route, setRoute] = useState(readRoute)
   const [draft, setDraft] = useState('')
   const [followTask, setFollowTask] = useState<Task>()
@@ -82,6 +137,9 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
   const [approvalSubmissions, setApprovalSubmissions] = useState<ApprovalActions['submissions']>(() => new Map())
   const taskControlRequests = useRef(new Map<string, AbortController>())
   const [taskControlSubmissions, setTaskControlSubmissions] = useState<TaskControlActions['submissions']>(() => new Map())
+  const logoutRequest = useRef<AbortController | null>(null)
+  const [signingOut, setSigningOut] = useState(false)
+  const [signOutError, setSignOutError] = useState('')
 
   useEffect(() => {
     const routeChanged = () => setRoute(readRoute())
@@ -89,6 +147,7 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
     return () => window.removeEventListener('hashchange', routeChanged)
   }, [])
   useEffect(() => () => sendingRequest.current?.abort(), [])
+  useEffect(() => () => logoutRequest.current?.abort(), [])
   useEffect(() => {
     const approvals = approvalRequests.current
     const controls = taskControlRequests.current
@@ -100,6 +159,23 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
     }
   }, [])
 
+  async function logout() {
+    if (logoutRequest.current) return
+    const controller = new AbortController()
+    logoutRequest.current = controller
+    setSigningOut(true)
+    setSignOutError('')
+    try {
+      await signOut(controller.signal)
+      if (!controller.signal.aborted) onLock()
+    } catch (failure) {
+      if (!controller.signal.aborted) setSignOutError(`退出登录失败。${messageFor(failure)}`)
+    } finally {
+      logoutRequest.current = null
+      if (!controller.signal.aborted) setSigningOut(false)
+    }
+  }
+
   async function submitApproval(id: string, value: string) {
     const answer = value.trim()
     const requests = approvalRequests.current
@@ -109,11 +185,11 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
     setApprovalSubmissions((current) => new Map(current).set(id, { pending: true, error: '' }))
     let submissionError = ''
     try {
-      const approval = await answerApproval(token, id, answer, controller.signal)
+      const approval = await answerApproval(id, answer, controller.signal)
       if (!controller.signal.aborted) acceptApproval(approval)
     } catch (failure) {
       if (controller.signal.aborted) return
-      if (failure instanceof AdminTokenError) onLock(failure.message)
+      if (failure instanceof AdminSessionError) onLock(failure.message)
       else submissionError = messageFor(failure)
     } finally {
       requests.delete(id)
@@ -143,7 +219,7 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
     setSending(true)
     setSendError('')
     try {
-      const message = await sendMessage(token, submission, controller.signal)
+      const message = await sendMessage(submission, controller.signal)
       if (controller.signal.aborted) return
       acceptMessage(message)
       setDraft('')
@@ -151,7 +227,7 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
       lastSubmission.current = undefined
     } catch (failure) {
       if (controller.signal.aborted) return
-      if (failure instanceof AdminTokenError) onLock(failure.message)
+      if (failure instanceof AdminSessionError) onLock(failure.message)
       else setSendError(messageFor(failure))
     } finally {
       sendingRequest.current = null
@@ -161,11 +237,11 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
 
   const submitBindingDecision: SubmitBindingDecision = async (id, decision, signal) => {
     try {
-      const proposal = await decideBindingProposal(token, id, decision, signal)
+      const proposal = await decideBindingProposal(id, decision, signal)
       if (!signal.aborted) acceptBindingProposal(proposal)
     } catch (failure) {
       if (signal.aborted) return
-      if (failure instanceof AdminTokenError) {
+      if (failure instanceof AdminSessionError) {
         onLock(failure.message)
         return
       }
@@ -181,13 +257,13 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
     requests.set(id, controller)
     setTaskControlSubmissions((current) => new Map(current).set(id, { pending: true, input }))
     try {
-      const result = await controlTask(token, id, input, controller.signal)
+      const result = await controlTask(id, input, controller.signal)
       if (controller.signal.aborted) return
       setTaskControlSubmissions((current) => new Map(current).set(id, { pending: false, input, result }))
       refresh()
     } catch (failure) {
       if (controller.signal.aborted) return
-      if (failure instanceof AdminTokenError) {
+      if (failure instanceof AdminSessionError) {
         onLock(failure.message)
         return
       }
@@ -221,13 +297,14 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
         </nav>
         <div className="workspace-actions">
           <span className="stream-indicator" data-state={streamState} role="status" title={streamLabel}><span>{streamLabel}</span></span>
-          <button type="button" className="quiet-button" onClick={() => onLock()}>锁定工作台</button>
+          <button type="button" className="quiet-button" onClick={() => void logout()} disabled={signingOut}>{signingOut ? '退出中…' : '退出登录'}</button>
         </div>
       </header>
 
       <main className="workspace-content" id="workspace-content">
+        {signOutError && <p className="read-error" role="alert">{signOutError}</p>}
         {route.view !== 'devices' && route.view !== 'usage' && error && <p className="read-error" role="status">{error}{workspace && ' 当前显示上次读取的状态。'}</p>}
-        {route.view === 'devices' && <DeviceInventory token={token} onLock={onLock} />}
+        {route.view === 'devices' && <DeviceInventory onLock={onLock} />}
         {route.view === 'conversation' && (
           <Conversation
             messages={workspace?.messages}
@@ -246,9 +323,9 @@ function WorkspaceSession({ token, onLock }: { token: string; onLock: (reason?: 
             onSubmit={submitMessage}
           />
         )}
-        {route.view === 'board' && <TaskBoard token={token} tasks={workspace?.tasks} approvals={workspace?.approvals ?? []} approvalActions={approvalActions} taskControlActions={taskControlActions} cursor={workspace?.cursor} taskID={route.taskID} onFollow={attachTask} onLock={onLock} onRefresh={refresh} />}
-        {route.view === 'projects' && <Projects token={token} workspace={workspace} onSaved={refresh} onLock={onLock} />}
-        {route.view === 'usage' && <DeviceUsage token={token} onLock={onLock} />}
+        {route.view === 'board' && <TaskBoard tasks={workspace?.tasks} approvals={workspace?.approvals ?? []} approvalActions={approvalActions} taskControlActions={taskControlActions} cursor={workspace?.cursor} taskID={route.taskID} onFollow={attachTask} onLock={onLock} onRefresh={refresh} />}
+        {route.view === 'projects' && <Projects workspace={workspace} onSaved={refresh} onLock={onLock} />}
+        {route.view === 'usage' && <DeviceUsage onLock={onLock} />}
       </main>
     </div>
   )

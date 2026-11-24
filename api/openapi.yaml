@@ -2,6 +2,10 @@ openapi: 3.1.0
 info:
   title: Agent Muster Hub
   version: 0.1.0
+  description: |
+    浏览器用管理员会话 Cookie 访问管理接口。以 Cookie 发起写操作以及调用登录、退出接口时，需使用工作台同源地址。
+    管理接口收到 Authorization 标头时，校验显式配置的管理员 Bearer 令牌。
+    设备与中心 dsh 插件使用各自的 Bearer 令牌。
 paths:
   /healthz:
     get:
@@ -19,11 +23,71 @@ paths:
                   status:
                     type: string
                     const: ok
+  /api/v1/auth/login:
+    post:
+      operationId: loginAdmin
+      summary: 校验管理员用户名和密码并创建 Web 会话
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [username, password]
+              properties:
+                username: { type: string, pattern: '^[A-Za-z0-9._-]{1,64}$' }
+                password:
+                  type: string
+                  format: password
+                  description: 12 至 1024 个 UTF-8 字节。
+      responses:
+        '204':
+          description: 登录成功
+          headers:
+            Set-Cookie:
+              description: 签发有效期为 24 小时的管理员会话 Cookie
+              schema: { type: string }
+        '400': { description: 无效的请求体 }
+        '401': { description: 用户名或密码无效，或凭据在签发会话前已重置 }
+        '403': { $ref: '#/components/responses/AdminOriginForbidden' }
+        '413': { description: 请求体超过 8 KiB }
+        '415': { description: 请求的媒体类型须为 application/json }
+        '429':
+          description: 登录请求过多，稍后再试
+          headers:
+            Retry-After:
+              description: 建议等待的秒数，来源限速时为 10，密码处理已满时为 1。
+              schema: { type: integer }
+        '503': { description: 管理员尚未初始化或 Hub 无法访问数据库 }
+  /api/v1/auth/session:
+    get:
+      operationId: getAdminSession
+      summary: 检查浏览器的管理员会话是否有效
+      security: [{ adminSession: [] }]
+      responses:
+        '204': { description: 会话有效 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/auth/logout:
+    post:
+      operationId: logoutAdmin
+      summary: 撤销当前管理员会话并清除 Cookie
+      security: [{ adminSession: [] }, {}]
+      responses:
+        '204':
+          description: 已退出，重复退出也返回成功
+          headers:
+            Set-Cookie:
+              description: 清除管理员会话 Cookie
+              schema: { type: string }
+        '403': { $ref: '#/components/responses/AdminOriginForbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/pairing-codes:
     post:
       operationId: createPairingCode
       summary: 为待配对的设备生成一个有效期为 10 分钟的一次性码
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       requestBody:
         required: true
         content:
@@ -47,6 +111,7 @@ paths:
                   expires_at: { type: string, format: date-time }
         '400': { description: 无效的设备名称或请求体 }
         '401': { description: 管理员凭据缺失或无效 }
+        '403': { $ref: '#/components/responses/AdminOriginForbidden' }
         '413': { description: 请求体超过 16 KiB }
         '415': { description: 请求的媒体类型须为 application/json }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -54,7 +119,7 @@ paths:
     get:
       operationId: listDevices
       summary: 列出已配对设备及其最近一次 Agent 探测结果
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       responses:
         '200':
           description: 设备清单，包括离线和已撤销设备
@@ -106,10 +171,11 @@ paths:
     delete:
       operationId: revokeDevice
       summary: 撤销设备凭据并保留已登记的设备和清单
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       responses:
         '204': { description: 设备已撤销，重复撤销同一设备也返回成功 }
         '401': { description: 管理员凭据缺失或无效 }
+        '403': { $ref: '#/components/responses/AdminOriginForbidden' }
         '404': { description: 设备 ID 无效或设备不存在 }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/devices/{device_id}/heartbeat:
@@ -150,7 +216,7 @@ paths:
     get:
       operationId: listDeviceUpdates
       summary: 查看设备端当前版本、指派版本和更新结果
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       responses:
         '200':
           description: 设备更新清单
@@ -170,7 +236,7 @@ paths:
     put:
       operationId: assignDeviceUpdate
       summary: 为设备指派签名发布清单，离线设备上线后领取
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       requestBody:
         required: true
         content:
@@ -191,6 +257,7 @@ paths:
               schema: { $ref: '#/components/schemas/DeviceUpdateState' }
         '400': { description: 无效的设备 ID、目标版本或清单地址 }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AdminOriginForbidden' }
         '404': { description: 设备不可用 }
         '409': { description: 设备正在切换版本，或请求与当前版本冲突 }
   /api/v1/devices/{device_id}/update/check:
@@ -235,7 +302,7 @@ paths:
   /api/v1/workspace:
     get:
       operationId: getWorkspace
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       responses:
         '200':
           description: 主对话、任务、请示、绑定提案、项目、目录和同一事务视图的事件游标
@@ -247,7 +314,7 @@ paths:
   /api/v1/workspace/usage:
     get:
       operationId: getDeviceUsage
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       responses:
         '200':
           description: 按项目和执行设备汇总已结束的设备运行，并单列中心 dsh 已完成投递的用量与覆盖轮数
@@ -259,7 +326,7 @@ paths:
   /api/v1/events:
     get:
       operationId: streamWorkspace
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       parameters:
         - { name: after, in: query, required: true, schema: { type: integer, format: int64, minimum: 0 } }
       responses:
@@ -276,7 +343,7 @@ paths:
     parameters: [{ $ref: '#/components/parameters/TaskID' }]
     get:
       operationId: getTask
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       responses:
         '200': { $ref: '#/components/responses/TaskDetail' }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -292,7 +359,7 @@ paths:
         schema: { $ref: '#/components/schemas/ReviewLogInvocation' }
     get:
       operationId: getRunLogs
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       description: 读取已领取且已退出运行的设备本地日志。Hub 等待回执最多 12 秒，正文仅转发给本次请求。
       responses:
         '200':
@@ -317,7 +384,7 @@ paths:
         schema: { $ref: '#/components/schemas/ArtifactID' }
     get:
       operationId: downloadArtifact
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       description: 从在线设备读取已登记的产物副本并在校验后转发。产物正文保留在设备，Hub 等待本次读取最多 45 秒，每次最多 32 MiB。
       responses:
         '200':
@@ -339,7 +406,7 @@ paths:
     parameters: [{ $ref: '#/components/parameters/TaskID' }]
     post:
       operationId: controlTask
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       requestBody:
         description: JSON 请求体不超过 16 KiB。
         required: true
@@ -360,6 +427,7 @@ paths:
               schema: { $ref: '#/components/schemas/Task' }
         '400': { description: 无效的任务 ID、操作或请求 ID }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AdminOriginForbidden' }
         '404': { description: 任务不存在 }
         '409': { description: 当前状态不可执行此操作，或同一请求 ID 已用于其他操作。 }
         '413': { description: 请求体超过大小上限 }
@@ -369,7 +437,7 @@ paths:
     parameters: [{ $ref: '#/components/parameters/TaskID' }]
     put:
       operationId: takeOverTask
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       requestBody:
         required: true
         content:
@@ -389,6 +457,7 @@ paths:
               schema: { $ref: '#/components/schemas/Task' }
         '400': { description: 无效的任务 ID、请求 ID 或摘要 }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AdminOriginForbidden' }
         '404': { description: 原任务不存在 }
         '409': { description: 当前状态不可接手，已有其他接手请求或摘要冲突。 }
         '413': { description: 请求体超过大小上限 }
@@ -399,7 +468,7 @@ paths:
       - { name: id, in: path, required: true, schema: { $ref: '#/components/schemas/ApprovalID' } }
     post:
       operationId: answerApproval
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       requestBody:
         description: JSON 请求体不超过 80 KiB。
         required: true
@@ -419,6 +488,7 @@ paths:
               schema: { $ref: '#/components/schemas/Approval' }
         '400': { description: 无效的请示 ID 或答复 }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AdminOriginForbidden' }
         '404': { description: 请示不存在 }
         '409': { description: 请示的任务状态与续接条件冲突 }
         '413': { description: 请求体超过大小上限 }
@@ -432,7 +502,7 @@ paths:
         schema: { $ref: '#/components/schemas/BindingProposalID' }
     put:
       operationId: decideBindingProposal
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       requestBody:
         required: true
         content:
@@ -451,6 +521,7 @@ paths:
               schema: { $ref: '#/components/schemas/BindingProposal' }
         '400': { description: 无效的提案 ID 或决定 }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AdminOriginForbidden' }
         '404': { description: 提案不存在 }
         '409': { description: 决定冲突，或目标设备、目录或 CLI 已不符合条件 }
         '413': { description: 请求体超过大小上限 }
@@ -461,7 +532,7 @@ paths:
       - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     put:
       operationId: saveProject
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       requestBody:
         required: true
         content:
@@ -475,12 +546,13 @@ paths:
               schema: { $ref: '#/components/schemas/Project' }
         '400': { description: 无效的绑定 }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AdminOriginForbidden' }
         '404': { description: 目录不存在或设备已撤销 }
         '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/conversation/messages:
     post:
       operationId: submitMessage
-      security: [{ adminBearer: [] }]
+      security: [{ adminSession: [] }, { adminBearer: [] }]
       requestBody:
         required: true
         content:
@@ -501,6 +573,7 @@ paths:
               schema: { $ref: '#/components/schemas/Message' }
         '400': { description: 无效消息 }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AdminOriginForbidden' }
         '404': { description: 追加要求关联的任务不存在 }
         '409': { description: 消息 ID 已存在且内容不同，或目标是组合根任务或正在取消的任务 }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -1526,10 +1599,15 @@ paths:
         '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
+    adminSession:
+      type: apiKey
+      in: cookie
+      name: muster_admin_session
+      description: Web 管理员会话。Cookie 作用于 /api/v1，为 HttpOnly 和 SameSite=Strict。使用 TLS 或 Hub 启用 MUSTER_ADMIN_COOKIE_SECURE 时设置 Secure。
     adminBearer:
       type: http
       scheme: bearer
-      description: Hub 配置的管理员令牌
+      description: 显式配置后允许管理脚本以管理员令牌访问管理接口
     deviceBearer:
       type: http
       scheme: bearer
@@ -1588,6 +1666,8 @@ components:
   responses:
     Unauthorized:
       description: 请求凭据缺失或无效
+    AdminOriginForbidden:
+      description: 浏览器写入请求来源无效
     TaskDetail:
       description: 任务、运行轮次和关联消息
       content:

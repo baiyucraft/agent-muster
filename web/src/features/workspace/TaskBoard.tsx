@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { AdminTokenError, HubRequestError, readDevices } from '../../api/devices'
+import { readDevices } from '../../api/devices'
+import { AdminSessionError, HubRequestError } from '../../api/request'
 import { latestApproval, readArtifact, readTask, type Approval, type Artifact, type InvocationDiagnostics, type Run, type RunReviewAttempt, type Task, type TaskDetail, type TaskInput, type Transfer } from '../../api/workspace'
 import { messageFor } from '../../useWorkspace'
 import { ApprovalCard, type ApprovalActions } from './ApprovalCard'
@@ -57,7 +58,6 @@ const inputReceiptText: Record<NonNullable<TaskInput['receipt_status']>, string>
 }
 
 type TaskBoardProps = {
-  token: string
   tasks?: Task[]
   approvals: Approval[]
   approvalActions: ApprovalActions
@@ -69,19 +69,19 @@ type TaskBoardProps = {
   onRefresh: () => void
 }
 
-export function TaskBoard({ token, tasks, approvals, approvalActions, taskControlActions, cursor, taskID, onFollow, onLock, onRefresh }: TaskBoardProps) {
+export function TaskBoard({ tasks, approvals, approvalActions, taskControlActions, cursor, taskID, onFollow, onLock, onRefresh }: TaskBoardProps) {
   const [deviceNames, setDeviceNames] = useState<Map<string, string>>(() => new Map())
   useEffect(() => {
     const controller = new AbortController()
-    void readDevices(token, controller.signal).then((devices) => {
+    void readDevices(controller.signal).then((devices) => {
       if (!controller.signal.aborted) setDeviceNames(new Map(devices.map((device) => [device.id, device.name])))
     }).catch((failure: unknown) => {
-      if (!controller.signal.aborted && failure instanceof AdminTokenError) onLock(failure.message)
+      if (!controller.signal.aborted && failure instanceof AdminSessionError) onLock(failure.message)
     })
     return () => controller.abort()
-  }, [token, onLock])
+  }, [onLock])
 
-  if (taskID) return <TaskDetails key={taskID} token={token} taskID={taskID} cursor={cursor} tasks={tasks} approvals={approvals}
+  if (taskID) return <TaskDetails key={taskID} taskID={taskID} cursor={cursor} tasks={tasks} approvals={approvals}
     approvalActions={approvalActions} taskControlActions={taskControlActions} deviceNames={deviceNames} onFollow={onFollow} onLock={onLock} onRefresh={onRefresh} />
 
   const roots = tasks?.filter((task) => !task.parent_task_id)
@@ -166,11 +166,11 @@ function ChildTasks({ tasks, deviceNames }: { tasks: Task[]; deviceNames?: Map<s
   ))}</div>
 }
 
-type TaskDetailsProps = Required<Pick<TaskBoardProps, 'token' | 'taskID' | 'onFollow' | 'onLock' | 'onRefresh'>> & Pick<TaskBoardProps, 'cursor' | 'tasks' | 'approvals' | 'approvalActions' | 'taskControlActions'> & {
+type TaskDetailsProps = Required<Pick<TaskBoardProps, 'taskID' | 'onFollow' | 'onLock' | 'onRefresh'>> & Pick<TaskBoardProps, 'cursor' | 'tasks' | 'approvals' | 'approvalActions' | 'taskControlActions'> & {
   deviceNames: Map<string, string>
 }
 
-function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskControlActions, taskID, deviceNames, onFollow, onLock, onRefresh }: TaskDetailsProps) {
+function TaskDetails({ cursor, tasks, approvals, approvalActions, taskControlActions, taskID, deviceNames, onFollow, onLock, onRefresh }: TaskDetailsProps) {
   const [detail, setDetail] = useState<TaskDetail>()
   const [runsOpen, setRunsOpen] = useState(false)
   const [error, setError] = useState('')
@@ -178,17 +178,17 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
 
   useEffect(() => {
     const controller = new AbortController()
-    void readTask(token, taskID, controller.signal).then((value) => {
+    void readTask(taskID, controller.signal).then((value) => {
       if (controller.signal.aborted) return
       setDetail(value)
       setError('')
     }).catch((failure: unknown) => {
       if (controller.signal.aborted) return
-      if (failure instanceof AdminTokenError) onLock(failure.message)
+      if (failure instanceof AdminSessionError) onLock(failure.message)
       else setError(messageFor(failure))
     })
     return () => controller.abort()
-  }, [token, taskID, cursor, onLock, retry])
+  }, [taskID, cursor, onLock, retry])
 
   const controlResult = taskControlActions.submissions.get(taskID)?.result
   const snapshotTask = tasks?.find((task) => task.id === taskID)
@@ -239,7 +239,7 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
             </>}
             <div><dt>更新时间</dt><dd><Time value={task.updated_at} /></dd></div>
           </dl>
-          {task.waiting_reason === 'session_unavailable' && <TaskTakeover token={token} taskID={taskID} allowed={detail.takeover_allowed === true && !error}
+          {task.waiting_reason === 'session_unavailable' && <TaskTakeover taskID={taskID} allowed={detail.takeover_allowed === true && !error}
             onRefresh={() => { setRetry((current) => current + 1); onRefresh() }} onLock={onLock} />}
           <TaskControls task={task} actions={taskControlActions} disabled={Boolean(error)} />
           {task.result && <div className="detail-result"><h2>结果</h2><p className="message-text">{task.result}</p></div>}
@@ -261,10 +261,10 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
             {run.session_id && <p><span>会话</span> <code>{run.session_id}</code></p>}
             <GitRunEvidence verification={run.git_verification} publication={run.git_publication} />
             <RunDiagnostics diagnostics={run.diagnostics} />
-            <RunReviewAttempts reviews={run.diagnostics?.reviews} token={token} taskID={taskID} runID={run.id}
+            <RunReviewAttempts reviews={run.diagnostics?.reviews} taskID={taskID} runID={run.id}
               logsEnabled={runsOpen && run.status !== 'queued' && run.status !== 'running'} onLock={onLock} />
             {runsOpen && run.status !== 'queued' && run.status !== 'running' &&
-              <RunLogs token={token} taskID={taskID} runID={run.id} onLock={onLock} />}
+              <RunLogs taskID={taskID} runID={run.id} onLock={onLock} />}
             {run.text && <p className="message-text">{run.text}</p>}
           </article>)}
         </details>}
@@ -304,7 +304,7 @@ function TaskDetails({ token, cursor, tasks, approvals, approvalActions, taskCon
             <p>第 {wait.generation} 次等待{wait.received_at && <> · <Time value={wait.received_at} /></>}</p>
           </article>)}
         </section>}
-        {detail.artifacts.length > 0 && <TaskArtifacts token={token} artifacts={detail.artifacts} deviceNames={deviceNames} onLock={onLock} />}
+        {detail.artifacts.length > 0 && <TaskArtifacts artifacts={detail.artifacts} deviceNames={deviceNames} onLock={onLock} />}
         {detail.transfers.length > 0 && <details className="task-detail-panel related-messages">
           <summary className="task-section-title">产物交接<span>{detail.transfers.length}</span></summary>
           <div className="transfer-list">{detail.transfers.map((transfer) => <article className="transfer-row" key={transfer.id}>
@@ -332,11 +332,10 @@ const artifactErrors: Partial<Record<number, string>> = {
 
 /**
  * 列出已登记产物，点击后以当前会话请求设备副本。离开详情时取消请求。
- * @param props 产物快照、设备名称和管理员会话凭据及锁定回调。
+ * @param props 产物快照、设备名称及会话失效后的处理回调。
  * @returns 带下载操作和逐项错误反馈的产物列表。
  */
-function TaskArtifacts({ token, artifacts, deviceNames, onLock }: {
-  token: string
+function TaskArtifacts({ artifacts, deviceNames, onLock }: {
   artifacts: Artifact[]
   deviceNames: Map<string, string>
   onLock: (reason: string) => void
@@ -353,7 +352,7 @@ function TaskArtifacts({ token, artifacts, deviceNames, onLock }: {
     setActive(artifact.id)
     setFailure(undefined)
     try {
-      const body = await readArtifact(token, artifact, controller.signal)
+      const body = await readArtifact(artifact, controller.signal)
       if (controller.signal.aborted) return
       const url = URL.createObjectURL(body)
       const link = document.createElement('a')
@@ -363,7 +362,7 @@ function TaskArtifacts({ token, artifacts, deviceNames, onLock }: {
       window.setTimeout(() => URL.revokeObjectURL(url), 30_000)
     } catch (error) {
       if (controller.signal.aborted) return
-      if (error instanceof AdminTokenError) onLock(error.message)
+      if (error instanceof AdminSessionError) onLock(error.message)
       else setFailure({ id: artifact.id, message: (error instanceof HubRequestError && artifactErrors[error.status]) || messageFor(error) })
     } finally {
       controllerRef.current = null
@@ -405,12 +404,11 @@ const gitPublicationStatus = {
 }
 /**
  * 展示每轮独立 Review 的候选、执行 Agent、诊断和本次调用日志。
- * @param props Review 记录、关联运行与令牌、外层展开状态及会话锁定回调。
+ * @param props Review 记录、关联运行、外层展开状态及会话失效后的处理回调。
  * @returns Review 证据列表，没有记录时返回空值。
  */
-function RunReviewAttempts({ reviews, token, taskID, runID, logsEnabled, onLock }: {
+function RunReviewAttempts({ reviews, taskID, runID, logsEnabled, onLock }: {
   reviews?: RunReviewAttempt[]
-  token: string
   taskID: string
   runID: string
   logsEnabled: boolean
@@ -434,7 +432,7 @@ function RunReviewAttempts({ reviews, token, taskID, runID, logsEnabled, onLock 
           </div>
           <RunDiagnostics diagnostics={review.diagnostics} />
           {logsEnabled && review.log_invocation && <RunLogs key={review.log_invocation}
-            token={token} taskID={taskID} runID={runID} invocation={review.log_invocation} onLock={onLock} />}
+            taskID={taskID} runID={runID} invocation={review.log_invocation} onLock={onLock} />}
         </article>
       ))}
     </section>

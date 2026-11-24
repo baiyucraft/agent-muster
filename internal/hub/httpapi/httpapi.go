@@ -35,6 +35,7 @@ var bearerPattern = regexp.MustCompile(`^[A-Za-z0-9._~+/-]+=*$`)
 type server struct {
 	store     registry.Store
 	adminHash [32]byte
+	auth      *adminAuth
 }
 
 // ValidAdminToken 校验管理员凭据能否用 HTTP Bearer 方式传输。
@@ -44,8 +45,13 @@ func ValidAdminToken(token string) bool {
 
 // NewHandler 配置健康检查、设备 API 和同源静态 Web 入口。store 为 nil 时仅启用健康检查与静态入口。
 func NewHandler(store registry.Store, adminToken string, web http.Handler, options ...WorkspaceOptions) http.Handler {
-	s := server{store: store, adminHash: sha256.Sum256([]byte(adminToken))}
+	var authOptions AdminAuthOptions
+	if len(options) != 0 {
+		authOptions = options[0].AdminAuth
+	}
+	s := server{store: store, adminHash: sha256.Sum256([]byte(adminToken)), auth: newAdminAuth(authOptions)}
 	api := http.NewServeMux()
+	s.auth.register(api)
 	api.HandleFunc("POST /api/v1/pairing-codes", s.admin(s.createPairing))
 	api.HandleFunc("POST /api/v1/devices/enroll", s.enroll)
 	api.HandleFunc("GET /api/v1/devices", s.admin(s.list))
@@ -102,7 +108,18 @@ func NewHandler(store registry.Store, adminToken string, web http.Handler, optio
 }
 
 func (s server) admin(next http.HandlerFunc) http.HandlerFunc {
+	withSession := s.auth.protect(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.auth.validate(r); err != nil {
+			writeAdminAuthError(w, err)
+			return
+		}
+		next(w, r)
+	})
 	return func(w http.ResponseWriter, r *http.Request) {
+		if len(r.Header.Values("Authorization")) == 0 {
+			withSession(w, r)
+			return
+		}
 		token := bearer(r)
 		hash := sha256.Sum256([]byte(token))
 		if token == "" || subtle.ConstantTimeCompare(hash[:], s.adminHash[:]) != 1 {

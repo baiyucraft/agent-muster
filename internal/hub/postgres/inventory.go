@@ -64,6 +64,9 @@ var addSessionRecovery string
 //go:embed migrations/021_approval_responder_and_card.sql
 var addApprovalResponderAndCard string
 
+//go:embed migrations/022_admin_auth.sql
+var createAdminAuthTables string
+
 // InventoryStore 使用 PostgreSQL 保存设备与工作区记录。
 type InventoryStore struct {
 	pool      *pgxpool.Pool
@@ -143,6 +146,9 @@ func OpenInventory(ctx context.Context, databaseURL string) (*InventoryStore, er
 			return err
 		}
 		if _, err := tx.Exec(ctx, addApprovalResponderAndCard, pgx.QueryExecModeSimpleProtocol); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, createAdminAuthTables, pgx.QueryExecModeSimpleProtocol); err != nil {
 			return err
 		}
 		return migrateQueuedManualRecoveries(ctx, tx)

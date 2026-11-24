@@ -1,7 +1,7 @@
 ---
 title: Docker Compose 自部署
 description: 启动、更新、备份和恢复中心服务与原生会话
-updated: 2026-11-23
+updated: 2026-11-24
 owner: project
 ---
 
@@ -17,7 +17,7 @@ umask 077
 cp .env.example .env
 ```
 
-分别运行 `openssl rand -hex 32` 生成 `MUSTER_ADMIN_TOKEN`、`MUSTER_DSH_PLUGIN_TOKEN` 和 `MUSTER_POSTGRES_PASSWORD`。前两项用于 Web 登录和中心插件访问，使用不同值。填写 `DEEPSEEK_API_KEY` 供中心 dsh 调用模型。设备上的 CLI 使用各自的模型设置。[环境变量模板](../../deploy/.env.example)
+分别运行 `openssl rand -hex 32` 生成 `MUSTER_DSH_PLUGIN_TOKEN` 和 `MUSTER_POSTGRES_PASSWORD`。填写 `DEEPSEEK_API_KEY` 供中心 dsh 调用模型。设备上的 CLI 使用各自的模型设置。[环境变量模板](../../deploy/.env.example)
 
 ```sh
 docker compose up -d --build
@@ -25,11 +25,25 @@ docker compose ps
 curl -fsS http://127.0.0.1:13011/healthz
 ```
 
-默认启动 Hub、中心 dsh 和 PostgreSQL。Hub 提供 API 与 Web，端口默认是 `13011`。在浏览器打开 `http://<服务器 IP>:13011` 并输入管理员令牌，设备使用同一个 Hub 地址配对。`MUSTER_BIND_ADDRESS` 可指定服务器的监听网卡，`MUSTER_HTTP_PORT` 可修改宿主机端口。HTTP 中的管理员令牌、配对码和设备令牌以明文传输，请在受信网络内访问，或由已有反向代理提供 HTTPS。只有 Hub 发布端口，中心 dsh 经内部网络访问 Hub。[默认入口](../../deploy/compose.yaml) · [内置数据库](../../deploy/compose.override.yaml)
+默认启动 Hub、中心 dsh 和 PostgreSQL。Hub 提供 API 与 Web，端口默认是 `13011`。`MUSTER_BIND_ADDRESS` 可指定服务器的监听网卡，`MUSTER_HTTP_PORT` 可修改宿主机端口。只有 Hub 发布端口，中心 dsh 经内部网络访问 Hub。[默认入口](../../deploy/compose.yaml) · [内置数据库](../../deploy/compose.override.yaml)
 
-Hub 启动时连接数据库并运行迁移。`/healthz` 返回 `{"status":"ok"}` 表示 HTTP 监听已启动。Compose 另检查数据库与 dsh 监听状态。实际确认中心插件和模型可用时，在工作台发一条普通消息，检查主对话是否收到回复。设备配对和任务交办见[双设备协作](INDEX.md#在-windows-上配置双设备协作)，飞书单聊见[飞书请示](INDEX.md#通过飞书答复同一请示)。
+Hub 启动时连接数据库并运行迁移。`/healthz` 返回 `{"status":"ok"}` 表示 HTTP 监听已启动。Compose 另检查数据库与 dsh 监听状态。创建管理员账号后，在工作台发一条普通消息，检查主对话是否收到回复。设备配对和任务交办见[双设备协作](INDEX.md#在-windows-上配置双设备协作)，飞书单聊见[飞书请示](INDEX.md#通过飞书答复同一请示)。
 
 `DSH_HOME` 是 `/var/lib/muster/dsh`，同一卷保存 `muster-center` profile、模型设置和原生会话。已有中心 dsh 设置可随会话卷备份或恢复。
+
+## 设置管理员账号
+
+首次部署或从旧版令牌登录升级后，在服务器上的 `deploy/` 目录运行以下命令，在终端输入并确认密码。用户名由 1 至 64 个英文字母、数字、点、下划线或连字符组成。密码长度为 12 至 1024 个 UTF-8 字节。
+
+```sh
+docker compose exec hub muster-hub admin set --username admin
+```
+
+在浏览器打开 `http://<服务器 IP>:13011` 并用新账号登录。设备使用同一个 Hub 地址配对。Web 会话自登录起有效 24 小时，刷新页面可继续使用，退出会撤销当前会话。忘记密码时可重新运行同一条命令，重置账号并撤销所有已签发的 Web 会话。
+
+已有设备继续使用各自的配对令牌，无需重新配对。中心 dsh 沿用 `MUSTER_DSH_PLUGIN_TOKEN`。如有使用旧管理员令牌的管理脚本，可在 Hub 保留 `MUSTER_ADMIN_TOKEN`，仅供管理 API 调用。
+
+HTTP 会明文传输密码、会话 Cookie、配对码和设备令牌，请在受信网络内使用。经 HTTPS 反向代理公开 Web 时，在 Hub 环境设置 `MUSTER_ADMIN_COOKIE_SECURE=true`，并让代理保留浏览器请求的 `Host`。如果代理对 Web 请求使用 HTTP Basic 认证，代理验完后应移除该请求的 Basic `Authorization` 标头，使 Hub 可以使用会话 Cookie。登录限速按 Hub 看见的直接连接来源计算，经同一代理访问会共用该来源的额度。
 
 ## 使用已有 PostgreSQL
 

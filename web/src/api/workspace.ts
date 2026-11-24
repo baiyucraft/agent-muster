@@ -1,4 +1,4 @@
-import { request } from './devices'
+import { request } from './request'
 
 /** 主对话中的消息，可能关联任务及中心 Agent 的处理状态。 */
 export type Message = {
@@ -296,12 +296,11 @@ export function withinTextLimit(value: string, maxBytes: number): boolean {
 
 /**
  * 读取带更新游标的工作区快照，补齐缺省列表。
- * @param token 当前管理员会话的令牌。
  * @param signal 终止快照请求。
  * @returns 游标校验成功的工作区快照。
  */
-export async function readWorkspace(token: string, signal: AbortSignal): Promise<Workspace> {
-  const response = await request(token, '/api/v1/workspace', { signal })
+export async function readWorkspace(signal: AbortSignal): Promise<Workspace> {
+  const response = await request('/api/v1/workspace', { signal })
   const snapshot = (await response.json()) as Workspace
   if (!Number.isSafeInteger(snapshot.cursor)) throw new Error('Hub 返回了无效的更新游标。')
   return {
@@ -312,13 +311,12 @@ export async function readWorkspace(token: string, signal: AbortSignal): Promise
 
 /**
  * 读取任务详情并将未提供的相关列表统一为空数组。
- * @param token 当前管理员会话的令牌。
  * @param id Hub 分配的任务 ID。
  * @param signal 终止详情请求。
  * @returns 任务、运行及关联记录。
  */
-export async function readTask(token: string, id: string, signal: AbortSignal): Promise<TaskDetail> {
-  const response = await request(token, `/api/v1/tasks/${encodeURIComponent(id)}`, { signal })
+export async function readTask(id: string, signal: AbortSignal): Promise<TaskDetail> {
+  const response = await request(`/api/v1/tasks/${encodeURIComponent(id)}`, { signal })
   const detail = (await response.json()) as TaskDetail
   return {
     ...detail, runs: detail.runs ?? [], messages: detail.messages ?? [], children: detail.children ?? [],
@@ -329,15 +327,14 @@ export async function readTask(token: string, id: string, signal: AbortSignal): 
 
 /**
  * 通过当前管理员会话取回设备上已登记的产物副本。
- * @param token 当前管理员会话的令牌。
  * @param artifact 详情快照中的产物身份和大小。
  * @param signal 可取消请求及响应读取。
  * @returns Hub 从执行设备取得并验证的文件内容。
  * @throws 设备离线、内容不可用、读取超时或响应大小不一致时拒绝。
  */
-export async function readArtifact(token: string, artifact: Artifact, signal: AbortSignal): Promise<Blob> {
+export async function readArtifact(artifact: Artifact, signal: AbortSignal): Promise<Blob> {
   const path = `/api/v1/runs/${encodeURIComponent(artifact.run_id)}/artifacts/${encodeURIComponent(artifact.id)}`
-  const response = await request(token, path, { signal }, 60_000)
+  const response = await request(path, { signal }, 60_000)
   const content = await response.blob()
   if (content.size !== artifact.size) throw new Error('收到的产物大小与登记记录不一致。')
   return content
@@ -345,14 +342,13 @@ export async function readArtifact(token: string, artifact: Artifact, signal: Ab
 
 /**
  * 请求 Hub 改变任务的调度状态。对运行中的任务，设备确认后才进入最终状态。
- * @param token 当前管理员会话的令牌。
  * @param id Hub 分配的任务 ID。
  * @param input 操作和用于重试去重的客户端请求 ID。
  * @param signal 停止等待响应。
  * @returns Hub 当前确认的任务记录。
  */
-export async function controlTask(token: string, id: string, input: TaskControlRequest, signal: AbortSignal): Promise<Task> {
-  const response = await request(token, `/api/v1/tasks/${encodeURIComponent(id)}/control`, {
+export async function controlTask(id: string, input: TaskControlRequest, signal: AbortSignal): Promise<Task> {
+  const response = await request(`/api/v1/tasks/${encodeURIComponent(id)}/control`, {
     signal,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -363,15 +359,14 @@ export async function controlTask(token: string, id: string, input: TaskControlR
 
 /**
  * 将管理员确认的摘要作为接手任务的新输入。
- * @param token 当前管理员会话的令牌。
  * @param id 原任务 ID。
  * @param input 接手摘要及重试沿用的提交 ID。
  * @param signal 停止等待 HTTP 响应。
  * @returns Hub 确认的新任务，同一次请求重试返回同一条记录。
  * @throws 原任务不可接手或提交内容冲突时请求失败。
  */
-export async function takeoverTask(token: string, id: string, input: TaskTakeoverRequest, signal: AbortSignal): Promise<Task> {
-  const response = await request(token, `/api/v1/tasks/${encodeURIComponent(id)}/takeover`, {
+export async function takeoverTask(id: string, input: TaskTakeoverRequest, signal: AbortSignal): Promise<Task> {
+  const response = await request(`/api/v1/tasks/${encodeURIComponent(id)}/takeover`, {
     signal,
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -382,14 +377,13 @@ export async function takeoverTask(token: string, id: string, input: TaskTakeove
 
 /**
  * 提交请示的答复。并发答复成功时，Hub 返回首条有效的已保存答复。
- * @param token 当前管理员会话的令牌。
  * @param id Hub 分配的请示 ID。
  * @param answer 去除首尾空白后的非空答复。
  * @param signal 终止等待 HTTP 响应。
  * @returns Hub 已保存的请示记录。
  */
-export async function answerApproval(token: string, id: string, answer: string, signal: AbortSignal): Promise<Approval> {
-  const response = await request(token, `/api/v1/approvals/${encodeURIComponent(id)}/answer`, {
+export async function answerApproval(id: string, answer: string, signal: AbortSignal): Promise<Approval> {
+  const response = await request(`/api/v1/approvals/${encodeURIComponent(id)}/answer`, {
     signal,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -400,15 +394,14 @@ export async function answerApproval(token: string, id: string, answer: string, 
 
 /**
  * 用管理员会话提交项目绑定提案的决定。
- * @param token 当前管理员会话的令牌。
  * @param id 独立提案的 ID。
  * @param decision 管理员选择接受或拒绝。
  * @param signal 停止等待 HTTP 响应。
  * @returns Hub 已保存的提案及决定。接受后携带创建的项目 ID。
  * @throws 提案被其他决定处理或绑定已不可用时返回冲突。
  */
-export async function decideBindingProposal(token: string, id: string, decision: BindingProposalDecision, signal: AbortSignal): Promise<BindingProposal> {
-  const response = await request(token, `/api/v1/binding-proposals/${encodeURIComponent(id)}/decision`, {
+export async function decideBindingProposal(id: string, decision: BindingProposalDecision, signal: AbortSignal): Promise<BindingProposal> {
+  const response = await request(`/api/v1/binding-proposals/${encodeURIComponent(id)}/decision`, {
     signal,
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -419,13 +412,12 @@ export async function decideBindingProposal(token: string, id: string, decision:
 
 /**
  * 提交一条带客户端 ID 的主对话消息，按需关联既有任务。
- * @param token 当前管理员会话的令牌。
  * @param input 待提交的消息 ID、文本和可选任务 ID。
  * @param signal 终止发送请求。
  * @returns Hub 受理后返回的消息记录。
  */
-export async function sendMessage(token: string, input: Pick<Message, 'id' | 'text' | 'task_id'>, signal: AbortSignal): Promise<Message> {
-  const response = await request(token, '/api/v1/conversation/messages', {
+export async function sendMessage(input: Pick<Message, 'id' | 'text' | 'task_id'>, signal: AbortSignal): Promise<Message> {
+  const response = await request('/api/v1/conversation/messages', {
     signal,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -436,14 +428,13 @@ export async function sendMessage(token: string, input: Pick<Message, 'id' | 'te
 
 /**
  * 写入指定项目及其执行绑定。
- * @param token 当前管理员会话的令牌。
  * @param id 要创建或更新的项目 ID。
  * @param input 项目信息及各执行目标。
  * @param signal 终止保存请求。
  * @returns Hub 保存后返回的项目。
  */
-export async function saveProject(token: string, id: string, input: ProjectInput, signal: AbortSignal): Promise<Project> {
-  const response = await request(token, `/api/v1/projects/${encodeURIComponent(id)}`, {
+export async function saveProject(id: string, input: ProjectInput, signal: AbortSignal): Promise<Project> {
+  const response = await request(`/api/v1/projects/${encodeURIComponent(id)}`, {
     signal,
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -454,13 +445,12 @@ export async function saveProject(token: string, id: string, input: ProjectInput
 
 /**
  * 从已有游标订阅 SSE，遇到新工作区事件后释放读取流。
- * @param token 当前管理员会话的令牌。
  * @param cursor 最近一次工作区快照的游标。
  * @param signal 停止等待更新的信号。
  * @returns 观察到更新游标时为 true，连接结束或等待取消而无更新时可为 false。
  */
-export async function waitForWorkspaceEvent(token: string, cursor: number, signal: AbortSignal): Promise<boolean> {
-  const response = await request(token, `/api/v1/events?after=${cursor}`, {
+export async function waitForWorkspaceEvent(cursor: number, signal: AbortSignal): Promise<boolean> {
+  const response = await request(`/api/v1/events?after=${cursor}`, {
     signal,
     headers: { Accept: 'text/event-stream' },
   }, 18_000)

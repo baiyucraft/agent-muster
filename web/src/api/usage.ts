@@ -1,4 +1,4 @@
-import { request } from './devices'
+import { request } from './request'
 import type { RunUsage } from './workspace'
 
 /** 保存同一 CLI 数据来源的用量总和与各可选字段的覆盖。Token 用十进制字符串表示。 */
@@ -31,11 +31,10 @@ export type DeviceUsage = { projects: UsageGroup[]; devices: UsageGroup[]; cente
 
 /**
  * 读取管理员当前可查的 Token 用量。
- * @param token 当前管理员会话令牌。
  * @param signal 终止用量请求。
  * @returns 设备运行与中心 dsh 投递的用量和覆盖轮数。旧版 Hub 可能缺少中心统计。
  */
-export async function readDeviceUsage(token: string, signal: AbortSignal): Promise<DeviceUsage> {
-  const response = await request(token, '/api/v1/workspace/usage', { signal })
+export async function readDeviceUsage(signal: AbortSignal): Promise<DeviceUsage> {
+  const response = await request('/api/v1/workspace/usage', { signal })
   return (await response.json()) as DeviceUsage
 }

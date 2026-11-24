@@ -1,10 +1,9 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
-import { AdminTokenError, HubRequestError } from '../../api/devices'
+import { AdminSessionError, HubRequestError } from '../../api/request'
 import { newID, takeoverSummaryBytes, takeoverTask, withinTextLimit, type TaskTakeoverRequest } from '../../api/workspace'
 import { messageFor } from '../../useWorkspace'
 
 type TaskTakeoverProps = {
-  token: string
   taskID: string
   allowed: boolean
   onRefresh: () => void
@@ -16,7 +15,7 @@ type TaskTakeoverProps = {
  * @param props 已认证的原任务、接手许可及快照更新回调。
  * @returns 会话提示和按 Hub 当前许可显示的接手操作。
  */
-export function TaskTakeover({ token, taskID, allowed, onRefresh, onLock }: TaskTakeoverProps) {
+export function TaskTakeover({ taskID, allowed, onRefresh, onLock }: TaskTakeoverProps) {
   const dialog = useRef<HTMLDialogElement>(null)
   const summaryField = useRef<HTMLTextAreaElement>(null)
   const request = useRef<AbortController | null>(null)
@@ -40,14 +39,14 @@ export function TaskTakeover({ token, taskID, allowed, onRefresh, onLock }: Task
     setSubmitting(true)
     setError('')
     try {
-      const next = await takeoverTask(token, taskID, submission, controller.signal)
+      const next = await takeoverTask(taskID, submission, controller.signal)
       if (controller.signal.aborted) return
       dialog.current?.close()
       window.location.hash = `board/${next.id}`
       onRefresh()
     } catch (failure) {
       if (controller.signal.aborted) return
-      if (failure instanceof AdminTokenError) {
+      if (failure instanceof AdminSessionError) {
         onLock(failure.message)
       } else if (failure instanceof HubRequestError && failure.status === 409) {
         setError('接手请求未获确认，已请求刷新任务状态。')

@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { AdminTokenError, readDevices, type Device } from '../../api/devices'
+import { readDevices, type Device } from '../../api/devices'
+import { AdminSessionError } from '../../api/request'
 import { newID, projectNameBytes, saveProject, withinTextLimit, type Directory, type GitPolicy, type Project, type ProjectBinding, type ProjectInput, type Workspace } from '../../api/workspace'
 import { messageFor } from '../../useWorkspace'
 import './projects.css'
 
 type ProjectsProps = {
-  token: string
   workspace: Workspace | null
   onSaved: () => void
   onLock: (reason: string) => void
@@ -128,7 +128,7 @@ function GitDeliveryFields({ policy, saving, onChange }: { policy: GitPolicyDraf
   </fieldset>
 }
 
-export function Projects({ token, workspace, onSaved, onLock }: ProjectsProps) {
+export function Projects({ workspace, onSaved, onLock }: ProjectsProps) {
   const [devices, setDevices] = useState<Device[]>([])
   const [draft, setDraft] = useState<ProjectDraft>()
   const [saveError, setSaveError] = useState('')
@@ -140,14 +140,14 @@ export function Projects({ token, workspace, onSaved, onLock }: ProjectsProps) {
 
   useEffect(() => {
     const controller = new AbortController()
-    void readDevices(token, controller.signal).then(setDevices).catch((failure: unknown) => {
-      if (!controller.signal.aborted && failure instanceof AdminTokenError) onLock(failure.message)
+    void readDevices(controller.signal).then(setDevices).catch((failure: unknown) => {
+      if (!controller.signal.aborted && failure instanceof AdminSessionError) onLock(failure.message)
     })
     return () => {
       controller.abort()
       request.current?.abort()
     }
-  }, [token, onLock])
+  }, [onLock])
 
   useEffect(() => {
     if (draftID) nameInput.current?.focus()
@@ -169,14 +169,14 @@ export function Projects({ token, workspace, onSaved, onLock }: ProjectsProps) {
     setSaving(true)
     setSaveError('')
     try {
-      await saveProject(token, draft.id, projectInput(draft), controller.signal)
+      await saveProject(draft.id, projectInput(draft), controller.signal)
       if (!controller.signal.aborted) {
         setDraft(undefined)
         onSaved()
       }
     } catch (failure) {
       if (controller.signal.aborted) return
-      if (failure instanceof AdminTokenError) onLock(failure.message)
+      if (failure instanceof AdminSessionError) onLock(failure.message)
       else setSaveError(messageFor(failure))
     } finally {
       request.current = null

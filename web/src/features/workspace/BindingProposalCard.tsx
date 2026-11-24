@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { HubRequestError } from '../../api/devices'
+import { HubRequestError } from '../../api/request'
 import type { BindingProposal, BindingProposalDecision } from '../../api/workspace'
 import { messageFor } from '../../useWorkspace'
 import './approval.css'

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AdminTokenError, HubRequestError } from './api/devices'
+import { AdminSessionError, HubRequestError } from './api/request'
 import { latestApproval, readWorkspace, waitForWorkspaceEvent, type Approval, type BindingProposal, type Message, type Workspace } from './api/workspace'
 
 /**
@@ -31,11 +31,10 @@ function pause(signal: AbortSignal, milliseconds: number): Promise<void> {
 
 /**
  * 管理工作区快照、SSE 重连与主对话消息回填，卸载时关闭请求。
- * @param token 当前管理员会话的令牌。
- * @param onLock Hub 拒绝令牌时通知调用方锁定会话。
+ * @param onLock 管理员会话失效时通知调用方返回登录页。
  * @returns 工作区快照、流状态、错误以及刷新和接收 Hub 写入结果的操作。
  */
-export function useWorkspace(token: string, onLock: (reason: string) => void) {
+export function useWorkspace(onLock: (reason: string) => void) {
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [streamState, setStreamState] = useState<'loading' | 'live' | 'retry' | 'unavailable'>('loading')
   const [error, setError] = useState('')
@@ -84,7 +83,7 @@ export function useWorkspace(token: string, onLock: (reason: string) => void) {
       while (!signal.aborted) {
         try {
           if (cursor === undefined) {
-            const snapshot = await readWorkspace(token, signal)
+            const snapshot = await readWorkspace(signal)
             if (signal.aborted) return
             setWorkspace((current) => {
               if (!current) return snapshot
@@ -103,10 +102,10 @@ export function useWorkspace(token: string, onLock: (reason: string) => void) {
           }
           setError('')
           setStreamState('live')
-          if (await waitForWorkspaceEvent(token, cursor, signal)) cursor = undefined
+          if (await waitForWorkspaceEvent(cursor, signal)) cursor = undefined
         } catch (failure) {
           if (signal.aborted) return
-          if (failure instanceof AdminTokenError) {
+          if (failure instanceof AdminSessionError) {
             onLock(failure.message)
             return
           }
@@ -122,7 +121,7 @@ export function useWorkspace(token: string, onLock: (reason: string) => void) {
 
     void synchronize()
     return () => controller.abort()
-  }, [token, onLock, revision])
+  }, [onLock, revision])
 
   return { workspace, streamState, error, refresh, acceptMessage, acceptApproval, acceptBindingProposal }
 }

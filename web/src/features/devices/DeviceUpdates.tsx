@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { AdminTokenError, HubRequestError, request } from '../../api/devices'
+import { AdminSessionError, HubRequestError, request } from '../../api/request'
 
 const labels: Record<string, string> = {
   idle: '暂无指派', pending: '等待设备领取', downloading: '下载并验证', waiting: '等待工作完成',
@@ -17,7 +17,7 @@ type DeviceUpdate = {
   error?: string
 }
 
-export function DeviceUpdates({ token, deviceID, onLock }: { token: string; deviceID: string; onLock: (message: string) => void }) {
+export function DeviceUpdates({ deviceID, onLock }: { deviceID: string; onLock: (message: string) => void }) {
   const [item, setItem] = useState<DeviceUpdate>()
   const [version, setVersion] = useState('')
   const [manifestURL, setManifestURL] = useState('')
@@ -34,14 +34,14 @@ export function DeviceUpdates({ token, deviceID, onLock }: { token: string; devi
     let timer: number | undefined
     async function load() {
       try {
-        const response = await request(token, '/api/v1/device-updates', { signal: controller.signal })
+        const response = await request('/api/v1/device-updates', { signal: controller.signal })
         const { devices } = (await response.json()) as { devices: DeviceUpdate[] }
         if (controller.signal.aborted) return
         setItem(devices.find((device) => device.device_id === deviceID))
         setLoadError('')
       } catch (error) {
         if (controller.signal.aborted) return
-        if (error instanceof AdminTokenError) {
+        if (error instanceof AdminSessionError) {
           onLock(error.message)
           return
         }
@@ -54,7 +54,7 @@ export function DeviceUpdates({ token, deviceID, onLock }: { token: string; devi
       controller.abort()
       window.clearTimeout(timer)
     }
-  }, [token, deviceID, onLock, revision])
+  }, [deviceID, onLock, revision])
 
   async function assign(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -69,7 +69,7 @@ export function DeviceUpdates({ token, deviceID, onLock }: { token: string; devi
       // 同一版本和清单进入失败或回滚状态后，重新提交时显式申请重试。
       const retry = item?.target?.version === targetVersion && item.target.manifest_url === url &&
         (item.status === 'failed' || item.status === 'rolled_back')
-      const response = await request(token, `/api/v1/device-updates/${encodeURIComponent(deviceID)}`, {
+      const response = await request(`/api/v1/device-updates/${encodeURIComponent(deviceID)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ version: targetVersion, manifest_url: url, retry }),
@@ -81,7 +81,7 @@ export function DeviceUpdates({ token, deviceID, onLock }: { token: string; devi
       if (details.current) details.current.open = false
     } catch (error) {
       if (controller.signal.aborted) return
-      if (error instanceof AdminTokenError) onLock(error.message)
+      if (error instanceof AdminSessionError) onLock(error.message)
       else if (error instanceof HubRequestError && error.status === 409) setActionError('此版本无法指派。请检查当前版本和更新状态。')
       else setActionError('未能指派更新。请检查版本格式、清单地址和 Hub 状态。')
     } finally {

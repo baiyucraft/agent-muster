@@ -1,7 +1,7 @@
 ---
 title: 快速上手
 description: 在本机启动单设备工作台，了解首版任务流程
-updated: 2026-11-23
+updated: 2026-11-24
 owner: project
 ---
 
@@ -25,9 +25,10 @@ Web 和中心插件由同一个 pnpm 工作区构建。设备端是独立的 Wai
 
 ### 在 Windows 上跑通 M0
 
-1. 准备 PostgreSQL 数据库。在启动 Hub 的终端设置 `MUSTER_DATABASE_URL`、`MUSTER_ADMIN_TOKEN` 和 `MUSTER_DSH_PLUGIN_TOKEN`。两种令牌分别生成，至少 32 个字符。启动时 Hub 自动初始化和迁移数据库。
+1. 准备 PostgreSQL 数据库。在启动 Hub 的终端设置 `MUSTER_DATABASE_URL` 和 `MUSTER_DSH_PLUGIN_TOKEN`。插件令牌随机生成，建议至少 32 个字符。执行管理员初始化命令，按提示设置密码，然后启动 Hub。
 
    ```powershell
+   go run ./cmd/muster-hub admin set --username admin
    go run ./cmd/muster-hub -listen 127.0.0.1:13011 -web-dir web/dist
    ```
 
@@ -39,7 +40,7 @@ Web 和中心插件由同一个 pnpm 工作区构建。设备端是独立的 Wai
    dsh --profile muster-center --host 127.0.0.1 --port 0 --no-open
    ```
 
-3. 在 `cmd/muster-daemon` 运行 `wails3 task build`，启动生成的 Windows 应用。用管理员令牌打开 [本机工作台](http://127.0.0.1:13011/)，在「设备」创建配对码，然后在 Windows 应用中配对并选择一个工作目录。设备上的 dsh 使用其 headless profile 和本机模型配置。
+3. 在 `cmd/muster-daemon` 运行 `wails3 task build`，启动生成的 Windows 应用。用管理员用户名和密码登录 [本机工作台](http://127.0.0.1:13011/)，在「设备」创建配对码，然后在 Windows 应用中配对并选择一个工作目录。设备上的 dsh 使用其 headless profile 和本机模型配置。
 4. 在「对话」告诉中心要接入的项目。核对项目绑定卡片里的设备、目录、Agent 和默认绑定，然后接受并创建项目。也可以在「项目」新建或修改绑定。绑定保存后，在「对话」交办工作，在「看板」查看结果、运行轮次和会话 ID。通过「追加要求」续用原生会话。
 
 ### 在 Windows 上配置双设备协作

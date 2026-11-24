@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AdminTokenError } from '../../api/devices'
+import { AdminSessionError } from '../../api/request'
 import { readDeviceUsage, type DeviceUsage as UsageData, type UsageSource } from '../../api/usage'
 import { messageFor } from '../../useWorkspace'
 
@@ -13,10 +13,10 @@ const groupChoices = [
 
 /**
  * 查看设备与中心 dsh 的 Token 用量和统计覆盖。
- * @param props 当前管理员与会话锁定操作。
+ * @param props 会话失效后的处理回调。
  * @returns Token 用量、读取状态与分组切换界面。
  */
-export function DeviceUsage({ token, onLock }: { token: string; onLock: (reason?: string) => void }) {
+export function DeviceUsage({ onLock }: { onLock: (reason?: string) => void }) {
   const [dimension, setDimension] = useState<keyof UsageData>('projects')
   const [data, setData] = useState<UsageData>()
   const [error, setError] = useState('')
@@ -25,17 +25,17 @@ export function DeviceUsage({ token, onLock }: { token: string; onLock: (reason?
 
   useEffect(() => {
     const controller = new AbortController()
-    void readDeviceUsage(token, controller.signal).then((result) => {
+    void readDeviceUsage(controller.signal).then((result) => {
       if (!controller.signal.aborted) setData(result)
     }).catch((failure: unknown) => {
       if (controller.signal.aborted) return
-      if (failure instanceof AdminTokenError) onLock(failure.message)
+      if (failure instanceof AdminSessionError) onLock(failure.message)
       else setError(messageFor(failure))
     }).finally(() => {
       if (!controller.signal.aborted) setLoading(false)
     })
     return () => controller.abort()
-  }, [onLock, refreshCount, token])
+  }, [onLock, refreshCount])
 
   function refresh() {
     setError('')

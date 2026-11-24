@@ -135,17 +135,6 @@ code,
   background: var(--action-hover);
 }
 
-.token-form {
-  width: min(100%, 430px);
-  padding: 24px;
-  display: grid;
-  gap: 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
-}
-
-.token-form label,
 .pairing-form label,
 .pairing-code-label {
   color: var(--muted);
@@ -153,7 +142,6 @@ code,
   font-weight: 600;
 }
 
-.token-form input,
 .pairing-form input,
 .pairing-code input {
   width: 100%;
@@ -163,14 +151,6 @@ code,
   padding: 0 10px;
   color: var(--ink);
   background: var(--surface);
-}
-
-.token-form input {
-  font-family: var(--font-mono);
-}
-
-.token-form .primary-button {
-  justify-self: start;
 }
 
 .auth-error,
