@@ -19,7 +19,7 @@ var codexThreadID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-
 
 // RunCodex 在绑定目录通过标准输入向 Codex 传递提示词。续接时校验返回的原生线程，
 // 并在解析到 thread.started 后通过 session 保存线程引用。
-// 退出码为 0、收到 turn.completed 且取得最终回复后才返回成功。
+// 退出码为 0、收到 turn.completed、未收到 turn.failed 且取得最终回复后才返回成功。
 func RunCodex(ctx context.Context, directory, prompt, threadID string, env []string, started func() error, session func(string) error) (string, error) {
 	if threadID != "" && !codexThreadID.MatchString(threadID) {
 		return "", errors.New("无效的 Codex 会话 ID")
@@ -67,6 +67,9 @@ func RunCodex(ctx context.Context, directory, prompt, threadID string, env []str
 	if err != nil {
 		return final, err
 	}
+	if result.TurnFailure != "" {
+		return final, errors.New(result.TurnFailure)
+	}
 	if exitCode != 0 {
 		if result.Failure != "" {
 			return final, errors.New(result.Failure)
@@ -87,11 +90,12 @@ func RunCodex(ctx context.Context, directory, prompt, threadID string, env []str
 }
 
 type codexResult struct {
-	SessionID string
-	Final     string
-	Completed bool
-	Failure   string
-	Usage     *runreport.Usage
+	SessionID   string
+	Final       string
+	Completed   bool
+	Failure     string
+	TurnFailure string
+	Usage       *runreport.Usage
 }
 
 func readCodex(stdout io.Reader, expectedThreadID string, persist func(string) error) (codexResult, error) {
@@ -137,6 +141,9 @@ func readCodex(stdout io.Reader, expectedThreadID string, persist func(string) e
 				result.Final = event.Item.Text
 			}
 		case "turn.completed":
+			if result.TurnFailure != "" {
+				continue
+			}
 			if !result.Completed && result.SessionID != "" && sawTurnStarted {
 				result.Usage = codexUsage(event.Usage, expectedThreadID != "")
 			} else {
@@ -144,9 +151,13 @@ func readCodex(stdout io.Reader, expectedThreadID string, persist func(string) e
 			}
 			result.Completed = true
 		case "turn.failed":
-			result.Failure = event.Error.Message
-			if result.Failure == "" {
-				result.Failure = "Codex turn.failed"
+			result.Completed = false
+			result.Usage = nil
+			if result.TurnFailure == "" {
+				result.TurnFailure = event.Error.Message
+				if result.TurnFailure == "" {
+					result.TurnFailure = "Codex turn.failed"
+				}
 			}
 		case "error":
 			if event.Message != "" {

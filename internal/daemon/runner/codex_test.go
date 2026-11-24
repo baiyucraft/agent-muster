@@ -51,8 +51,29 @@ func TestReadCodexDoesNotTreatFinalItemAsCompletedTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Completed || result.Failure != "failed" {
+	if result.Completed || result.TurnFailure != "failed" {
 		t.Fatalf("unexpected result %#v", result)
+	}
+}
+
+func TestReadCodexKeepsTurnFailureWithConflictingCompletion(t *testing.T) {
+	const start = `{"type":"thread.started","thread_id":"550e8400-e29b-41d4-a716-446655440000"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"type":"agent_message","text":"partial"}}
+`
+	const failed = "{\"type\":\"turn.failed\",\"error\":{\"message\":\"turn broke\"}}\n"
+	const completed = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":20,\"output_tokens\":3}}\n"
+	const diagnostic = "{\"type\":\"error\",\"message\":\"trailing diagnostic\"}\n"
+	for name, tail := range map[string]string{
+		"failure before completion": failed + completed,
+		"failure after completion":  completed + failed,
+	} {
+		t.Run(name, func(t *testing.T) {
+			result, err := readCodex(strings.NewReader(start+tail+diagnostic), "", func(string) error { return nil })
+			if err != nil || result.Completed || result.TurnFailure != "turn broke" || result.Final != "partial" || result.Usage != nil {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+		})
 	}
 }
 
