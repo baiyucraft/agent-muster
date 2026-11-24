@@ -24,8 +24,8 @@ var ErrProcessExitUnconfirmed = errors.New("无法确认本轮 Agent 进程树�
 // ErrSessionBusy 表示 dsh 启动续接时发现该会话已有写入者，且本轮进程树已退出。
 var ErrSessionBusy = errors.New("dsh 原生会话正在被占用")
 
-// ErrSessionUnavailable 表示 dsh 无法打开指定的持久化会话，且本轮进程树已退出。
-var ErrSessionUnavailable = errors.New("dsh 原生会话不可用")
+// ErrSessionUnavailable 表示 CLI 无法打开指定的持久化会话，且本轮进程树已退出。
+var ErrSessionUnavailable = errors.New("原生会话不可用")
 
 // RunDSH 从标准输入向无界面的 dsh 传递提示词，并在解析到原生会话事件后回调 session。
 func RunDSH(ctx context.Context, directory, prompt, sessionID string, started func() error, session func(string) error) (string, error) {
@@ -65,7 +65,7 @@ func RunDSHWithEnvironment(ctx context.Context, directory, prompt, sessionID str
 	var response dshResponse
 	exitCode, err := runInJob(ctx, cmd, prompt, started, func(stdout io.Reader) error {
 		return response.read(stdout, sessionID, session)
-	})
+	}, nil)
 	if err != nil {
 		return response.final, err
 	}

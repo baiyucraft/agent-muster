@@ -14,6 +14,18 @@ import (
 )
 
 func TestSessionTakeoverCreatesIndependentRunWithoutPublishPermission(t *testing.T) {
+	for _, agent := range []struct{ kind, sessionID string }{
+		{kind: "dsh", sessionID: "native-test"},
+		{kind: "codex", sessionID: "20000000-0000-4000-8000-000000000004"},
+	} {
+		t.Run(agent.kind, func(t *testing.T) {
+			testSessionTakeover(t, agent.kind, agent.sessionID)
+		})
+	}
+}
+
+func testSessionTakeover(t *testing.T, agentKind, sessionID string) {
+	t.Helper()
 	ctx, _, _, server, do := openWorkspaceFixture(t)
 	var pairing struct{ Code string }
 	do("POST", "pairing-codes", testAdmin, map[string]string{"name": "开发设备"}, 201, &pairing)
@@ -35,7 +47,7 @@ func TestSessionTakeoverCreatesIndependentRunWithoutPublishPermission(t *testing
 		Test: gitdelivery.Command{Program: "go", Args: []string{"test", "./..."}, TimeoutSeconds: 30},
 	}
 	do("PUT", "projects/"+project, testAdmin, map[string]any{
-		"name": "测试项目", "device_id": device.ID, "directory_id": dir, "git_policy": policy,
+		"name": "测试项目", "device_id": device.ID, "directory_id": dir, "agent_kind": agentKind, "git_policy": policy,
 	}, 200, nil)
 	do("POST", "conversation/messages", testAdmin, map[string]string{
 		"id": "20000000-0000-4000-8000-000000000002", "text": "修复并推送",
@@ -79,11 +91,11 @@ func TestSessionTakeoverCreatesIndependentRunWithoutPublishPermission(t *testing
 		do("PUT", fmt.Sprintf("%sruns/%s/events/%d", prefix, run.ID, sequence), device.Token, event, 204, nil)
 	}
 	original := claim()
-	if !original.GitPublish || original.GitPolicy == nil {
+	if original.AgentKind != agentKind || !original.GitPublish || original.GitPolicy == nil {
 		t.Fatalf("源任务缺少冻结的 Git 规则和推送授权: %+v", original)
 	}
 	record(original, 1, workspace.RunEvent{Kind: "started"})
-	record(original, 2, workspace.RunEvent{Kind: "session", SessionID: "native-test"})
+	record(original, 2, workspace.RunEvent{Kind: "session", SessionID: sessionID})
 	record(original, 3, workspace.RunEvent{
 		Kind: "approval_requested", Approval: &approval.Question{Question: "保留 CSV 列名吗？"},
 	})
@@ -95,15 +107,37 @@ func TestSessionTakeoverCreatesIndependentRunWithoutPublishPermission(t *testing
 	}
 	do("POST", "approvals/"+detail.Approvals[0].ID+"/answer", testAdmin, map[string]string{"answer": "保留"}, 200, nil)
 	resume := claim()
-	if resume.SessionID != "native-test" || !resume.SessionFailureSupported {
+	if resume.SessionID != sessionID || !resume.SessionFailureSupported {
 		t.Fatalf("续接轮缺少会话或分类能力: %+v", resume)
 	}
 	record(resume, 1, workspace.RunEvent{Kind: "started"})
+	if agentKind == "codex" {
+		var before, after workspace.Detail
+		do("GET", path, testAdmin, nil, 200, &before)
+		if before.Task.Status != "running" || len(before.Approvals) != 1 || before.Approvals[0].Status != "answered" ||
+			before.Approvals[0].HandledAt != nil {
+			t.Fatalf("当前续接运行应有一条未处理的请示答复: %+v", before)
+		}
+		do("PUT", fmt.Sprintf("%sruns/%s/events/2", prefix, resume.ID), device.Token, workspace.RunEvent{
+			Kind: "failed", SessionFailure: "busy", Generation: resume.Generation, Lease: resume.Lease,
+		}, 409, nil)
+		do("GET", path, testAdmin, nil, 200, &after)
+		if !reflect.DeepEqual(before, after) {
+			t.Fatalf("拒绝 Codex 占用回执后任务或输入发生改变: %+v", after)
+		}
+	}
 	failure := workspace.RunEvent{Kind: "failed", SessionFailure: "unavailable", Text: "原会话已丢失"}
 	record(resume, 2, failure)
+	record(resume, 2, failure)
+	if agentKind == "codex" {
+		do("PUT", fmt.Sprintf("%sruns/%s/events/3", prefix, resume.ID), device.Token, workspace.RunEvent{
+			Kind: "failed", SessionFailure: "busy", Generation: resume.Generation, Lease: resume.Lease,
+		}, 409, nil)
+	}
 	detail = workspace.Detail{}
 	do("GET", path, testAdmin, nil, 200, &detail)
-	if !detail.TakeoverAllowed || detail.Task.WaitingReason != "session_unavailable" {
+	if !detail.TakeoverAllowed || detail.Task.Status != "interrupted" || detail.Task.WaitingReason != "session_unavailable" ||
+		len(detail.Approvals) != 1 || detail.Approvals[0].Status != "answered" || detail.Approvals[0].HandledAt != nil {
 		t.Fatalf("会话不可用后应允许接手: %+v", detail)
 	}
 

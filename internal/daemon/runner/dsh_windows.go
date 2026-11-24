@@ -19,11 +19,15 @@ import (
 // during creation, before any dsh code can run.
 const processJobList = 0x0002000D
 
-func runInJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() error, read func(io.Reader) error) (uint32, error) {
-	return runInJobWithStderr(ctx, cmd, prompt, started, read, nil)
+func runInJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() error, read func(io.Reader) error, stderr io.Writer) (uint32, error) {
+	return runJob(ctx, cmd, prompt, started, read, stderr, diagnostics(ctx))
 }
 
 func runInJobWithStderr(ctx context.Context, cmd *exec.Cmd, prompt string, started func() error, read func(io.Reader) error, stderr io.Writer) (uint32, error) {
+	return runJob(ctx, cmd, prompt, started, read, stderr, nil)
+}
+
+func runJob(ctx context.Context, cmd *exec.Cmd, prompt string, started func() error, read func(io.Reader) error, stderr io.Writer, capture *runCapture) (uint32, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -51,20 +55,17 @@ func runInJobWithStderr(ctx context.Context, cmd *exec.Cmd, prompt string, start
 	defer stdoutR.Close()
 	defer stdoutW.Close()
 
-	var capture *runCapture
-	if stderr == nil {
-		capture = diagnostics(ctx)
-	}
 	var stdoutLog, stderrLog *streamLog
 	var captureIncomplete bool
 	var stderrR, stderrW *os.File
+	stderrRequired := stderr != nil
 	if capture != nil {
 		capture.report.ErrorKind = "setup"
 	}
-	if capture != nil || stderr != nil {
+	if capture != nil || stderrRequired {
 		stderrR, stderrW, err = os.Pipe()
 	}
-	if stderr != nil && err != nil {
+	if stderrRequired && err != nil {
 		return 0, err
 	}
 	if stderrR == nil {
@@ -103,7 +104,12 @@ func runInJobWithStderr(ctx context.Context, cmd *exec.Cmd, prompt string, start
 	if capture != nil {
 		stdoutLog, stderrLog = capture.openStreams()
 		defer func() { capture.finishStreams(stdoutLog, stderrLog, captureIncomplete) }()
-		stderr = stderrLog
+		if !stderrRequired {
+			stderr = stderrLog
+		} else {
+			// Codex 从 stderr 识别续接拒绝，原始输出仍保存在运行日志中。
+			stderr = io.MultiWriter(stderrLog, stderr)
+		}
 		if stderrR == nil {
 			stderrLog.err = true
 		}
@@ -113,7 +119,7 @@ func runInJobWithStderr(ctx context.Context, cmd *exec.Cmd, prompt string, start
 		stderrDone = make(chan error, 1)
 		go func() {
 			_, err := io.Copy(stderr, stderrR)
-			if err != nil && capture == nil {
+			if err != nil && stderrRequired {
 				cancel()
 			}
 			stderrDone <- err
@@ -170,7 +176,7 @@ func runInJobWithStderr(ctx context.Context, cmd *exec.Cmd, prompt string, start
 		switch {
 		case treeErr != nil || ctx.Err() != nil:
 			capture.report.ErrorKind = "interrupted"
-		case exitErr != nil || outputErr != nil || inputErr != nil:
+		case exitErr != nil || outputErr != nil || inputErr != nil || (stderrRequired && stderrErr != nil):
 			capture.report.ErrorKind = "output"
 		case exitCode != 0:
 			capture.report.ErrorKind = "native_exit"
@@ -187,7 +193,7 @@ func runInJobWithStderr(ctx context.Context, cmd *exec.Cmd, prompt string, start
 	if errors.Is(exitErr, context.Canceled) {
 		exitErr = nil
 	}
-	if capture != nil {
+	if !stderrRequired {
 		stderrErr = nil
 	}
 	return exitCode, errors.Join(outputErr, inputErr, stderrErr, exitErr)

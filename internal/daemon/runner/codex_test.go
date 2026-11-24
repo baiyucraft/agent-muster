@@ -77,6 +77,29 @@ func TestReadCodexKeepsTurnFailureWithConflictingCompletion(t *testing.T) {
 	}
 }
 
+func TestCodexResumeUnavailableRequiresExactRejection(t *testing.T) {
+	const thread = "550e8400-e29b-41d4-a716-446655440000"
+	const rejection = "Error: thread/resume: thread/resume failed: no rollout found for thread id " + thread + " (code -32600)"
+	for _, test := range []struct {
+		name, threadID, stderr string
+		exitCode               uint32
+		want                   bool
+	}{
+		{name: "明确拒绝", threadID: thread, stderr: rejection + "\r\n", exitCode: 1, want: true},
+		{name: "首次启动", stderr: rejection, exitCode: 1},
+		{name: "退出码不同", threadID: thread, stderr: rejection, exitCode: 2},
+		{name: "线程不匹配", threadID: "550e8400-e29b-41d4-a716-446655440001", stderr: rejection, exitCode: 1},
+		{name: "另有诊断", threadID: thread, stderr: rejection + "\nother error\n", exitCode: 1},
+		{name: "通用错误", threadID: thread, stderr: "no rollout found", exitCode: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := codexResumeUnavailable(test.threadID, test.exitCode, test.stderr); got != test.want {
+				t.Fatalf("续接拒绝分类为 %v，预期 %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestFilteredAgentEnvironmentAllowsOnlyRunPipeCapability(t *testing.T) {
 	got := filteredAgentEnvironment([]string{"PATH=C:\\Windows", "MUSTER_PIPE=inherited", "MUSTER_DEVICE_TOKEN=secret", "MUSTER_OTHER=x"}, []string{
 		"MUSTER_PIPE=\\\\.\\pipe\\muster",

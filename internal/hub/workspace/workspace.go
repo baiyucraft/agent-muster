@@ -194,7 +194,7 @@ type DelegationTarget struct {
 // RunEvent 是设备上报的单条运行事件，携带运行代次和租约。诊断摘要只随本轮终态上报。
 type RunEvent struct {
 	Kind            string                    `json:"kind"`
-	SessionFailure  string                    `json:"session_failure,omitempty"` // dsh 原生续接启动前的失败分类：busy 或 unavailable。
+	SessionFailure  string                    `json:"session_failure,omitempty"` // 原生续接采纳前的失败分类。dsh 可上报 busy 或 unavailable，Codex 可上报 unavailable。
 	SessionID       string                    `json:"session_id,omitempty"`
 	Text            string                    `json:"text,omitempty"`
 	Generation      int64                     `json:"generation"`

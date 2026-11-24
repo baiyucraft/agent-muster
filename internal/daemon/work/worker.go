@@ -498,12 +498,12 @@ func (worker *Worker) invoke(ctx context.Context, run control.Run, service *loca
 	case didStart && ctx.Err() != nil:
 		event.Kind = "interrupted"
 		err = errors.Join(context.Cause(ctx), err)
-	case err != nil && didStart && run.SessionFailureSupported && run.SessionID != "" && (run.AgentKind == "" || run.AgentKind == "dsh") &&
+	case err != nil && didStart && run.SessionFailureSupported && run.SessionID != "" &&
 		!sessionAdopted && event.Text == "" && event.InputReceipt == nil:
 		switch {
-		case errors.Is(err, runner.ErrSessionBusy):
+		case errors.Is(err, runner.ErrSessionBusy) && (run.AgentKind == "" || run.AgentKind == "dsh"):
 			event.SessionFailure = "busy"
-		case errors.Is(err, runner.ErrSessionUnavailable):
+		case errors.Is(err, runner.ErrSessionUnavailable) && (run.AgentKind == "" || run.AgentKind == "dsh" || run.AgentKind == "codex"):
 			event.SessionFailure = "unavailable"
 		}
 	case err == nil:

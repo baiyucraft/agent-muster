@@ -692,7 +692,7 @@ paths:
                   session_id: { type: string, description: 首轮为空 }
                   session_failure_supported:
                     type: boolean
-                    description: 为 true 时设备可随已退出的续接轮次上报可证实的原生会话接入失败。字段缺省视为未启用。
+                    description: 为 true 时，设备可在确认进程树退出后上报会话尚未被接入的续接失败。dsh 支持 busy 和 unavailable，Codex 支持 unavailable。字段缺省视为未启用。
                   approval_supported:
                     type: boolean
                     description: 为 true 时设备可提交请示回执。字段缺省视为未启用。
@@ -873,7 +873,7 @@ paths:
                 session_failure:
                   type: string
                   enum: [busy, unavailable]
-                  description: 已确认 dsh 续接进程退出，原生会话尚未接收业务输入。busy 延后重试，unavailable 使原任务进入待核对。
+                  description: 已确认续接进程树退出，且本轮在接入原生会话和处理业务输入之前失败。busy 仅用于 dsh 并延后重试。unavailable 使原任务进入待核对。对 Codex，设备仅将找不到指定线程运行记录的明确拒绝识别为 unavailable（已在 Codex CLI 0.162.1 验证）。
               allOf:
                 - if: { properties: { kind: { enum: [started, session, stopped] } } }
                   then: { not: { required: [input_receipt] } }

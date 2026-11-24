@@ -38,7 +38,7 @@ func TestJobRunsWithBoundDirectoryAndPromptOnStdin(t *testing.T) {
 		data, err := io.ReadAll(reader)
 		stdout = string(data)
 		return err
-	})
+	}, nil)
 	if err != nil || status != 0 {
 		t.Fatalf("status=%d err=%v output=%q", status, err, stdout)
 	}
@@ -85,7 +85,7 @@ func verifyJobExit(t *testing.T, mode string) {
 		}
 		// 先持有子进程的观察句柄，再允许主进程正常退出。
 		return os.WriteFile(filepath.Join(cmd.Dir, "child-observed"), nil, 0600)
-	})
+	}, nil)
 	if child == 0 {
 		t.Fatalf("未取得子进程句柄：%v", err)
 	}
@@ -115,10 +115,11 @@ func TestJobCapturesNativeStreamsWhenParserStopsEarly(t *testing.T) {
 	defer cancel()
 	dir := t.TempDir()
 	ctx, report := WithDiagnostics(ctx, dir)
+	var stderrProbe boundedOutput
 	code, err := runInJob(ctx, cmd, "", func() error { return nil }, func(r io.Reader) error {
 		_, err := io.ReadFull(r, make([]byte, 3))
 		return err
-	})
+	}, &stderrProbe)
 	if code != 7 || err != nil {
 		t.Fatalf("进程退出码 %d，错误 %v", code, err)
 	}
@@ -127,6 +128,9 @@ func TestJobCapturesNativeStreamsWhenParserStopsEarly(t *testing.T) {
 		t.Fatalf("运行日志目录 %v，错误 %v", out, errOut)
 	}
 	const stderr = "设备本机 stderr\n"
+	if string(stderrProbe.data) != stderr {
+		t.Fatalf("续接探测未获得 stderr：%q", stderrProbe.data)
+	}
 	stdout := strings.Repeat("本机 stdout\n", 1024)
 	for name, want := range map[string]string{"stdout.log": stdout, "stderr.log": stderr} {
 		body, err := os.ReadFile(filepath.Join(dir, out[0].Name(), name))
@@ -138,6 +142,36 @@ func TestJobCapturesNativeStreamsWhenParserStopsEarly(t *testing.T) {
 		got.CaptureIncomplete || got.StdoutBytes == nil || *got.StdoutBytes != int64(len(stdout)) ||
 		got.StderrBytes == nil || *got.StderrBytes != int64(len(stderr)) || got.ErrorKind != "native_exit" {
 		t.Fatalf("运行诊断不完整：%+v", got)
+	}
+}
+
+func TestJobReportsRequiredStderrFailureWithDiagnostics(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(executable, "-test.run=^TestJobProcessFixture$")
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(cmd.Environ(), "MUSTER_JOB_FIXTURE=diagnostics")
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stderr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	ctx, report := WithDiagnostics(ctx, t.TempDir())
+	_, err = runInJob(ctx, cmd, "", func() error { return nil }, func(r io.Reader) error {
+		_, err := io.Copy(io.Discard, r)
+		return err
+	}, stderr)
+	if !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("运行器未返回 stderr 错误：%v", err)
+	}
+	if got := report(); got == nil || !got.CaptureIncomplete || got.ErrorKind != "output" {
+		t.Fatalf("运行诊断未记录输出错误：%+v", got)
 	}
 }
 

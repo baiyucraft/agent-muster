@@ -15,10 +15,10 @@ func validSessionFailure(event workspace.RunEvent) bool {
 		(event.Diagnostics == nil || len(event.Diagnostics.Reviews) == 0)
 }
 
-// settleSessionFailure 结算当前 dsh 续接轮，保留原运行凭据供迟到回执审计。
+// settleSessionFailure 结算当前 CLI 续接轮，保留原运行凭据供迟到回执审计。
 // started 只确认进程启动。已采纳会话或发生业务操作时须由原轮核对。
 func settleSessionFailure(ctx context.Context, tx pgx.Tx, run runState, id, sessionID string, event workspace.RunEvent) error {
-	if run.CurrentRun != id || run.AgentKind != "dsh" || run.InputSession == "" || run.InputSession != sessionID || event.Generation == 0 {
+	if run.CurrentRun != id || run.InputSession == "" || run.InputSession != sessionID || event.Generation == 0 {
 		return workspace.ErrConflict
 	}
 	var nativeWork bool
@@ -43,7 +43,7 @@ func settleSessionFailure(ctx context.Context, tx pgx.Tx, run runState, id, sess
 	}
 	status, reason := "failed", "原生会话正被占用，稍后在原设备重试。"
 	if event.SessionFailure == "unavailable" {
-		status, reason = "interrupted", "原生会话损坏或不兼容，请核对运行记录后选择重新接手。"
+		status, reason = "interrupted", "原生会话不可用，请核对运行记录后选择重新接手。"
 	}
 	if event.Text == "" {
 		event.Text = reason

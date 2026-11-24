@@ -142,7 +142,7 @@ func (store *InventoryStore) ClaimCompatibleRun(ctx context.Context, device stri
 			return err
 		}
 		claim.LeaseUntil = claim.LeaseUntil.UTC()
-		claim.SessionFailureSupported = claim.AgentKind == "dsh" && claim.SessionID != ""
+		claim.SessionFailureSupported = claim.SessionID != "" && (claim.AgentKind == "dsh" || claim.AgentKind == "codex")
 		claim.ApprovalSupported = true
 		claim.DiagnosticsSupported = true
 		claim.ReviewDiagnosticsSupported = true
@@ -391,6 +391,10 @@ func (store *InventoryStore) RecordRunEvent(ctx context.Context, device string, 
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
+		}
+		if event.SessionFailure != "" && run.AgentKind != "dsh" &&
+			!(run.AgentKind == "codex" && event.SessionFailure == "unavailable") {
+			return workspace.ErrConflict
 		}
 		outcome := event.Text
 		if run.GitPublish && event.Kind == "completed" {

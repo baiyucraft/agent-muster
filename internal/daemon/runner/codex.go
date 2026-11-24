@@ -55,11 +55,16 @@ func RunCodex(ctx context.Context, directory, prompt, threadID string, env []str
 	cmd.Dir = directory
 	cmd.Env = filteredAgentEnvironment(cmd.Environ(), env)
 	var result codexResult
+	var resumeStderr boundedOutput
+	var stderr io.Writer
+	if threadID != "" {
+		stderr = &resumeStderr
+	}
 	exitCode, err := runInJob(ctx, cmd, prompt, started, func(stdout io.Reader) error {
 		var parseErr error
 		result, parseErr = readCodex(stdout, threadID, session)
 		return parseErr
-	})
+	}, stderr)
 	final, outputErr := readFinalMessage(outputPath)
 	if final == "" {
 		final = result.Final
@@ -67,17 +72,11 @@ func RunCodex(ctx context.Context, directory, prompt, threadID string, env []str
 	if err != nil {
 		return final, err
 	}
-	if result.TurnFailure != "" {
-		return final, errors.New(result.TurnFailure)
+	if outputErr == nil && final == "" && !result.sawStdout && codexResumeUnavailable(threadID, exitCode, string(resumeStderr.data)) {
+		return "", fmt.Errorf("Codex 未找到原生会话: %w", ErrSessionUnavailable)
 	}
-	if exitCode != 0 {
-		if result.Failure != "" {
-			return final, errors.New(result.Failure)
-		}
-		return final, fmt.Errorf("Codex 退出码 %d", exitCode)
-	}
-	if !result.Completed {
-		return final, errors.New("Codex 没有返回 turn.completed")
+	if err := result.exitError(exitCode); err != nil {
+		return final, err
 	}
 	if final == "" || outputErr != nil {
 		if outputErr != nil {
@@ -96,14 +95,44 @@ type codexResult struct {
 	Failure     string
 	TurnFailure string
 	Usage       *runreport.Usage
+	sawStdout   bool
+	turnStarted bool
+}
+
+// codexResumeUnavailable 只接受 Codex 0.162.1 在采纳指定线程前输出的单行拒绝。
+func codexResumeUnavailable(threadID string, exitCode uint32, stderr string) bool {
+	const prefix = "Error: thread/resume: thread/resume failed: no rollout found for thread id "
+	const suffix = " (code -32600)"
+	line := strings.TrimSuffix(strings.TrimSuffix(stderr, "\n"), "\r")
+	return threadID != "" && exitCode == 1 && line == prefix+threadID+suffix
+}
+
+// exitError 在确认真实进程退出码后判断完整回合，避免把线程拒绝误作输出读取中断。
+func (result codexResult) exitError(exitCode uint32) error {
+	switch {
+	case result.SessionID == "":
+		return errors.New("Codex 没有提供 thread.started")
+	case !result.turnStarted:
+		return errors.New("Codex 没有提供 turn.started")
+	case result.TurnFailure != "":
+		return errors.New(result.TurnFailure)
+	case exitCode != 0 && result.Failure != "":
+		return errors.New(result.Failure)
+	case exitCode != 0:
+		return fmt.Errorf("Codex 退出码 %d", exitCode)
+	case !result.Completed:
+		return errors.New("Codex 没有返回 turn.completed")
+	default:
+		return nil
+	}
 }
 
 func readCodex(stdout io.Reader, expectedThreadID string, persist func(string) error) (codexResult, error) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 8192), 4<<20)
 	var result codexResult
-	var sawTurnStarted bool
 	for scanner.Scan() {
+		result.sawStdout = true
 		var event struct {
 			Type     string          `json:"type"`
 			ThreadID string          `json:"thread_id"`
@@ -135,7 +164,7 @@ func readCodex(stdout io.Reader, expectedThreadID string, persist func(string) e
 				result.SessionID = event.ThreadID
 			}
 		case "turn.started":
-			sawTurnStarted = true
+			result.turnStarted = true
 		case "item.completed":
 			if event.Item.Type == "agent_message" {
 				result.Final = event.Item.Text
@@ -144,7 +173,7 @@ func readCodex(stdout io.Reader, expectedThreadID string, persist func(string) e
 			if result.TurnFailure != "" {
 				continue
 			}
-			if !result.Completed && result.SessionID != "" && sawTurnStarted {
+			if !result.Completed && result.SessionID != "" && result.turnStarted {
 				result.Usage = codexUsage(event.Usage, expectedThreadID != "")
 			} else {
 				result.Usage = nil
@@ -167,12 +196,6 @@ func readCodex(stdout io.Reader, expectedThreadID string, persist func(string) e
 	}
 	if err := scanner.Err(); err != nil {
 		return result, fmt.Errorf("无法读取 Codex JSONL: %w", err)
-	}
-	if result.SessionID == "" {
-		return result, errors.New("Codex 没有提供 thread.started")
-	}
-	if !sawTurnStarted {
-		return result, errors.New("Codex 没有提供 turn.started")
 	}
 	return result, nil
 }
