@@ -114,6 +114,9 @@ func (hub *testRTCHub) PutRTCOffer(_ context.Context, _ control.Identity, transf
 	if strings.Contains(signal.SDP, rtcSignatureFooter) != hub.signed {
 		return errors.New("连接提议的签名状态与测试场景不符")
 	}
+	if err := hub.checkCandidates(signal.SDP); err != nil {
+		return err
+	}
 	hub.offer <- peer.RTCOffer{TransferID: transfer, RTCSignal: signal}
 	return nil
 }
@@ -121,6 +124,9 @@ func (hub *testRTCHub) PutRTCOffer(_ context.Context, _ control.Identity, transf
 func (hub *testRTCHub) PutRTCAnswer(_ context.Context, _ control.Identity, _ string, signal peer.RTCSignal) error {
 	if strings.Contains(signal.SDP, rtcSignatureFooter) != hub.signed {
 		return errors.New("连接应答的签名状态与测试场景不符")
+	}
+	if err := hub.checkCandidates(signal.SDP); err != nil {
+		return err
 	}
 	hub.answer <- peer.RTCAnswer{SDP: signal.SDP}
 	return nil
@@ -135,6 +141,24 @@ func (hub *testRTCHub) RTCAnswer(ctx context.Context, _ control.Identity, _, _ s
 	}
 }
 
+// checkCandidates 确认已配置 TURN 的两端都实际公布了直连和中继候选。
+func (hub *testRTCHub) checkCandidates(sdp string) error {
+	if len(hub.config.ICEServers) == 0 {
+		return nil
+	}
+	var host, relay bool
+	for line := range strings.SplitSeq(sdp, "\r\n") {
+		if strings.HasPrefix(line, "a=candidate:") {
+			host = host || strings.Contains(line, " typ host")
+			relay = relay || strings.Contains(line, " typ relay")
+		}
+	}
+	if !host || !relay {
+		return errors.New("缺少本机直连或 TURN 中继候选")
+	}
+	return nil
+}
+
 func TestRTCSignedTransfer(t *testing.T) {
 	t.Run("direct", func(t *testing.T) {
 		testRTCTransfers(t, "direct", nil, true, 1)
@@ -145,9 +169,14 @@ func TestRTCSignedTransfer(t *testing.T) {
 	})
 }
 
-func TestRTCStandardTransfersUseTURN(t *testing.T) {
+func TestRTCStandardTransfersSelectRouteWithTURN(t *testing.T) {
 	server := startTestTURN(t)
-	testRTCTransfers(t, "relay", &server, false, 2)
+	t.Run("direct_available", func(t *testing.T) {
+		testRTCTransfers(t, "direct", &server, false, 1)
+	})
+	t.Run("direct_blocked", func(t *testing.T) {
+		testRTCTransfers(t, "relay", &server, false, 2)
+	})
 }
 
 const testTURNRelayAddress = "127.0.0.2"
@@ -218,7 +247,7 @@ func testRTCTransfers(t *testing.T, wantPath string, relay *peer.ICEServer, sign
 		if err := device.rtc.register(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if relay != nil {
+		if wantPath == "relay" {
 			// 只接收远端中继地址，模拟设备间无法直连。连接仍使用普通 ICE 策略。
 			settings := rtcSettings(device.identity.HubURL)
 			relayIP := net.ParseIP(testTURNRelayAddress)
